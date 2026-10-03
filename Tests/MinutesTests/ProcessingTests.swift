@@ -1,0 +1,332 @@
+import AVFoundation
+import CoreMedia
+import Foundation
+import ScreenCaptureKit
+
+@main struct ProcessingTests {
+    static func check(_ condition: @autoclosure () -> Bool, _ message: String) throws {
+        guard condition() else { throw AppError.message("FAIL: " + message) }
+    }
+    static func require<Value>(_ value: Value?, _ message: String) throws -> Value {
+        guard let value else { throw AppError.message("FAIL: " + message) }
+        return value
+    }
+    static func main() async throws {
+        let tests = ProcessingTests()
+        try tests.testChunkingPreservesFramesAndOffsets()
+        try await tests.testSilentCloudChunkDoesNotCallAPI()
+        try await tests.testLocalMinutesKeepsEvidenceAndDoesNotInventOwner()
+        try await tests.testRecorderKeepsBothTracksAndFlushesTail()
+        try await tests.testStopFailureClosesFilesBeforeRestart()
+        try await tests.testReplayPreservesDelayedTracksAndGaps()
+        try await tests.testSilentReplayDoesNotCallAPI()
+        try await tests.testStoreDistinguishesEmptyUnrecognizedAndComplete()
+        try tests.testIncrementalNotesAndEvidenceValidation()
+        try tests.testLateArrivingTranscriptAndEchoInput()
+        try tests.testLegacyMeetingMigration()
+        try await tests.testCloudStructuredContractAndRefusal()
+        try await tests.testBoundedWorkerPool()
+        try await tests.testSelectiveRetryAndRestartRecovery()
+        try await tests.testStopDoesNotBlockNextMeeting()
+        try await tests.testTerminationLeavesRecoverableJobs()
+        try await tests.testRepositoryRejectsStaleSnapshot()
+        try await tests.testDeviceFormatChangeAndInputWatchdog()
+        try await tests.testSummaryCoalescesLatestUtterances()
+        try await tests.testFullReprocessBacksUpAndReplacesOldNotes()
+        try await tests.testRetryBudgetAndMissingChunkIsolation()
+        print(
+            "PASS: 21 checks (recording, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API)"
+        )
+    }
+    func fixture(seconds: Double, amplitude: Float) throws -> (URL, URL) {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appendingPathComponent("input.caf")
+        let format = try Self.require(
+            AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1), "fixture audio format")
+        let buffer = try Self.require(
+            AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(seconds * 16000)),
+            "fixture audio buffer")
+        buffer.frameLength = buffer.frameCapacity
+        let samples = try Self.require(buffer.floatChannelData, "fixture audio samples")[0]
+        for frame in 0..<Int(buffer.frameLength) {
+            samples[frame] = amplitude * sin(Float(frame) * 0.17)
+        }
+        do {
+            let file = try AVAudioFile(forWriting: url, settings: format.settings)
+            try file.write(from: buffer)
+        }
+        return (folder, url)
+    }
+    func testChunkingPreservesFramesAndOffsets() throws {
+        let (folder, url) = try fixture(seconds: 45, amplitude: 0.25)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let chunks = try Processor.chunks(url, directory: folder)
+        try Self.check(chunks.count == 2, "chunk count")
+        try Self.check(chunks[0].1 == 0, "first chunk offset")
+        try Self.check(chunks[1].1 == 40, "second chunk offset")
+        let frames = try chunks.reduce(Int64(0)) { try $0 + AVAudioFile(forReading: $1.0).length }
+        try Self.check(frames == 720000, "frame continuity")
+    }
+    func testSilentCloudChunkDoesNotCallAPI() async throws {
+        let (folder, url) = try fixture(seconds: 1, amplitude: 0)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let segments = try await Processor.recognizeChunk(url, offset: 12, source: "マイク", cloud: true, key: "")
+        try Self.check(segments.isEmpty, "silent chunk must skip network")
+    }
+    actor ChunkCollector {
+        var values: [(URL, Double, String)] = []
+        func add(_ url: URL, _ offset: Double, _ source: String) { values.append((url, offset, source)) }
+    }
+    func testRecorderKeepsBothTracksAndFlushesTail() async throws {
+        let (folder, _) = try fixture(seconds: 1, amplitude: 0.25)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let recorder = Recorder()
+        let collector = ChunkCollector()
+        recorder.onChunk = { url, offset, source in await collector.add(url, offset, source) }
+        try recorder.prepareFiles(in: folder)
+        let format = try Self.require(
+            AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1), "recording audio format")
+        for second in 0..<13 {
+            let pcm = try Self.require(
+                AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 16000), "recording audio buffer")
+            pcm.frameLength = 16000
+            let samples = try Self.require(pcm.floatChannelData, "recording audio samples")[0]
+            for i in 0..<16000 { samples[i] = 0.25 }
+            var timing = CMSampleTimingInfo(
+                duration: CMTime(value: 1, timescale: 16000),
+                presentationTimeStamp: CMTime(value: Int64(second), timescale: 1), decodeTimeStamp: .invalid)
+            var sample: CMSampleBuffer?
+            let created = CMSampleBufferCreate(
+                allocator: kCFAllocatorDefault, dataBuffer: nil, dataReady: false, makeDataReadyCallback: nil,
+                refcon: nil, formatDescription: format.formatDescription, sampleCount: 16000, sampleTimingEntryCount: 1,
+                sampleTimingArray: &timing, sampleSizeEntryCount: 0, sampleSizeArray: nil, sampleBufferOut: &sample)
+            try Self.check(created == noErr, "sample creation")
+            guard let sample else { throw AppError.message("missing sample") }
+            let attached = CMSampleBufferSetDataBufferFromAudioBufferList(
+                sample, blockBufferAllocator: kCFAllocatorDefault, blockBufferMemoryAllocator: kCFAllocatorDefault,
+                flags: 0, bufferList: pcm.audioBufferList)
+            try Self.check(attached == noErr, "sample audio attachment")
+            CMSampleBufferSetDataReady(sample)
+            recorder.consume(sample, of: .audio)
+            recorder.consume(sample, of: .microphone)
+        }
+        try await recorder.stop()
+        let chunks = await collector.values
+        try Self.check(chunks.count == 4, "two full chunks and two tails")
+        for (filename, source) in [("system.caf", "Mac音声"), ("microphone.caf", "マイク")] {
+            let raw = try AVAudioFile(forReading: folder.appendingPathComponent(filename))
+            try Self.check(raw.length == 208000, "full track frames: " + filename)
+            let trackChunks = chunks.filter { $0.2 == source }.sorted { $0.1 < $1.1 }
+            try Self.check(trackChunks.map { $0.1 } == [0, 12], "common clock and tail offset")
+            let total = try trackChunks.reduce(Int64(0)) { try $0 + AVAudioFile(forReading: $1.0).length }
+            try Self.check(total == raw.length, "no lost final second: " + source)
+        }
+    }
+    func audioSample(at second: Int64, amplitude: Float = 0.25, sampleRate: Double = 16000) throws -> CMSampleBuffer {
+        let format = try Self.require(
+            AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1), "sample audio format")
+        let pcm = try Self.require(
+            AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(sampleRate)), "sample audio buffer")
+        pcm.frameLength = AVAudioFrameCount(sampleRate)
+        let samples = try Self.require(pcm.floatChannelData, "sample audio samples")[0]
+        for i in 0..<Int(sampleRate) { samples[i] = amplitude }
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: Int32(sampleRate)),
+            presentationTimeStamp: CMTime(value: second, timescale: 1), decodeTimeStamp: .invalid)
+        var sample: CMSampleBuffer?
+        let created = CMSampleBufferCreate(
+            allocator: kCFAllocatorDefault, dataBuffer: nil, dataReady: false, makeDataReadyCallback: nil, refcon: nil,
+            formatDescription: format.formatDescription, sampleCount: Int(sampleRate), sampleTimingEntryCount: 1,
+            sampleTimingArray: &timing, sampleSizeEntryCount: 0, sampleSizeArray: nil, sampleBufferOut: &sample)
+        try Self.check(created == noErr, "sample creation")
+        guard let sample else { throw AppError.message("missing sample") }
+        let attached = CMSampleBufferSetDataBufferFromAudioBufferList(
+            sample, blockBufferAllocator: kCFAllocatorDefault, blockBufferMemoryAllocator: kCFAllocatorDefault,
+            flags: 0, bufferList: pcm.audioBufferList)
+        try Self.check(attached == noErr, "sample attachment")
+        CMSampleBufferSetDataReady(sample)
+        return sample
+    }
+    actor StopFailure {
+        var first = true
+        func stop() throws {
+            if first {
+                first = false
+                throw AppError.message("injected stop failure")
+            }
+        }
+    }
+    func testStopFailureClosesFilesBeforeRestart() async throws {
+        let (folder, _) = try fixture(seconds: 1, amplitude: 0)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let first = folder.appendingPathComponent("first")
+        let second = folder.appendingPathComponent("second")
+        let failure = StopFailure()
+        let recorder = Recorder(stopCapture: { _ in try await failure.stop() })
+        let collector = ChunkCollector()
+        recorder.onChunk = { url, offset, source in await collector.add(url, offset, source) }
+        try recorder.prepareFiles(in: first)
+        recorder.consume(try audioSample(at: 0), of: .audio)
+        var rejected = false
+        do { try recorder.prepareFiles(in: second) } catch { rejected = true }
+        try Self.check(rejected, "active writers must block a new meeting")
+        var failed = false
+        do { try await recorder.stop() } catch { failed = true }
+        try Self.check(failed, "stop failure must be reported after cleanup")
+        let firstChunks = await collector.values
+        try Self.check(firstChunks.count == 1, "failed stop must still deliver the tail")
+        recorder.consume(try audioSample(at: 10), of: .audio)  // Late callback must be ignored.
+        try recorder.prepareFiles(in: second)
+        recorder.consume(try audioSample(at: 20), of: .audio)
+        recorder.consume(try audioSample(at: 21), of: .audio)
+        try await recorder.stop()
+        let firstFrames = try AVAudioFile(forReading: first.appendingPathComponent("system.caf")).length
+        let secondFrames = try AVAudioFile(forReading: second.appendingPathComponent("system.caf")).length
+        try Self.check(firstFrames == 16000, "previous meeting must not receive later audio")
+        try Self.check(secondFrames == 32000, "next meeting must receive its own audio")
+        let inputs = try Processor.recordingInputs(folder: second)
+        try Self.check(inputs.count == 1 && inputs[0].offset == 0, "next meeting must reset its origin")
+    }
+    func testReplayPreservesDelayedTracksAndGaps() async throws {
+        let (folder, _) = try fixture(seconds: 1, amplitude: 0)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let recorder = Recorder()
+        try recorder.prepareFiles(in: folder)
+        recorder.consume(try audioSample(at: 0), of: .audio)
+        recorder.consume(try audioSample(at: 5), of: .microphone)
+        recorder.consume(try audioSample(at: 10), of: .audio)
+        try await recorder.stop()
+        let inputs = try Processor.recordingInputs(folder: folder)
+        try Self.check(inputs.map(\.offset) == [0, 5, 10], "replay clock must preserve track delay and capture gap")
+        try Self.check(inputs.map(\.source) == ["Mac音声", "マイク", "Mac音声"], "replay order must match capture order")
+        try Self.check(URLProtocol.registerClass(MockCloudProtocol.self), "register mock transport")
+        defer { URLProtocol.unregisterClass(MockCloudProtocol.self) }
+        MockCloudProtocol.reset()
+        let segments = try await Processor.transcribe(folder: folder, cloud: true, key: "TEST", progress: { _ in })
+        try Self.check(segments.map(\.time) == [0, 5, 10], "transcription must use the persisted common clock")
+        try Self.check(MockCloudProtocol.count == 3, "all three audible chunks must be recognized")
+    }
+    func testSilentReplayDoesNotCallAPI() async throws {
+        let (folder, url) = try fixture(seconds: 1, amplitude: 0)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let recorder = Recorder()
+        try recorder.prepareFiles(in: folder)
+        recorder.consume(try audioSample(at: 0, amplitude: 0), of: .audio)
+        try await recorder.stop()
+        try Self.check(URLProtocol.registerClass(MockCloudProtocol.self), "register mock transport")
+        defer { URLProtocol.unregisterClass(MockCloudProtocol.self) }
+        MockCloudProtocol.reset()
+        let newSegments = try await Processor.transcribe(folder: folder, cloud: true, key: "TEST", progress: { _ in })
+        try Self.check(newSegments.isEmpty && MockCloudProtocol.count == 0, "new silent recording must not upload")
+        let legacy = folder.appendingPathComponent("legacy")
+        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: url, to: legacy.appendingPathComponent("system.caf"))
+        let oldSegments = try await Processor.transcribe(folder: legacy, cloud: true, key: "TEST", progress: { _ in })
+        try Self.check(oldSegments.isEmpty && MockCloudProtocol.count == 0, "legacy silent recording must not upload")
+        let localSegments = try await Processor.transcribe(folder: folder, cloud: false, key: "", progress: { _ in })
+        try Self.check(localSegments.isEmpty, "local silence must skip speech recognition too")
+    }
+    @MainActor func testStoreDistinguishesEmptyUnrecognizedAndComplete() async throws {
+        let (folder, audio) = try fixture(seconds: 1, amplitude: 0.25)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = Store(root: folder.appendingPathComponent("meetings"), loadSettings: false)
+        store.processingMode = "local"
+        func activate(_ input: Meeting) async throws {
+            var meeting = input
+            meeting.settings = store.settings
+            store.meetings = [meeting]
+            store.selected = meeting.id
+            store.recording = true
+            store.activeID = meeting.id
+            try await store.persist(meeting)
+            store.pipeline.resume(meeting.id, key: "")
+        }
+        let empty = Meeting(title: "empty")
+        try await activate(empty)
+        await store.stop()
+        try await store.pipeline.waitUntilIdle()
+        try Self.check(store.meetings[0].status == "録音なし", "missing audio cannot be complete")
+        try Self.check(!store.status.contains("保存しました"), "missing audio must not show success")
+        try Self.check(store.activeID == nil && !store.busy, "empty stop must release the UI")
+
+        let silent = Meeting(title: "silent")
+        try await activate(silent)
+        try store.recorder.prepareFiles(in: store.folder(silent.id))
+        store.recorder.consume(try audioSample(at: 0, amplitude: 0), of: .audio)
+        await store.stop()
+        try await store.pipeline.waitUntilIdle()
+        try Self.check(store.meetings[0].status == "録音済み・認識結果なし", "saved audio without words cannot be complete")
+        try Self.check(store.meetings[0].minutes.isEmpty, "empty transcript must not produce minutes")
+        await store.process()
+        try await store.pipeline.waitUntilIdle()
+        try Self.check(store.meetings[0].status == "録音済み・認識結果なし", "replay must use the same empty-result state")
+
+        var complete = Meeting(title: "complete")
+        let jobID = stableID("system.caf")
+        complete.jobs = [
+            TranscriptionJob(id: jobID, filename: "system.caf", offset: 0, source: "Mac音声", state: .completed)
+        ]
+        complete.segments = [Segment(id: jobID + ":0", time: 0, source: "Mac音声", text: "次回までに確認します")]
+        try await activate(complete)
+        try FileManager.default.copyItem(at: audio, to: store.folder(complete.id).appendingPathComponent("system.caf"))
+        await store.stop()
+        try await store.pipeline.waitUntilIdle()
+        try Self.check(store.meetings[0].status == "完了・端末内", "real audio and transcript can complete")
+        try Self.check(store.meetings[0].minutes.contains("アクションアイテム"), "successful stop must produce minutes")
+        let saved = try JSONDecoder().decode(
+            Meeting.self, from: Data(contentsOf: store.folder(complete.id).appendingPathComponent("meeting.json")))
+        try Self.check(saved.status == store.meetings[0].status, "completion state must be persisted")
+    }
+    func testLocalMinutesKeepsEvidenceAndDoesNotInventOwner() async throws {
+        let segments = [
+            Segment(time: 12, source: "Mac音声", text: "次回までに検討します"), Segment(time: 24, source: "マイク", text: "この案に決定します"),
+        ]
+        let text = try await Processor.summarize(segments, cloud: false, key: "", model: "")
+        try Self.check(text.contains("[24秒] この案に決定します"), "decision evidence")
+        try Self.check(text.contains("[12秒] 次回までに検討します"), "pending evidence")
+        try Self.check(text.contains("候補"), "unconfirmed candidate label")
+        let lastSection = text.components(separatedBy: "\n## ").last ?? ""
+        try Self.check(lastSection.hasPrefix("アクションアイテム\n"), "actions must be the final section")
+        try Self.check(lastSection.contains("- [ ] 次回までに検討します"), "action checklist")
+        try Self.check(lastSection.contains("担当者: 不明 / 期限: 不明"), "no invented owner or deadline")
+    }
+}
+
+// No real API calls are made by the regression tests.
+final class MockCloudProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var calls = 0
+    static var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return calls
+    }
+    static func reset() {
+        lock.lock()
+        calls = 0
+        lock.unlock()
+    }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.lock.lock()
+        Self.calls += 1
+        Self.lock.unlock()
+        guard request.url?.path == "/v1/audio/transcriptions" else {
+            client?.urlProtocol(self, didFailWithError: AppError.message("unexpected network request"))
+            return
+        }
+        guard let url = request.url,
+            let response = HTTPURLResponse(
+                url: url, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])
+        else {
+            client?.urlProtocol(self, didFailWithError: AppError.message("invalid mock response"))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data("{\"text\":\"確認します\"}".utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
