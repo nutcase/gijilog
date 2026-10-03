@@ -33,6 +33,21 @@ import SwiftUI
 }
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var store: Store?
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Tahoe wraps legacy ICNS artwork in another tile. Draw the bundled artwork directly in the
+        // running app's Dock tile; keep the bundle icon for Finder and earlier macOS versions.
+        guard #available(macOS 26, *),
+            let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+            let image = NSImage(contentsOf: url)
+        else { return }
+        let tile = NSApplication.shared.dockTile
+        let view = NSImageView(frame: NSRect(origin: .zero, size: tile.size))
+        view.autoresizingMask = [.width, .height]
+        view.image = image
+        view.imageScaling = .scaleProportionallyUpOrDown
+        tile.contentView = view
+        tile.display()
+    }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let store else { return .terminateNow }
         Task {

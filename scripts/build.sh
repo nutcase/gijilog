@@ -3,8 +3,21 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ./scripts/check.sh
 APP="$PWD/dist/ギジログ.app"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/Gijilog "$APP/Contents/MacOS/Gijilog"
+# Package the chosen artwork at every standard macOS icon size, including Retina variants.
+iconset_dir="$PWD/.build/AppIcon.iconset"
+mkdir -p "$iconset_dir"
+for icon_size in 16 32 128 256 512; do
+  for icon_scale in 1 2; do
+    icon_pixels=$((icon_size * icon_scale))
+    icon_suffix=""
+    if (( icon_scale == 2 )); then icon_suffix="@2x"; fi
+    sips -z "$icon_pixels" "$icon_pixels" Resources/AppIcon.png \
+      --out "$iconset_dir/icon_${icon_size}x${icon_size}${icon_suffix}.png" >/dev/null
+  done
+done
+iconutil --convert icns "$iconset_dir" --output "$APP/Contents/Resources/AppIcon.icns"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -13,6 +26,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>io.github.nutcase.gijilog</string>
 <key>CFBundleName</key><string>ギジログ</string>
 <key>CFBundleDisplayName</key><string>ギジログ</string>
+<key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>
 <key>CFBundleDevelopmentRegion</key><string>ja</string>
