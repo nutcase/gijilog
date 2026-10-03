@@ -40,6 +40,7 @@ import UniformTypeIdentifiers
     @Published private(set) var tagFilter: [String] = []  // The list shows meetings that have every one of these.
     @Published var tagEditor: UUID?  // The meeting whose tag field is open.
     @Published var settingsTab = "一般"
+    @Published var liveTab = "議事録"  // The compact window shows the minutes or the transcript.
     @Published var searchText = ""
     @Published var focusesSearch = false  // Set by ⌘F; the sidebar moves the cursor to its search field.
     @Published private(set) var searchHits: [UUID: SearchHit] = [:]

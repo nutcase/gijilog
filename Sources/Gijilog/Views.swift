@@ -1071,6 +1071,7 @@ struct TranscriptPanel: View {
     @Environment(\.searchTerms) private var terms
     @StateObject private var follow = TranscriptFollow()
     let meeting: Meeting
+    var showsHeader = true  // The compact window shows the count in its tab bar instead.
     var body: some View {
         let live = meeting.id == store.activeID
         let matches =
@@ -1080,18 +1081,20 @@ struct TranscriptPanel: View {
                 terms.contains { segment.text.range(of: $0, options: MeetingSearch.options) != nil }
             }
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("文字起こし").font(.headline)
-                Spacer()
-                let pending = meeting.jobs.filter { $0.state == .pending || $0.state == .running }.count
-                if !terms.isEmpty {
-                    Text("一致 \(matches.count)件").font(.caption.weight(.semibold)).foregroundStyle(Palette.yamabuki)
+            if showsHeader {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("文字起こし").font(.headline)
+                    Spacer()
+                    let pending = meeting.jobs.filter { $0.state == .pending || $0.state == .running }.count
+                    if !terms.isEmpty {
+                        Text("一致 \(matches.count)件").font(.caption.weight(.semibold)).foregroundStyle(Palette.yamabuki)
+                    }
+                    Text(pending > 0 ? "\(meeting.segments.count)件・処理待ち \(pending)件" : "\(meeting.segments.count)件")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-                Text(pending > 0 ? "\(meeting.segments.count)件・処理待ち \(pending)件" : "\(meeting.segments.count)件")
-                    .font(.caption).foregroundStyle(.secondary)
+                .padding(.horizontal, 16).padding(.vertical, 12)
+                Rectangle().fill(Palette.ai).frame(height: 1)
             }
-            .padding(.horizontal, 16).padding(.vertical, 12)
-            Rectangle().fill(Palette.ai).frame(height: 1)
             if meeting.segments.isEmpty {
                 Text(live ? "最初の発言は12秒ほどで表示されます。" : "文字起こしはまだありません。")
                     .font(.callout).foregroundStyle(.secondary).padding(16)
@@ -1381,8 +1384,14 @@ struct LiveWindow: View {
         VStack(spacing: 0) {
             LiveHeader(meeting: store.recording ? meeting : nil)
             if let meeting {
-                LiveMinutes(meeting: meeting)
-                LiveTicker(meeting: meeting, live: store.recording)
+                LiveTabBar(meeting: meeting)
+                if store.liveTab == "文字起こし" {
+                    // The full transcript, following the newest speech like the full window's panel.
+                    TranscriptPanel(meeting: meeting, showsHeader: false)
+                } else {
+                    LiveMinutes(meeting: meeting)
+                    LiveTicker(meeting: meeting, live: store.recording)
+                }
             } else {
                 Text("録音を開始すると、ここに議事録が書き足されていきます。")
                     .font(.callout).foregroundStyle(.secondary)
@@ -1587,6 +1596,29 @@ struct LiveSection: View {
     }
 }
 // The most recent utterance, so it is clear the meeting is being heard.
+// Switches the compact window between the minutes and the whole transcript.
+struct LiveTabBar: View {
+    @EnvironmentObject var store: Store
+    let meeting: Meeting
+    var body: some View {
+        let pending = meeting.jobs.filter { $0.state == .pending || $0.state == .running }.count
+        HStack(spacing: 10) {
+            Picker("表示", selection: $store.liveTab) {
+                Text("議事録").tag("議事録")
+                Text("文字起こし \(meeting.segments.count)").tag("文字起こし")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            Spacer(minLength: 0)
+            if pending > 0 {
+                Text("処理待ち \(pending)件").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 14).padding(.bottom, 10)
+        .background(Palette.kon)
+    }
+}
 struct LiveTicker: View {
     let meeting: Meeting
     let live: Bool
