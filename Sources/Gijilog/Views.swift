@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 // 藍と紅: the minutes are a paper sheet on an indigo desk, filled in as the meeting goes.
@@ -331,64 +332,145 @@ struct RecorderBar: View {
         }
     }
 }
-struct RecordingLamp: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    var body: some View {
-        let lamp = Circle().fill(Palette.beni).frame(width: 14, height: 14)
-            .shadow(color: Palette.beni.opacity(0.7), radius: 6)
-        Group {
-            if reduceMotion {
-                lamp
-            } else {
-                lamp.phaseAnimator([1.0, 0.3]) { view, opacity in
-                    view.opacity(opacity)
-                } animation: { _ in
-                    .easeInOut(duration: 0.9)
-                }
-            }
-        }
-        .accessibilityLabel("録音中")
+// The pulse is a Core Animation layer animation, run by the window server rather than by SwiftUI redrawing the
+// lamp every frame. (A SwiftUI phaseAnimator here cost about 25% CPU for the whole recording; this costs ~0%.)
+struct RecordingLamp: NSViewRepresentable {
+    func makeNSView(context: Context) -> PulsingLampView { PulsingLampView() }
+    func updateNSView(_ view: PulsingLampView, context: Context) {
+        view.pulses = !context.environment.accessibilityReduceMotion
+        view.setAccessibilityLabel("録音中")
+    }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: PulsingLampView, context: Context) -> CGSize? {
+        CGSize(width: 14, height: 14)
     }
 }
+final class PulsingLampView: NSView {
+    var pulses = true { didSet { updatePulse() } }
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        guard let layer else { return }
+        let red = NSColor(Palette.beni).cgColor
+        layer.backgroundColor = red
+        layer.shadowColor = red
+        layer.shadowOpacity = 0.7
+        layer.shadowRadius = 6
+        layer.shadowOffset = .zero
+        layer.masksToBounds = false
+        setAccessibilityElement(true)
+        setAccessibilityRole(.image)
+    }
+    required init?(coder: NSCoder) { nil }
+    override func layout() {
+        super.layout()
+        layer?.cornerRadius = bounds.width / 2
+        layer?.shadowPath = CGPath(ellipseIn: bounds, transform: nil)
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updatePulse()
+    }
+    private func updatePulse() {
+        guard let layer else { return }
+        guard pulses, window != nil else {
+            layer.removeAnimation(forKey: "pulse")
+            return
+        }
+        guard layer.animation(forKey: "pulse") == nil else { return }
+        let pulse = CABasicAnimation(keyPath: "opacity")
+        pulse.fromValue = 1.0
+        pulse.toValue = 0.3
+        pulse.duration = 0.9
+        pulse.autoreverses = true
+        pulse.repeatCount = .infinity
+        pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.add(pulse, forKey: "pulse")
+    }
+}
+// The meter is not observed by SwiftUI: each waveform subscribes to its track and moves its own layers,
+// so 10 Hz levels never re-render the view tree. (A SwiftUI Canvas here cost about 17% CPU while recording.)
 struct LevelMeters: View {
-    @ObservedObject var meter: LevelMeter
+    let meter: LevelMeter
     var body: some View {
         HStack(spacing: 22) {
-            TrackWaveform(label: "Mac音声", systemImage: "speaker.wave.2.fill", levels: meter.system, tint: Palette.paper)
-            TrackWaveform(label: "マイク", systemImage: "mic.fill", levels: meter.microphone, tint: Palette.asagi)
+            TrackWaveform(
+                label: "Mac音声", systemImage: "speaker.wave.2.fill", levels: meter.$system, tint: Palette.paper)
+            TrackWaveform(label: "マイク", systemImage: "mic.fill", levels: meter.$microphone, tint: Palette.asagi)
         }
         .fixedSize()
     }
 }
-// The last few seconds of a track as a mirrored bar waveform; older samples fade to the left.
-// Levels are drawn on a -60...0 dBFS scale, so a microphone that is not picking up a voice stays flat.
 struct TrackWaveform: View {
     let label: String
     let systemImage: String
-    let levels: [Float]
+    let levels: Published<[Float]>.Publisher
     let tint: Color
     var width: CGFloat = 168
     var height: CGFloat = 30
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             Label(label, systemImage: systemImage).font(.caption).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
-            Canvas { context, size in
-                let step = size.width / CGFloat(max(levels.count, 1))
-                for (i, level) in levels.enumerated() {
-                    let height = max(2, CGFloat(Self.loudness(level)) * size.height)
-                    let bar = CGRect(
-                        x: CGFloat(i) * step + step * 0.2, y: (size.height - height) / 2, width: step * 0.6,
-                        height: height)
-                    let age = Double(i + 1) / Double(levels.count)
-                    context.fill(
-                        Path(roundedRect: bar, cornerRadius: step * 0.3), with: .color(tint.opacity(0.25 + 0.75 * age)))
-                }
-            }
-            .frame(width: width, height: height)
+                .accessibilityHidden(true)
+            WaveformBars(label: label, levels: levels, tint: tint).frame(width: width, height: height)
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(label)
-        .accessibilityValue("\(Int(Self.loudness(levels.last ?? 0) * 100))%")
+    }
+}
+struct WaveformBars: NSViewRepresentable {
+    let label: String
+    let levels: Published<[Float]>.Publisher
+    let tint: Color
+    func makeNSView(context: Context) -> WaveformView {
+        let view = WaveformView(tint: NSColor(tint))
+        view.setAccessibilityLabel(label)
+        view.follow(levels)
+        return view
+    }
+    func updateNSView(_ view: WaveformView, context: Context) {}
+}
+// The last few seconds of a track as a mirrored bar waveform; older samples fade to the left.
+// Levels are drawn on a -60...0 dBFS scale, so a microphone that is not picking up a voice stays flat.
+final class WaveformView: NSView {
+    private var bars: [CALayer] = []
+    private var levels = [Float](repeating: 0, count: LevelMeter.length)
+    private var subscription: AnyCancellable?
+    init(tint: NSColor) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        for i in 0..<LevelMeter.length {
+            let bar = CALayer()
+            let age = CGFloat(i + 1) / CGFloat(LevelMeter.length)
+            bar.backgroundColor = tint.withAlphaComponent(0.25 + 0.75 * age).cgColor
+            layer?.addSublayer(bar)
+            bars.append(bar)
+        }
+        setAccessibilityElement(true)
+        setAccessibilityRole(.levelIndicator)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+    func follow(_ publisher: Published<[Float]>.Publisher) {
+        subscription = publisher.receive(on: DispatchQueue.main).sink { [weak self] levels in
+            guard let self else { return }
+            self.levels = levels
+            self.placeBars()
+            self.setAccessibilityValue("\(Int(Self.loudness(levels.last ?? 0) * 100))%")
+        }
+    }
+    override func layout() {
+        super.layout()
+        placeBars()
+    }
+    private func placeBars() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)  // Jump to each level; implicit animations would run nonstop.
+        let step = bounds.width / CGFloat(bars.count)
+        for (i, bar) in bars.enumerated() {
+            let level = i < levels.count ? levels[i] : 0
+            let height = max(2, CGFloat(Self.loudness(level)) * bounds.height)
+            bar.frame = CGRect(
+                x: CGFloat(i) * step + step * 0.2, y: (bounds.height - height) / 2, width: step * 0.6, height: height)
+            bar.cornerRadius = step * 0.3
+        }
+        CATransaction.commit()
     }
     static func loudness(_ level: Float) -> Double {
         guard level > 0 else { return 0 }
@@ -996,15 +1078,14 @@ struct LiveHeader: View {
     }
 }
 struct LiveMeters: View {
-    @ObservedObject var meter: LevelMeter
+    let meter: LevelMeter
     var body: some View {
         HStack(spacing: 16) {
             TrackWaveform(
-                label: "Mac音声", systemImage: "speaker.wave.2.fill", levels: meter.system, tint: Palette.paper,
-                width: 140,
-                height: 20)
+                label: "Mac音声", systemImage: "speaker.wave.2.fill", levels: meter.$system, tint: Palette.paper,
+                width: 140, height: 20)
             TrackWaveform(
-                label: "マイク", systemImage: "mic.fill", levels: meter.microphone, tint: Palette.asagi, width: 140,
+                label: "マイク", systemImage: "mic.fill", levels: meter.$microphone, tint: Palette.asagi, width: 140,
                 height: 20)
         }
     }
