@@ -73,6 +73,10 @@ import UniformTypeIdentifiers
         discardFolder: (@Sendable (URL) throws -> Void)? = nil
     ) {
         self.recorder = recorder
+        if loadSettings {
+            Self.adoptPreviousSettings(
+                into: .standard, from: Self.previousBundleIDs.compactMap { UserDefaults(suiteName: $0) })
+        }
         let root =
             root ?? UserDefaults.standard.string(forKey: "storageFolder").map(URL.init(fileURLWithPath:))
             ?? Self.defaultRoot
@@ -87,7 +91,7 @@ import UniformTypeIdentifiers
             model = savedModel == "gpt-4.1-mini" ? "gpt-6-sol" : (savedModel ?? model)
             ready = false
             Task {
-                await moveLegacyMeetings()
+                await moveMeetings(from: Self.previousLocations)
                 await recover()
             }
         }
@@ -141,29 +145,60 @@ import UniformTypeIdentifiers
     func folder(_ id: UUID) -> URL {
         root.appendingPathComponent(meetings.first { $0.id == id }?.folderName ?? id.uuidString)
     }
-    // Meetings used to live in Application Support under UUID folders. Move them once into the save location,
-    // renamed by date and title, so the audio and minutes are easy to find.
-    private func moveLegacyMeetings() async {
-        let legacy = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Minutes/Meetings")
-        let target = root
-        guard FileManager.default.fileExists(atPath: legacy.path) else { return }
-        let result = await Task.detached { () -> Result<[String], Error> in
-            Result {
-                try MeetingRepository.moveMeetings(
-                    from: legacy, to: target, rename: { meetingFolderName(date: $0.date, title: $0.title) })
+    // Earlier versions: the app was キロクル (bundle ID local.minutes.kirokuru, default folder ~/Documents/キロクル),
+    // and before that local.minutes.desktop, which kept meetings in Application Support under UUID folders.
+    nonisolated static let previousBundleIDs = ["local.minutes.kirokuru", "local.minutes.desktop"]
+    struct PreviousLocation: Sendable {
+        let folder: URL
+        let renamesFolders: Bool  // UUID-named folders get date-and-title names.
+    }
+    nonisolated static var previousLocations: [PreviousLocation] {
+        let manager = FileManager.default
+        return [
+            PreviousLocation(
+                folder: manager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                    .appendingPathComponent("Minutes/Meetings"), renamesFolders: true),
+            PreviousLocation(
+                folder: manager.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("キロクル"),
+                renamesFolders: false),
+        ]
+    }
+    /// Copies settings the new bundle ID does not have yet, so a custom save location survives the rename.
+    nonisolated static func adoptPreviousSettings(into defaults: UserDefaults, from previous: [UserDefaults]) {
+        for key in ["storageFolder", "summaryModel", "microphone"] where defaults.object(forKey: key) == nil {
+            if let value = previous.lazy.compactMap({ $0.object(forKey: key) }).first {
+                defaults.set(value, forKey: key)
             }
-        }.value
-        switch result {
-        case .success(let failures) where !failures.isEmpty:
-            error =
-                "一部の会議を新しい保存先へ移動できませんでした。元の場所に残っています: \(legacy.path)\n"
-                + failures.joined(separator: "\n")
-        case .failure(let failure):
-            error =
-                "保存先（\(displayPath(target))）に書き込めません。これまでの会議は元の場所に残っています。\n"
-                + failure.localizedDescription
-        default: break
+        }
+    }
+    // Moves meetings from earlier default locations into the save location once, so none disappear from the list.
+    func moveMeetings(from locations: [PreviousLocation]) async {
+        let target = root
+        for location in locations {
+            let source = location.folder
+            guard source.standardizedFileURL != target.standardizedFileURL,
+                FileManager.default.fileExists(atPath: source.path)
+            else { continue }
+            let renames = location.renamesFolders
+            let result = await Task.detached { () -> Result<[String], Error> in
+                Result {
+                    try MeetingRepository.moveMeetings(
+                        from: source, to: target,
+                        rename: renames ? { meetingFolderName(date: $0.date, title: $0.title) } : nil)
+                }
+            }.value
+            switch result {
+            case .success(let failures) where !failures.isEmpty:
+                error =
+                    "一部の会議を新しい保存先へ移動できませんでした。元の場所に残っています: \(source.path)\n"
+                    + failures.joined(separator: "\n")
+            case .failure(let failure):
+                error =
+                    "保存先（\(displayPath(target))）に書き込めません。これまでの会議は元の場所に残っています。\n"
+                    + failure.localizedDescription
+                return
+            default: break
+            }
         }
     }
     // Changing the save location moves every meeting with it, so the list always matches one folder.
@@ -261,7 +296,6 @@ import UniformTypeIdentifiers
             meetings = saved
             for meeting in saved { revisions[meeting.id] = meeting.revision }
             await repository.writeMissingDocuments(saved)
-            mixDown(saved.filter { $0.capture != .recording && $0.hasAudio == true }.map(\.id), onlyMissing: true)
             selected = meetings.first?.id
             if !failures.isEmpty { error = "一部の会議を読み込めませんでした。保存場所のデータは保持しています。\n" + failures.joined(separator: "\n") }
             for meeting in saved {
@@ -307,6 +341,8 @@ import UniformTypeIdentifiers
                     try await checkpoint(id)
                 }
             }
+            // Only now are interrupted recordings marked and their audio found, so they get 録音.m4a on this launch.
+            mixDown(meetings.filter { $0.capture != .recording && $0.hasAudio == true }.map(\.id), onlyMissing: true)
         } catch { self.error = error.localizedDescription }
     }
     func discoverJobs(_ id: UUID) async throws {
@@ -543,6 +579,22 @@ import UniformTypeIdentifiers
         }
     }
     func waitForMixdowns() async { await mixdowns?.value }
+    /// Retries only the failed transcription chunks, also while the meeting is still being recorded.
+    func retryFailedJobs(_ id: UUID) {
+        guard hasKey else {
+            error = "再試行するには、設定でOpenAI APIキーを保存してください。"
+            return
+        }
+        change(id) { meeting in
+            for i in meeting.jobs.indices where meeting.jobs[i].state == .failed {
+                meeting.jobs[i].state = .pending
+                meeting.jobs[i].attempts = 0
+                meeting.jobs[i].lastError = nil
+                meeting.jobs[i].retryAfter = nil
+            }
+        }
+        pipeline.resume(id, key: key)
+    }
     func isProcessing(_ id: UUID) -> Bool { preparingIDs.contains(id) || pipeline.isProcessing(id) }
     func canDelete(_ id: UUID) -> Bool { ready && id != activeID && !busy && !isProcessing(id) }
     /// Moves the meeting's audio, transcript and minutes to the Trash.

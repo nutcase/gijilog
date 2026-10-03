@@ -233,10 +233,11 @@ enum AudioMixdown {
             FileManager.default.fileExists(atPath: $0.url.path)
         }
         for input in inputs {
+            // A chunk cut short by a forced quit may be unreadable; mix the rest instead of giving up.
             let asset = AVURLAsset(url: input.url)
-            guard let source = try await asset.loadTracks(withMediaType: .audio).first else { continue }
-            let duration = try await asset.load(.duration)
-            guard duration > .zero else { continue }
+            guard let source = try? await asset.loadTracks(withMediaType: .audio).first,
+                let duration = try? await asset.load(.duration), duration > .zero
+            else { continue }
             guard
                 let track = tracks[input.source]
                     ?? composition.addMutableTrack(
@@ -248,12 +249,12 @@ enum AudioMixdown {
             let range = CMTimeRange(start: .zero, duration: duration)
             let start = CMTime(seconds: input.offset, preferredTimescale: 48_000)
             if track.segments.isEmpty {
-                try track.insertTimeRange(range, of: source, at: .zero)
+                guard (try? track.insertTimeRange(range, of: source, at: .zero)) != nil else { continue }
                 if start > .zero { track.insertEmptyTimeRange(CMTimeRange(start: .zero, duration: start)) }
             } else {
                 let end = track.timeRange.end
                 if start > end { track.insertEmptyTimeRange(CMTimeRange(start: end, end: start)) }
-                try track.insertTimeRange(range, of: source, at: max(start, end))
+                try? track.insertTimeRange(range, of: source, at: max(start, end))
             }
         }
         guard !tracks.isEmpty, composition.duration > .zero else { return }

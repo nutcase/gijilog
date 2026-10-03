@@ -28,11 +28,6 @@ extension Font {
         .custom(bold ? "HiraMinProN-W6" : "HiraMinProN-W3", size: size)
     }
 }
-func clock(_ seconds: Double) -> String {
-    let s = max(0, Int(seconds))
-    return s >= 3600
-        ? String(format: "%d:%02d:%02d", s / 3600, s % 3600 / 60, s % 60) : String(format: "%02d:%02d", s / 60, s % 60)
-}
 private let longDate: DateFormatter = {
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: "ja_JP")
@@ -450,9 +445,11 @@ struct MinutesDesk: View {
                     Text(meeting.minutes).font(.system(size: 14)).lineSpacing(5).padding(.top, 24)
                 } else {
                     Text(
-                        meeting.id == store.activeID
-                            ? "最初の議事録は、録音を始めて30秒ほどで届きます。"
-                            : "文字起こしが済むと、ここに要約・決定事項・アクションアイテムがまとまります。"
+                        meeting.transcriptionFailure != nil && meeting.segments.isEmpty
+                            ? "文字起こしができていないため、議事録はまだありません。"
+                            : meeting.id == store.activeID
+                                ? "最初の議事録は、録音を始めて30秒ほどで届きます。"
+                                : "文字起こしが済むと、ここに要約・決定事項・アクションアイテムがまとまります。"
                     )
                     .font(.callout).foregroundStyle(.secondary).padding(.top, 24)
                 }
@@ -498,14 +495,12 @@ struct MinutesDesk: View {
         }
     }
     @ViewBuilder private var notices: some View {
-        let failed = meeting.jobs.filter { $0.state == .failed }
         VStack(alignment: .leading, spacing: 8) {
             if let message = meeting.captureError { Notice(text: message) }
-            if let first = failed.first {
+            if let failure = meeting.transcriptionFailure {
                 Notice(
-                    text:
-                        "\(first.source) \(clock(first.offset)) からの文字起こしに失敗しました（\(failed.count)件）。\(first.lastError ?? "")",
-                    actionTitle: canResume ? "未処理を再開" : nil, action: resume)
+                    text: failure, actionTitle: store.hasKey ? "再試行" : nil,
+                    action: { store.retryFailedJobs(meeting.id) })
             }
             if store.pipeline.summaryFailed(meeting.id) {
                 Notice(
@@ -978,12 +973,19 @@ struct LiveMinutes: View {
                         Circle().fill(Palette.asagi).frame(width: 6, height: 6)
                         Text("\(updated.formatted(date: .omitted, time: .standard)) の更新で加わった・変わった項目")
                             .foregroundStyle(.secondary)
+                    } else if meeting.transcriptionFailure != nil && meeting.segments.isEmpty {
+                        Text("文字起こしができていないため、議事録はまだありません。").foregroundStyle(Palette.yamabuki)
                     } else {
                         Text(store.recording ? "最初の議事録は、録音を始めて30秒ほどで届きます。" : "議事録はまだありません。")
                             .foregroundStyle(.secondary)
                     }
                 }
                 .font(.caption)
+                if let failure = meeting.transcriptionFailure {
+                    Notice(
+                        text: failure, actionTitle: store.hasKey ? "再試行" : nil,
+                        action: { store.retryFailedJobs(meeting.id) })
+                }
                 if store.pipeline.summaryFailed(meeting.id) {
                     Notice(text: "議事録の更新に失敗しました。間隔を空けて自動で再試行します。")
                 }
@@ -1041,8 +1043,12 @@ struct LiveTicker: View {
                 Text(clock(last.time)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 Text(last.text).font(.callout).lineLimit(2)
             } else {
-                Text(live ? "最初の発言は12秒ほどで表示されます。" : "文字起こしはまだありません。")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text(
+                    meeting.transcriptionFailure != nil
+                        ? "文字起こしに失敗しています。上の表示から再試行できます。"
+                        : live ? "最初の発言は12秒ほどで表示されます。" : "文字起こしはまだありません。"
+                )
+                .font(.caption).foregroundStyle(meeting.transcriptionFailure != nil ? Palette.yamabuki : .secondary)
             }
             Spacer(minLength: 0)
         }

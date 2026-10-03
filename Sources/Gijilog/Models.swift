@@ -107,6 +107,19 @@ struct Meeting: Codable, Identifiable {
     }
 }
 
+func clock(_ seconds: Double) -> String {
+    let s = max(0, Int(seconds))
+    return s >= 3600
+        ? String(format: "%d:%02d:%02d", s / 3600, s % 3600 / 60, s % 60) : String(format: "%02d:%02d", s / 60, s % 60)
+}
+extension Meeting {
+    /// Failed transcription chunks as a sentence for either window, or nil when nothing failed.
+    var transcriptionFailure: String? {
+        let failed = jobs.filter { $0.state == .failed }
+        guard let first = failed.first else { return nil }
+        return "\(first.source) \(clock(first.offset)) からの文字起こしに失敗しました（\(failed.count)件）。\(first.lastError ?? "")"
+    }
+}
 // A name that is safe as a file or folder name in Finder.
 func fileSafeName(_ text: String, fallback: String) -> String {
     let unsafe = CharacterSet(charactersIn: "/\\:").union(.newlines).union(.controlCharacters)
