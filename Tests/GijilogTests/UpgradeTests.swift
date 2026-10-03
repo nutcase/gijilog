@@ -8,7 +8,8 @@ extension ProcessingTests {
         let store = Store(root: root, loadSettings: false)
         store.key = "TEST"
         store.pipeline = ProcessingPipeline(
-            store: store, recognize: { _, offset, source, _ in [Segment(time: offset, source: source, text: "確認します")] },
+            store: store, review: MinutesEngine.stubReview,
+            recognize: { _, offset, source, _ in [Segment(time: offset, source: source, text: "確認します")] },
             summarize: MinutesEngine.stubSummary)
         var meeting = Meeting(title: "live")  // Still recording.
         meeting.settings = SessionSettings()
@@ -78,7 +79,8 @@ extension ProcessingTests {
         try JSONEncoder().encode(manifest).write(to: folder.appendingPathComponent("recording.json"))
         let store = Store(root: save, loadSettings: false)
         store.key = "TEST"
-        store.pipeline = ProcessingPipeline(store: store, recognize: { _, _, _, _ in [] })
+        store.pipeline = ProcessingPipeline(
+            store: store, review: MinutesEngine.stubReview, recognize: { _, _, _, _ in [] })
         await store.recover()
         try await store.waitUntilIdle()
         await store.waitForBackgroundWork()
@@ -96,7 +98,8 @@ extension ProcessingTests {
         let store = Store(root: root.appendingPathComponent("save"), loadSettings: false)
         store.key = "TEST"
         store.pipeline = ProcessingPipeline(
-            store: store, recognize: { _, _, _, _ in [] }, summarize: MinutesEngine.stubSummary)
+            store: store, review: MinutesEngine.stubReview, recognize: { _, _, _, _ in [] },
+            summarize: MinutesEngine.stubSummary)
         var live = Meeting(title: "live")
         live.settings = SessionSettings()
         store.meetings = [live]

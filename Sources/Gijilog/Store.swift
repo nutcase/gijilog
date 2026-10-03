@@ -331,11 +331,16 @@ import UniformTypeIdentifiers
                     // Settled meetings are left untouched; only unfinished work, or audio never inspected, is recovered.
                     let needsRecovery =
                         interrupted || (meeting.notes == nil && meeting.hasAudio == nil)
+                        || meeting.finalReviewPending == true
                         || meeting.jobs.contains { $0.state == .pending || $0.state == .running }
                         || !MinutesEngine.batch(meeting.segments, state: meeting.notes ?? MinutesState()).isEmpty
                     guard needsRecovery else { continue }
                     do {
-                        try await discoverJobs(id)
+                        if interrupted || meeting.finalReviewPending != true || meeting.hasAudio == nil
+                            || meeting.jobs.contains(where: { $0.state == .pending || $0.state == .running })
+                        {
+                            try await discoverJobs(id)
+                        }
                         if hasKey {
                             try await checkpoint(id)
                             pipeline.resume(id, key: key)
@@ -394,6 +399,7 @@ import UniformTypeIdentifiers
         let untitled = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         var meeting = Meeting(title: untitled ? "会議 \(Date().formatted(date: .numeric, time: .shortened))" : title)
         meeting.settings = settings
+        meeting.finalReviewPending = true
         meeting.folderName =
             MeetingRepository.uniqueFolder(
                 in: root, name: meetingFolderName(date: meeting.date, title: untitled ? "会議" : meeting.title)
@@ -500,6 +506,16 @@ import UniformTypeIdentifiers
             return
         }
         do {
+            // A failed final review only needs text, even if working audio has already been removed.
+            if !rebuild, let meeting = meetings.first(where: { $0.id == id }),
+                meeting.finalReviewPending == true, !meeting.segments.isEmpty,
+                meeting.jobs.allSatisfy({ $0.state == .completed })
+            {
+                try await checkpoint(id)
+                pipeline.resume(id, key: key)
+                pipeline.requestSummary(id, force: true)
+                return
+            }
             let folder = folder(id)
             // Without its working audio, a meeting is transcribed again from 録音.m4a (both tracks mixed).
             let fromMix = try await Task.detached { try Self.workingAudioMissing(folder) }.value
@@ -521,6 +537,7 @@ import UniformTypeIdentifiers
             }
             try await discoverJobs(id)
             change(id) { meeting in
+                meeting.finalReviewPending = true
                 if rebuild || meeting.settings == nil {
                     meeting.settings = settings
                     meeting.notes = nil
@@ -536,6 +553,30 @@ import UniformTypeIdentifiers
                 }
                 meeting.status = "録音済み・未処理を再開中"
             }
+            try await checkpoint(id)
+            pipeline.resume(id, key: key)
+            pipeline.requestSummary(id, force: true)
+        } catch { self.error = error.localizedDescription }
+    }
+    /// Revisit the saved transcript without uploading or transcribing the audio again.
+    func refineMinutes(_ id: UUID) async {
+        guard ready, !shuttingDown, !busy, id != activeID, !isProcessing(id),
+            let meeting = meetings.first(where: { $0.id == id }), !meeting.segments.isEmpty
+        else { return }
+        guard hasKey else {
+            error = "議事録を仕上げるには、設定でOpenAI APIキーを保存してください。"
+            return
+        }
+        preparingIDs.insert(id)
+        defer { preparingIDs.remove(id) }
+        change(id) {
+            $0.finalReviewPending = true
+            $0.notes?.reviewedSegmentIDs = nil
+            $0.notes?.finalizedAt = nil
+            $0.settings = settings
+            $0.status = "録音済み・議事録を仕上げ中"
+        }
+        do {
             try await checkpoint(id)
             pipeline.resume(id, key: key)
             pipeline.requestSummary(id, force: true)
@@ -594,6 +635,7 @@ import UniformTypeIdentifiers
         meeting.date = date
         meeting.folderName = folderName
         meeting.settings = settings
+        meeting.finalReviewPending = true
         meeting.capture = .stopped
         meeting.hasAudio = true
         meeting.status = "録音ファイルを文字起こし中"
@@ -640,7 +682,7 @@ import UniformTypeIdentifiers
     func isComplete(_ meeting: Meeting) -> Bool {
         meeting.capture != .recording && !meeting.segments.isEmpty && meeting.jobs.allSatisfy { $0.state == .completed }
             && MinutesEngine.batch(meeting.segments, state: meeting.notes ?? MinutesState()).isEmpty
-            && !pipeline.summaryFailed(meeting.id)
+            && meeting.finalReviewPending != true && !pipeline.summaryFailed(meeting.id)
     }
     /// Complete meetings whose working audio can go: 録音.m4a exists and nothing is working on them.
     func cleanableMeetings() -> [UUID] {
@@ -760,6 +802,8 @@ import UniformTypeIdentifiers
             result = "録音済み・議事録作成失敗"
         } else if !MinutesEngine.batch(meeting.segments, state: meeting.notes ?? MinutesState()).isEmpty {
             result = "録音済み・議事録を更新中"
+        } else if meeting.finalReviewPending == true {
+            result = "録音済み・議事録を仕上げ中"
         } else if meeting.jobs.contains(where: { $0.state == .failed }) || meeting.captureError != nil {
             result = "録音済み・一部処理失敗"
         } else if meeting.capture == .interrupted {

@@ -8,7 +8,7 @@ extension ProcessingTests {
         store.key = "TEST"
         store.removesWorkingAudio = removesWorkingAudio
         store.pipeline = ProcessingPipeline(
-            store: store,
+            store: store, review: MinutesEngine.stubReview,
             recognize: { _, offset, source, _ in
                 [Segment(time: offset, source: source, text: "\(Int(offset))秒の資料を確認します")]
             },

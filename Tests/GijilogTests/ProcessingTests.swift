@@ -55,8 +55,15 @@ import ScreenCaptureKit
         try tests.testSettingsCarryOverFromEveryEarlierBundleID()
         try await tests.testCompletedMeetingKeepsOnlyRecordingAndMinutes()
         try await tests.testStorageUsageAndCleanupOfCompleteMeetingsOnly()
+        try tests.testMinutesExplainDecisionsAndSeparateHistory()
+        try tests.testReviewCannotRollBackLaterEvidence()
+        try await tests.testReviewUsesStructuredQualityContract()
+        try await tests.testFinalReviewDiscardsOutdatedResponse()
+        try await tests.testFinalReviewCheckpointsAndResumesWithoutAudio()
+        try await tests.testReviewWaitsForRecordingAndPendingTranscription()
+        try await tests.testRefineSavedTranscriptWithoutRetranscription()
         print(
-            "PASS: 41 checks (recording, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, audio mixdown, file import, upgrade and recovery, storage cleanup)"
+            "PASS: 48 checks (recording, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, audio mixdown, file import, upgrade and recovery, storage cleanup, minutes quality and final review)"
         )
     }
     func fixture(seconds: Double, amplitude: Float) throws -> (URL, URL) {
@@ -260,7 +267,8 @@ import ScreenCaptureKit
         defer { try? FileManager.default.removeItem(at: folder) }
         let store = Store(root: folder.appendingPathComponent("meetings"), loadSettings: false)
         store.key = "TEST"
-        store.pipeline = ProcessingPipeline(store: store, summarize: MinutesEngine.stubSummary)
+        store.pipeline = ProcessingPipeline(
+            store: store, review: MinutesEngine.stubReview, summarize: MinutesEngine.stubSummary)
         func activate(_ input: Meeting) async throws {
             var meeting = input
             meeting.settings = store.settings
@@ -323,7 +331,7 @@ import ScreenCaptureKit
         let lastSection = text.components(separatedBy: "\n## ").last ?? ""
         try Self.check(lastSection.hasPrefix("アクションアイテム\n"), "actions must be the final section")
         try Self.check(lastSection.contains("- [ ] 次回までに検討します"), "action checklist")
-        try Self.check(lastSection.contains("担当者: 不明 / 期限: 不明"), "no invented owner or deadline")
+        try Self.check(lastSection.contains("担当者: 未定 / 期限: 未定"), "no invented owner or deadline")
         try Self.check(state.latestSegmentIDs == ["a", "b"], "the latest update remembers its utterances")
     }
 }

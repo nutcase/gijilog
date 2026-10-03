@@ -21,7 +21,7 @@ extension ProcessingTests {
         meeting.segments = [Segment(id: "first", time: 0, source: "マイク", text: "資料を確認します")]
         store.meetings = [meeting]
         store.pipeline = ProcessingPipeline(
-            store: store,
+            store: store, review: MinutesEngine.stubReview,
             summarize: { state, segments, _, _ in
                 let batch = MinutesEngine.batch(segments, state: state)
                 let count = await meter.add(batch.map(\.id))
@@ -70,7 +70,7 @@ extension ProcessingTests {
         try await store.checkpoint(meeting.id)
         try FileManager.default.copyItem(at: audio, to: store.folder(meeting.id).appendingPathComponent("system.caf"))
         store.pipeline = ProcessingPipeline(
-            store: store,
+            store: store, review: MinutesEngine.stubReview,
             recognize: { _, offset, source, _ in
                 [Segment(time: offset, source: source, text: "新しい内容を確認します")]
             }, summarize: MinutesEngine.stubSummary)
@@ -100,7 +100,7 @@ extension ProcessingTests {
         ]
         store.meetings = [meeting]
         store.pipeline = ProcessingPipeline(
-            store: store,
+            store: store, review: MinutesEngine.stubReview,
             recognize: { url, _, _, _ in
                 _ = await meter.begin(url.lastPathComponent)
                 await meter.end()
@@ -131,7 +131,7 @@ extension ProcessingTests {
         ])
         try JSONEncoder().encode(manifest).write(to: folder.appendingPathComponent("recording.json"))
         restored.pipeline = ProcessingPipeline(
-            store: restored,
+            store: restored, review: MinutesEngine.stubReview,
             recognize: { url, _, _, _ in
                 guard FileManager.default.fileExists(atPath: url.path) else { throw CocoaError(.fileReadNoSuchFile) }
                 return []  // Silent fixture, no Apple permission or real API is involved.
@@ -283,7 +283,7 @@ extension ProcessingTests {
         let store = Store(root: root, loadSettings: false)
         let meter = QueueMeter()
         store.pipeline = ProcessingPipeline(
-            store: store,
+            store: store, review: MinutesEngine.stubReview,
             recognize: { url, offset, source, _ in
                 _ = await meter.begin(url.lastPathComponent)
                 try await Task.sleep(nanoseconds: 30_000_000)
@@ -337,7 +337,7 @@ extension ProcessingTests {
         restarted.key = "TEST"
         let meter = QueueMeter()
         restarted.pipeline = ProcessingPipeline(
-            store: restarted,
+            store: restarted, review: MinutesEngine.stubReview,
             recognize: { url, offset, source, _ in
                 let count = await meter.begin(url.lastPathComponent)
                 await meter.end()
@@ -382,7 +382,7 @@ extension ProcessingTests {
         let store = Store(root: root.appendingPathComponent("meetings"), loadSettings: false)
         let gate = Gate()
         store.pipeline = ProcessingPipeline(
-            store: store,
+            store: store, review: MinutesEngine.stubReview,
             recognize: { _, offset, source, _ in
                 await gate.wait()
                 return [Segment(time: offset, source: source, text: "資料を確認します")]
@@ -498,16 +498,18 @@ final class StructuredMockProtocol: URLProtocol {
     private static var captured: [String: Any] = [:]
     private static var status = "completed"
     private static var refusal = false
+    private static var deltaOverride: NotesDelta?
     static var body: [String: Any] {
         lock.lock()
         defer { lock.unlock() }
         return captured
     }
-    static func reset(status: String = "completed", refusal: Bool = false) {
+    static func reset(status: String = "completed", refusal: Bool = false, delta: NotesDelta? = nil) {
         lock.lock()
         captured = [:]
         Self.status = status
         Self.refusal = refusal
+        Self.deltaOverride = delta
         lock.unlock()
     }
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -532,6 +534,7 @@ final class StructuredMockProtocol: URLProtocol {
             Self.captured = body
             let status = Self.status
             let refusal = Self.refusal
+            let deltaOverride = Self.deltaOverride
             Self.lock.unlock()
             let inputText = try ProcessingTests.require(body["input"] as? String, "summary input text")
             let input = try ProcessingTests.require(
@@ -541,9 +544,11 @@ final class StructuredMockProtocol: URLProtocol {
             let utterance = try ProcessingTests.require(utterances.first, "summary first utterance")
             let text = try ProcessingTests.require(utterance["text"] as? String, "summary utterance text")
             let evidence = try ProcessingTests.require(utterance["ids"] as? [String], "summary utterance evidence")
-            let delta = NotesDelta(actions: [
-                NoteItem(id: "", text: text, evidence: evidence)
-            ])
+            let delta =
+                deltaOverride
+                ?? NotesDelta(actions: [
+                    NoteItem(id: "", text: text, evidence: evidence)
+                ])
             let json = String(decoding: try JSONEncoder().encode(delta), as: UTF8.self)
             let content: [String: Any] =
                 refusal ? ["type": "refusal", "refusal": "test refusal"] : ["type": "output_text", "text": json]

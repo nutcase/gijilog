@@ -22,7 +22,7 @@ extension ProcessingTests {
         meeting.segments = [Segment(id: "first", time: 0, source: "マイク", text: "資料を確認します")]
         store.meetings = [meeting]
         store.pipeline = ProcessingPipeline(
-            store: store,
+            store: store, review: MinutesEngine.stubReview,
             summarize: { state, segments, _, _ in
                 let batch = MinutesEngine.batch(segments, state: state)
                 if await meter.add(batch.map(\.id)) == 1 { throw AppError.message("injected summary failure") }

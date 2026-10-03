@@ -22,9 +22,11 @@ import Foundation
     private var lastSummaryID: UUID?
     private let recognize: Recognize
     private let summarize: Summarize
+    private let review: Summarize
     private let retryDelay: (Int) -> TimeInterval
     init(
         store: Store,
+        review: Summarize? = nil,
         recognize: @escaping Recognize = { try await Processor.recognizeChunk($0, offset: $1, source: $2, key: $3) },
         summarize: @escaping Summarize = { try await MinutesEngine.update($0, segments: $1, settings: $2, key: $3) },
         retryDelay: @escaping (Int) -> TimeInterval = { pow(2, Double($0)) }
@@ -32,6 +34,7 @@ import Foundation
         self.store = store
         self.recognize = recognize
         self.summarize = summarize
+        self.review = review ?? { try await MinutesEngine.review($0, segments: $1, settings: $2, key: $3) }
         self.retryDelay = retryDelay
     }
     func resume(_ id: UUID, key: String) {
@@ -71,6 +74,11 @@ import Foundation
             || requestedSummaries.contains(id)
             || (!suspended && allowed.contains(id)
                 && store?.meetings.first(where: { $0.id == id })?.jobs.contains(where: { $0.state == .pending }) == true)
+    }
+    private func needsSummary(_ meeting: Meeting) -> Bool {
+        !MinutesEngine.batch(meeting.segments, state: meeting.notes ?? MinutesState()).isEmpty
+            || (meeting.finalReviewPending == true && meeting.capture != .recording && !meeting.segments.isEmpty
+                && !meeting.jobs.contains { $0.state == .pending || $0.state == .running })
     }
     func pump() {
         guard !suspended, let store else { return }
@@ -116,6 +124,11 @@ import Foundation
                         m.segments.removeAll { $0.id.hasPrefix(job.id + ":") }
                         m.segments.append(contentsOf: segments)
                         m.segments.sort { $0.time < $1.time }
+                        if m.finalReviewPending != nil {
+                            m.finalReviewPending = true
+                            m.notes?.reviewedSegmentIDs = nil
+                            m.notes?.finalizedAt = nil
+                        }
                         if let i = m.jobs.firstIndex(where: { $0.id == job.id }) {
                             m.jobs[i].state = .completed
                             m.jobs[i].lastError = nil
@@ -155,9 +168,7 @@ import Foundation
         }
         for meeting in store.meetings where allowed.contains(meeting.id) && meeting.capture != .recording {
             if !meeting.jobs.contains(where: { $0.state == .pending || $0.state == .running }) {
-                if !MinutesEngine.batch(meeting.segments, state: meeting.notes ?? MinutesState()).isEmpty
-                    && summaryFailures[meeting.id] == nil
-                {
+                if needsSummary(meeting) && summaryFailures[meeting.id] == nil {
                     requestedSummaries.insert(meeting.id)
                 }
                 store.refreshCompletion(meeting.id, summaryFailed: summaryFailures[meeting.id] != nil)
@@ -165,7 +176,7 @@ import Foundation
         }
         requestedSummaries = requestedSummaries.filter { id in
             guard let meeting = store.meetings.first(where: { $0.id == id }) else { return false }
-            return !MinutesEngine.batch(meeting.segments, state: meeting.notes ?? MinutesState()).isEmpty
+            return needsSummary(meeting)
         }
         var summaryOrder = store.meetings.filter { requestedSummaries.contains($0.id) }
         if let i = summaryOrder.firstIndex(where: { $0.id == lastSummaryID }) {
@@ -175,8 +186,9 @@ import Foundation
             lastSummaryID = id
             requestedSummaries.remove(id)
             if let meeting = store.meetings.first(where: { $0.id == id }),
-                !MinutesEngine.batch(meeting.segments, state: meeting.notes ?? MinutesState()).isEmpty
+                needsSummary(meeting)
             {
+                let reviewing = MinutesEngine.batch(meeting.segments, state: meeting.notes ?? MinutesState()).isEmpty
                 summarizingID = id
                 summaryTask = Task { [weak self] in
                     guard let self, let store = self.store else { return }
@@ -184,7 +196,8 @@ import Foundation
                         var result: MinutesState?
                         for attempt in 1...3 {
                             do {
-                                result = try await self.summarize(
+                                let operation = reviewing ? self.review : self.summarize
+                                result = try await operation(
                                     meeting.notes ?? MinutesState(), meeting.segments,
                                     meeting.settings ?? SessionSettings(), self.keys[id] ?? "")
                                 break
@@ -194,10 +207,29 @@ import Foundation
                                 try await Task.sleep(nanoseconds: UInt64(max(0.01, delay) * 1_000_000_000))
                             }
                         }
-                        guard let notes = result else { throw AppError.message("議事録の更新に失敗しました。") }
+                        guard var notes = result else { throw AppError.message("議事録の更新に失敗しました。") }
+                        // A failed chunk can be retried while a review request is in flight. Never publish that stale review.
+                        if reviewing, let current = store.meetings.first(where: { $0.id == id }),
+                            current.segments != meeting.segments
+                                || current.jobs.contains(where: { $0.state == .pending || $0.state == .running })
+                        {
+                            self.summaryTask = nil
+                            self.summarizingID = nil
+                            self.pump()
+                            return
+                        }
+                        if reviewing {
+                            let batch = MinutesEngine.reviewBatch(
+                                meeting.segments, state: meeting.notes ?? MinutesState())
+                            notes.reviewedSegmentIDs = (meeting.notes?.reviewedSegmentIDs ?? []).union(batch.map(\.id))
+                            if MinutesEngine.reviewBatch(meeting.segments, state: notes).isEmpty {
+                                notes.finalizedAt = Date()
+                            }
+                        }
                         // Only this task updates notes for this meeting; transcription may append newer utterances meanwhile.
                         store.change(id) { m in
                             m.notes = notes
+                            if reviewing { m.finalReviewPending = notes.finalizedAt == nil }
                             m.minutes = MinutesEngine.render(notes, segments: m.segments)
                         }
                         try await store.checkpoint(id)

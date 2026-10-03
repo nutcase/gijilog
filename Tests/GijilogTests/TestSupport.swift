@@ -31,6 +31,7 @@ extension MinutesEngine {
             .map(item)
         return delta
     }
+    static let stubReview: ProcessingPipeline.Summarize = { state, _, _, _ in state }
     static let stubSummary: ProcessingPipeline.Summarize = { state, segments, _, _ in
         let batch = MinutesEngine.batch(segments, state: state)
         return MinutesEngine.merge(state, delta: MinutesEngine.extract(batch), batch: batch, segments: segments)

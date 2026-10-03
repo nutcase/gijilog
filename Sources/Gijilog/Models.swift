@@ -1,6 +1,6 @@
 import Foundation
 
-struct Segment: Codable, Identifiable, Sendable {
+struct Segment: Codable, Identifiable, Sendable, Equatable {
     var id: String = UUID().uuidString
     var time: Double
     var source: String
@@ -50,12 +50,19 @@ struct NoteItem: Codable, Identifiable, Sendable {
     var due: String?
     var evidence: [String]
     var state = ItemState.open
+    var reason: String?
+    var nextStep: String?
+    var changeSummary: String?
 }
 struct NotesDelta: Codable, Sendable {
     var summary: [NoteItem] = []
     var decisions: [NoteItem] = []
     var unresolved: [NoteItem] = []
     var actions: [NoteItem] = []
+    var history: [NoteItem] {
+        decisions.filter { $0.state == .cancelled } + unresolved.filter { $0.state != .open }
+            + actions.filter { $0.state == .cancelled }
+    }
 }
 struct MinutesState: Codable, Sendable {
     var content = NotesDelta()
@@ -64,6 +71,8 @@ struct MinutesState: Codable, Sendable {
     var extractionOnly = false  // Notes from the former keyword-extraction mode.
     var rejectedItems: Int?  // AI items dropped because their evidence could not be verified.
     var latestSegmentIDs: Set<String>?  // Utterances behind the most recent update, to mark what just changed.
+    var reviewedSegmentIDs: Set<String>?  // Checkpointed progress through the post-meeting review.
+    var finalizedAt: Date?
 }
 struct Meeting: Codable, Identifiable {
     var id = UUID()
@@ -76,6 +85,7 @@ struct Meeting: Codable, Identifiable {
     var settings: SessionSettings?
     var jobs: [TranscriptionJob] = []
     var notes: MinutesState?
+    var finalReviewPending: Bool?  // Nil keeps older, completed meetings from making new API calls on launch.
     var captureError: String?
     var hasAudio: Bool?
     var revision: UInt64 = 0
@@ -85,7 +95,7 @@ struct Meeting: Codable, Identifiable {
     init(title: String) { self.title = title }
     enum CodingKeys: String, CodingKey {
         case id, title, date, segments, minutes, status, capture, settings, jobs, notes, captureError, hasAudio,
-            revision, folderName
+            revision, folderName, finalReviewPending
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -100,6 +110,7 @@ struct Meeting: Codable, Identifiable {
         settings = try c.decodeIfPresent(SessionSettings.self, forKey: .settings)
         jobs = try c.decodeIfPresent([TranscriptionJob].self, forKey: .jobs) ?? []
         notes = try c.decodeIfPresent(MinutesState.self, forKey: .notes)
+        finalReviewPending = try c.decodeIfPresent(Bool.self, forKey: .finalReviewPending)
         captureError = try c.decodeIfPresent(String.self, forKey: .captureError)
         hasAudio = try c.decodeIfPresent(Bool.self, forKey: .hasAudio)
         revision = try c.decodeIfPresent(UInt64.self, forKey: .revision) ?? 0

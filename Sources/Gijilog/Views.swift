@@ -152,6 +152,9 @@ struct ContentView: View {
                 .help("議事録と文字起こしをMarkdownで書き出す")
                 .disabled(meeting.segments.isEmpty && meeting.notes == nil)
                 Menu {
+                    Button("議事録を仕上げる", systemImage: "text.badge.checkmark") {
+                        Task { await store.refineMinutes(meeting.id) }
+                    }.disabled(!idle || !store.hasKey || meeting.segments.isEmpty)
                     Button("未処理を再開", systemImage: "arrow.clockwise") { Task { await store.process() } }
                         .disabled(!idle || !store.hasKey)
                     Button("全文を再処理", systemImage: "arrow.triangle.2.circlepath") {
@@ -486,9 +489,13 @@ struct MinutesDesk: View {
         if store.pipeline.isSummarizing(meeting.id) {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.mini)
-                Text("議事録を更新しています")
+                Text(
+                    meeting.finalReviewPending == true && meeting.capture != .recording
+                        ? "議事録全体を確認して仕上げています" : "議事録を更新しています")
             }
             .foregroundStyle(Palette.asagi)
+        } else if let finalized = meeting.notes?.finalizedAt {
+            Text("\(finalized.formatted(date: .omitted, time: .standard)) に全体の確認完了").foregroundStyle(.secondary)
         } else if let updated = meeting.notes?.updatedAt {
             Text("\(updated.formatted(date: .omitted, time: .standard)) に更新").foregroundStyle(.secondary)
         }
@@ -549,10 +556,20 @@ struct MinutesSections: View {
                     Text("直近の更新で加わった・変わった項目").font(.caption).foregroundStyle(.secondary)
                 }
             }
-            NoteSection(title: "要約", items: content.summary, known: known, latest: latest)
-            NoteSection(title: "決定事項", items: content.decisions, known: known, latest: latest)
-            NoteSection(title: "未決事項", items: content.unresolved, known: known, latest: latest)
-            NoteSection(title: "アクションアイテム", items: content.actions, known: known, latest: latest, actions: true)
+            NoteSection(
+                title: "要約", items: content.summary.filter { $0.state != .cancelled }, known: known, latest: latest)
+            NoteSection(
+                title: "決定事項と理由", items: content.decisions.filter { $0.state != .cancelled }, known: known,
+                latest: latest)
+            NoteSection(
+                title: "未決事項・次の確認", items: content.unresolved.filter { $0.state == .open }, known: known, latest: latest
+            )
+            if !content.history.isEmpty {
+                NoteSection(title: "議論の経緯", items: content.history, known: known, latest: latest)
+            }
+            NoteSection(
+                title: "アクションアイテム", items: content.actions.filter { $0.state != .cancelled }, known: known,
+                latest: latest, actions: true)
         }
         .padding(.top, 26)
     }
@@ -605,18 +622,32 @@ struct NoteRow: View {
                     .strikethrough(item.state == .cancelled)
                     .foregroundStyle(item.state == .cancelled ? Color.secondary : Palette.sumi)
                     .fixedSize(horizontal: false, vertical: true)
+                if let reason = item.reason { Text("理由：" + reason).font(.caption).foregroundStyle(.secondary) }
+                if let next = item.nextStep { Text("次の確認：" + next).font(.caption).foregroundStyle(Palette.yamabuki) }
+                if let change = item.changeSummary { Text("経緯：" + change).font(.caption).foregroundStyle(.secondary) }
                 HStack(spacing: 8) {
                     if action {
                         Tag(label: "担当", value: item.owner, open: item.state == .open)
                         Tag(label: "期限", value: item.due, open: item.state == .open)
                     } else if item.state != .open {
-                        Text(item.state == .done ? "完了" : "撤回").foregroundStyle(Palette.asagi)
-                    }
-                    if let first = evidence.first {
-                        Text("\(clock(first.time)) \(first.source)").foregroundStyle(.secondary)
+                        Text(item.state == .done ? "解決済み" : "撤回・統合").foregroundStyle(Palette.asagi)
                     }
                 }
                 .font(.caption)
+                if let first = evidence.first {
+                    DisclosureGroup {
+                        ForEach(evidence) { segment in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("\(clock(segment.time)) \(segment.source)").foregroundStyle(.secondary)
+                                Text(segment.text).fixedSize(horizontal: false, vertical: true)
+                            }
+                            .padding(.vertical, 3)
+                        }
+                    } label: {
+                        Text("根拠 \(clock(first.time))〜（\(evidence.count)件）").foregroundStyle(.secondary)
+                    }
+                    .font(.caption)
+                }
             }
         }
         .padding(.vertical, compact ? 6 : 9).padding(.horizontal, 8)
@@ -991,7 +1022,13 @@ struct LiveMinutes: View {
                 HStack(spacing: 6) {
                     if store.pipeline.isSummarizing(meeting.id) {
                         ProgressView().controlSize(.mini)
-                        Text("議事録を更新しています").foregroundStyle(Palette.asagi)
+                        Text(
+                            meeting.finalReviewPending == true && meeting.capture != .recording
+                                ? "議事録全体を確認して仕上げています" : "議事録を更新しています"
+                        ).foregroundStyle(Palette.asagi)
+                    } else if let finalized = notes.finalizedAt {
+                        Text("\(finalized.formatted(date: .omitted, time: .standard)) に全体の確認完了").foregroundStyle(
+                            .secondary)
                     } else if let updated = notes.updatedAt {
                         Circle().fill(Palette.asagi).frame(width: 6, height: 6)
                         Text("\(updated.formatted(date: .omitted, time: .standard)) の更新で加わった・変わった項目")
@@ -1012,10 +1049,20 @@ struct LiveMinutes: View {
                 if store.pipeline.summaryFailed(meeting.id) {
                     Notice(text: "議事録の更新に失敗しました。間隔を空けて自動で再試行します。")
                 }
-                LiveSection(title: "決定事項", items: content.decisions, known: known, latest: latest)
-                LiveSection(title: "未決事項", items: content.unresolved, known: known, latest: latest)
-                LiveSection(title: "アクションアイテム", items: content.actions, known: known, latest: latest, actions: true)
-                LiveSection(title: "要約", items: content.summary, known: known, latest: latest)
+                LiveSection(
+                    title: "要約", items: content.summary.filter { $0.state != .cancelled }, known: known, latest: latest)
+                LiveSection(
+                    title: "決定事項と理由", items: content.decisions.filter { $0.state != .cancelled }, known: known,
+                    latest: latest)
+                LiveSection(
+                    title: "未決事項・次の確認", items: content.unresolved.filter { $0.state == .open }, known: known,
+                    latest: latest)
+                if !content.history.isEmpty {
+                    LiveSection(title: "議論の経緯", items: content.history, known: known, latest: latest)
+                }
+                LiveSection(
+                    title: "アクションアイテム", items: content.actions.filter { $0.state != .cancelled }, known: known,
+                    latest: latest, actions: true)
             }
             .padding(16)
             .textSelection(.enabled)

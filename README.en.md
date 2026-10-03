@@ -110,3 +110,9 @@ Issues and pull requests are welcome. Run `./scripts/check.sh` before opening a 
 ## License
 
 [MIT](LICENSE)
+
+### Decision-focused minutes
+
+Minutes now include decision reasons, the next checks needed for unresolved issues, and the history of changed or withdrawn plans. Action items come last; unsupported owners and deadlines remain unassigned. Expand an item's evidence to read its timestamped source utterances.
+
+Live updates remain on a 30-second timer. After recording and transcription finish, a checkpointed review revisits all available utterances in bounded batches. This uses additional API calls. Failed reviews keep the draft and can resume. The meeting menu also offers “議事録を仕上げる” to refine a saved transcript without transcribing or uploading the audio again. Completed older meetings are not automatically reprocessed. Semantic quality still needs evaluation on real meetings; source-ID and timestamp checks alone do not prove that a conclusion or rationale is correct.
