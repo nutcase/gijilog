@@ -2,5 +2,5 @@
 import PackageDescription
 
 let package = Package(
-    name: "Minutes", platforms: [.macOS("15.0")], products: [.executable(name: "Minutes", targets: ["Minutes"])],
-    targets: [.executableTarget(name: "Minutes")])
+    name: "Gijilog", platforms: [.macOS("15.0")], products: [.executable(name: "Gijilog", targets: ["Gijilog"])],
+    targets: [.executableTarget(name: "Gijilog")])

@@ -1,4 +1,4 @@
-# キロクル
+# ギジログ
 
 ビデオ会議を録音しながら、議事録をその場で書き上げていく macOS アプリです。
 会議中は小さな画面を会議の横に置き、決まったこと・残っている論点・担当を確かめながら進行できます。
@@ -28,21 +28,21 @@
 
 ```sh
 brew install swiftlint
-git clone https://github.com/nutcase/kirokuru.git
-cd kirokuru
+git clone https://github.com/nutcase/gijilog.git
+cd gijilog
 ./scripts/build.sh
-open dist/キロクル.app
+open dist/ギジログ.app
 ```
 
 1. 設定（⌘,）で OpenAI の API キーを保存します。
-2. 「録音を開始」を押します。初回は macOS が「画面とシステムオーディオの録音」の許可を求めるので、システム設定で「キロクル」をオンにしてアプリを開き直してください。マイクの許可も求められます。
+2. 「録音を開始」を押します。初回は macOS が「画面とシステムオーディオの録音」の許可を求めるので、システム設定で「ギジログ」をオンにしてアプリを開き直してください。マイクの許可も求められます。
 3. もう一度「録音を開始」を押すと、録音と議事録づくりが始まります。
 
 > [!NOTE]
 > 開発用の署名（ad-hoc）でビルドすると、ビルドし直すたびに録音の許可が外れます。外れたときは次のコマンドで古い許可を消し、2. からやり直してください。固定の署名で避ける方法は「[ビルドし直しても許可を保つ](#ビルドし直しても許可を保つ)」にあります。
 >
 > ```sh
-> tccutil reset ScreenCapture io.github.nutcase.kirokuru
+> tccutil reset ScreenCapture io.github.nutcase.gijilog
 > ```
 
 ## 使い方
@@ -73,10 +73,10 @@ open dist/キロクル.app
 
 ### 保存されるもの
 
-保存先は、既定では書類フォルダの `キロクル` です。設定で変更でき、変更するとこれまでの会議も移動します。
+保存先は、既定では書類フォルダの `ギジログ` です。設定で変更でき、変更するとこれまでの会議も移動します。
 
 ```text
-~/Documents/キロクル/
+~/Documents/ギジログ/
 └── 2026-10-03 17.26 週次定例/
     ├── 議事録.md        議事録と文字起こし（更新のたびに書き直します）
     ├── 録音.m4a         Mac 音声とマイクを重ねた聞き返し用の音声（録音の停止後に作成）
@@ -121,7 +121,7 @@ open dist/キロクル.app
 ./scripts/check.sh   # 整形チェック → SwiftLint → 回帰テスト → リリースビルド
 ./scripts/format.sh  # Swift コードを整形
 ./scripts/test.sh    # 回帰テストだけ
-./scripts/build.sh   # チェックに通ったら dist/キロクル.app を作る
+./scripts/build.sh   # チェックに通ったら dist/ギジログ.app を作る
 ```
 
 - 整形は [swift-format](https://github.com/swiftlang/swift-format)（`.swift-format`）、静的チェックは SwiftLint（`.swiftlint.yml`）で、警告もエラーとして扱います。
@@ -143,7 +143,7 @@ open dist/キロクル.app
 キーチェーンアクセスの「証明書アシスタント」→「証明書を作成」で、種類「自己署名ルート」、証明書のタイプ「コード署名」の証明書を作り、その名前を指定してビルドします。
 
 ```sh
-KIROKURU_SIGN_IDENTITY="キロクル開発" ./scripts/build.sh
+GIJILOG_SIGN_IDENTITY="ギジログ開発" ./scripts/build.sh
 ```
 
 ## コントリビュート

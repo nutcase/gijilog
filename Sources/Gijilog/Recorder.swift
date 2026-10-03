@@ -4,7 +4,7 @@ import Foundation
 import ScreenCaptureKit
 
 final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
-    private let queue = DispatchQueue(label: "minutes.audio")
+    private let queue = DispatchQueue(label: "gijilog.audio")
     private var stream: SCStream?
     private var acceptingSamples = false
     private var isStopping = false

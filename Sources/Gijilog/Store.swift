@@ -134,7 +134,7 @@ import SwiftUI
     var settings: SessionSettings { SessionSettings(model: model) }
     var hasKey: Bool { !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     nonisolated static var defaultRoot: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("キロクル")
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("ギジログ")
     }
     func folder(_ id: UUID) -> URL {
         root.appendingPathComponent(meetings.first { $0.id == id }?.folderName ?? id.uuidString)

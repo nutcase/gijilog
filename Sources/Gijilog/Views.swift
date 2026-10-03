@@ -182,7 +182,7 @@ struct MeetingList: View {
         .safeAreaInset(edge: .top) {
             HStack(spacing: 10) {
                 Image(systemName: "waveform").font(.system(size: 20, weight: .semibold))
-                Text("キロクル").font(.mincho(22))
+                Text("ギジログ").font(.mincho(22))
                 Spacer()
             }
             .foregroundStyle(Palette.paper)

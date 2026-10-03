@@ -1,4 +1,4 @@
-# Kirokuru (キロクル)
+# Gijilog (ギジログ)
 
 A macOS app that writes meeting minutes while your video call is still going.
 Keep its compact window next to the call to see what has been decided, what is still open, and who owns each task.
@@ -31,31 +31,31 @@ Keep its compact window next to the call to see what has been decided, what is s
 
 ```sh
 brew install swiftlint
-git clone https://github.com/nutcase/kirokuru.git
-cd kirokuru
+git clone https://github.com/nutcase/gijilog.git
+cd gijilog
 ./scripts/build.sh
-open dist/キロクル.app
+open dist/ギジログ.app
 ```
 
 1. Open Settings (⌘,) and save your OpenAI API key.
-2. Click 録音を開始 (Start recording). The first time, macOS asks for Screen & System Audio Recording permission: turn on キロクル in System Settings and reopen the app. Allow microphone access when asked.
+2. Click 録音を開始 (Start recording). The first time, macOS asks for Screen & System Audio Recording permission: turn on ギジログ in System Settings and reopen the app. Allow microphone access when asked.
 3. Click 録音を開始 again to start recording and writing the minutes.
 
 > [!NOTE]
 > Builds are signed ad hoc by default, so every rebuild loses the recording permission. Clear the stale entry and repeat step 2:
 >
 > ```sh
-> tccutil reset ScreenCapture io.github.nutcase.kirokuru
+> tccutil reset ScreenCapture io.github.nutcase.gijilog
 > ```
 >
-> To keep the permission across rebuilds, create a self-signed code-signing certificate in Keychain Access (Certificate Assistant → Create a Certificate, identity type Self-Signed Root, certificate type Code Signing) and build with `KIROKURU_SIGN_IDENTITY="<certificate name>" ./scripts/build.sh`.
+> To keep the permission across rebuilds, create a self-signed code-signing certificate in Keychain Access (Certificate Assistant → Create a Certificate, identity type Self-Signed Root, certificate type Code Signing) and build with `GIJILOG_SIGN_IDENTITY="<certificate name>" ./scripts/build.sh`.
 
 ## Where meetings are saved
 
-By default in `~/Documents/キロクル`, one folder per meeting. You can choose another folder in Settings; existing meetings move with it.
+By default in `~/Documents/ギジログ`, one folder per meeting. You can choose another folder in Settings; existing meetings move with it.
 
 ```text
-~/Documents/キロクル/
+~/Documents/ギジログ/
 └── 2026-10-03 17.26 Weekly sync/
     ├── 議事録.md        minutes and transcript, rewritten as the meeting changes
     ├── 録音.m4a         Mac audio and microphone mixed for listening back, written after recording stops
@@ -89,7 +89,7 @@ If your Documents folder syncs with iCloud Drive, recordings are uploaded too.
 ./scripts/check.sh   # format check, SwiftLint, regression tests, release build
 ./scripts/format.sh  # format the Swift sources
 ./scripts/test.sh    # regression tests only
-./scripts/build.sh   # build dist/キロクル.app after the checks pass
+./scripts/build.sh   # build dist/ギジログ.app after the checks pass
 ```
 
 The 31 regression tests cover chunking and the shared recording clock, incremental minutes and evidence checks, retries and recovery after restart, moving the save location, and mixing the audio. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.

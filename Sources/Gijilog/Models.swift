@@ -114,7 +114,7 @@ func fileSafeName(_ text: String, fallback: String) -> String {
         .trimmingCharacters(in: .whitespaces)
     return name.isEmpty ? fallback : String(name.prefix(80))
 }
-// A folder as Finder names it, e.g. "~/書類/キロクル" for ~/Documents/キロクル.
+// A folder as Finder names it, e.g. "~/書類/ギジログ" for ~/Documents/ギジログ.
 func displayPath(_ url: URL) -> String {
     let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
     var current = url.standardizedFileURL

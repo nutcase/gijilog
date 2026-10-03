@@ -1,19 +1,19 @@
 import AppKit
 import SwiftUI
 
-@main struct MinutesApp: App {
+@main struct GijilogApp: App {
     @StateObject private var store = Store()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     var body: some Scene {
         // Single windows, so switching between the full view and the compact view always finds the same one.
-        Window("キロクル", id: "main") {
+        Window("ギジログ", id: "main") {
             ContentView().environmentObject(store).frame(minWidth: 1040, minHeight: 680)
                 .onAppear { delegate.store = store }
         }
         .defaultSize(width: 1320, height: 860)
         .windowToolbarStyle(.unified)
         // The compact view floats beside the video call while the minutes are written.
-        Window("キロクル 小画面", id: "live") {
+        Window("ギジログ 小画面", id: "live") {
             LiveWindow().environmentObject(store).onAppear { delegate.store = store }
         }
         .defaultSize(width: 400, height: 760)
