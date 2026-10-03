@@ -68,7 +68,7 @@ Click tags at the top of the list to show only the meetings that have all of the
 
 ## Minutes from a recording file
 
-Click ファイルから作成 (Create from file) or drop audio or video files on the window. Each file is cut into about 30-second pieces, transcribed, and then summarized into minutes. All audio tracks are mixed, and importing never blocks stopping a recording. The meeting takes the file's name and creation date, and its folder gets `議事録.md` and `録音.m4a`; the original file is left as is.
+Click 読み込み (Import) in the toolbar (⌘O) or drop audio or video files on the window. Each file is cut into about 30-second pieces, transcribed, and then summarized into minutes. All audio tracks are mixed, and importing never blocks stopping a recording. The meeting takes the file's name and creation date, and its folder gets `議事録.md` and `録音.m4a`; the original file is left as is.
 
 ## Where meetings are saved
 
