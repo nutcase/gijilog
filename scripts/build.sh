@@ -15,6 +15,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>ギジログ</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>CFBundleDevelopmentRegion</key><string>ja</string>
+<key>CFBundleLocalizations</key><array><string>ja</string></array>
 <key>LSMinimumSystemVersion</key><string>15.0</string>
 <key>NSMicrophoneUsageDescription</key><string>会議中のあなたの声を録音します。</string>
 <key>NSAudioCaptureUsageDescription</key><string>会議アプリなどのMac音声を録音します。</string>

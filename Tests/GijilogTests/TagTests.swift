@@ -69,6 +69,41 @@ extension ProcessingTests {
                 .hasPrefix("# 会議\n\nタグ: 定例, 顧客\n\n## 要約"),
             "minutes list the tags under the title")
     }
+    @MainActor func testTagsCanBeRenamedMergedAndDeleted() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = Store(root: root, loadSettings: false)
+        var meetings = ["週次定例", "A社ヒアリング", "採用面談"].map { Meeting(title: $0) }
+        meetings[0].tags = ["定例", "営業"]
+        meetings[1].tags = ["顧客", "Sales"]
+        meetings[2].tags = ["採用"]
+        store.meetings = meetings
+        store.toggleTagFilter("営業")
+
+        try Self.check(
+            !store.renameTag("営業", to: " , ") && !store.renameTag("営業", to: "営業, 顧客"),
+            "an empty name or one a comma would split is refused")
+        try Self.check(store.renameTag("営業", to: "sales"), "renaming to another tag's name is allowed")
+        try Self.check(
+            store.meetings[0].tags == ["定例", "sales"] && store.meetings[1].tags == ["顧客", "sales"],
+            "renaming onto an existing tag merges them, spelled as typed: \(store.meetings.map(\.tags))")
+        try Self.check(
+            store.tagFilter == ["sales"] && store.visibleMeetings.count == 2, "a filter on the renamed tag follows it")
+        store.renameTag("SALES", to: "営業部")
+        store.renameTag("定例", to: "定例")
+        try Self.check(
+            store.meetings[0].tags == ["定例", "営業部"] && store.meetings[1].tags == ["顧客", "営業部"],
+            "a rename keeps each tag in its place: \(store.meetings.map(\.tags))")
+
+        store.deleteTag("営業部")
+        try Self.check(
+            store.meetings.map(\.tags) == [["定例"], ["顧客"], ["採用"]] && store.meetings.count == 3,
+            "deleting a tag takes it off every meeting and keeps the meetings")
+        try Self.check(store.tagFilter.isEmpty, "a deleted tag stops narrowing the list")
+        await store.flushCheckpoints()
+        let saved = try store.savedMeeting(meetings[1].id)
+        try Self.check(saved.tags == ["顧客"], "renames and deletions are saved")
+    }
 }
 
 extension Data {

@@ -38,6 +38,7 @@ import UniformTypeIdentifiers
     @Published var dropTargeted = false  // A file is being dragged over the window.
     @Published private(set) var tagFilter: [String] = []  // The list shows meetings that have every one of these.
     @Published var tagEditor: UUID?  // The meeting whose tag field is open.
+    @Published var settingsTab = "一般"
     // Once a meeting is complete and 録音.m4a exists, its chunks are only needed to reprocess per track.
     @Published var removesWorkingAudio = true {
         didSet { if persistsSettings { UserDefaults.standard.set(removesWorkingAudio, forKey: "removesWorkingAudio") } }
@@ -922,6 +923,28 @@ extension Store {
         if !visible.contains(where: { $0.id == selected }), let first = visible.first { selected = first.id }
     }
     func clearTagFilter() { tagFilter = [] }
+    /// Renames a tag on every meeting. A name another tag already has merges the two, spelled as typed.
+    /// Returns false when the name is empty or would be split into several tags by a comma.
+    @discardableResult func renameTag(_ tag: String, to newName: String) -> Bool {
+        let names = MeetingTags.parse(newName)
+        guard names.count == 1, let name = names.first else { return false }
+        let keys: Set = [MeetingTags.key(tag), MeetingTags.key(name)]
+        for meeting in meetings where meeting.tags.contains(where: { keys.contains(MeetingTags.key($0)) }) {
+            change(meeting.id) { meeting in
+                meeting.tags = MeetingTags.adding(
+                    meeting.tags.map { keys.contains(MeetingTags.key($0)) ? name : $0 }, to: [])
+            }
+        }
+        tagFilter = MeetingTags.adding(tagFilter.map { keys.contains(MeetingTags.key($0)) ? name : $0 }, to: [])
+        return true
+    }
+    /// Takes the tag off every meeting. The meetings themselves stay.
+    func deleteTag(_ tag: String) {
+        for meeting in meetings where MeetingTags.contains(meeting.tags, tag) {
+            change(meeting.id) { meeting in meeting.tags.removeAll { MeetingTags.key($0) == MeetingTags.key(tag) } }
+        }
+        pruneTagFilter()
+    }
     /// A tag no meeting has any more cannot narrow the list.
     private func pruneTagFilter() {
         let used = Set(meetings.flatMap { $0.tags.map(MeetingTags.key) })

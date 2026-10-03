@@ -278,6 +278,7 @@ struct MeetingRow: View {
 // Narrows the sidebar to meetings that have every selected tag.
 struct TagFilterBar: View {
     @EnvironmentObject var store: Store
+    @Environment(\.openSettings) private var openSettings
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -288,6 +289,9 @@ struct TagFilterBar: View {
                         .buttonStyle(.plain).font(.caption.weight(.semibold)).foregroundStyle(Palette.asagi)
                         .help("すべての会議を表示")
                 }
+                Button("管理", action: manageTags)
+                    .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
+                    .help("タグの名前を変えたり、削除したりする")
             }
             // Many tags scroll within a few rows instead of pushing the meetings down.
             if store.allTags.count > 12 { ScrollView { chips }.frame(height: 96) } else { chips }
@@ -306,10 +310,17 @@ struct TagFilterBar: View {
                     }
                 }
                 .buttonStyle(FilterChipStyle(on: on))
+                .contextMenu { Button("タグを管理…", action: manageTags) }
                 .accessibilityAddTraits(on ? .isSelected : [])
                 .help(on ? "「\(tag.name)」での絞り込みをやめる" : "「\(tag.name)」の付いた会議だけを表示")
             }
         }
+    }
+}
+extension TagFilterBar {
+    private func manageTags() {
+        store.settingsTab = "タグ"
+        openSettings()
     }
 }
 struct FilterChipStyle: ButtonStyle {
@@ -1112,6 +1123,15 @@ struct TranscriptRow: View {
 }
 struct SettingsView: View {
     @EnvironmentObject var store: Store
+    var body: some View {
+        TabView(selection: $store.settingsTab) {
+            GeneralSettings().tabItem { Label("一般", systemImage: "gearshape") }.tag("一般")
+            TagSettings().tabItem { Label("タグ", systemImage: "tag") }.tag("タグ")
+        }
+    }
+}
+struct GeneralSettings: View {
+    @EnvironmentObject var store: Store
     @StateObject private var draft = SettingsDraft()
     var body: some View {
         let devices = store.devices
@@ -1200,6 +1220,75 @@ struct SettingsView: View {
         .onAppear {
             draft.load(from: store)
             store.refreshStorageUsage()
+        }
+    }
+}
+
+@MainActor final class TagManagement: ObservableObject {
+    @Published var renaming: String?
+    @Published var newName = ""
+    @Published var deleting: (name: String, count: Int)?
+}
+// Every tag with its meetings: rename (or merge into another tag) and delete, applied to all meetings at once.
+struct TagSettings: View {
+    @EnvironmentObject var store: Store
+    @StateObject private var manage = TagManagement()
+    var body: some View {
+        let tags = store.allTags
+        Form {
+            Section {
+                if tags.isEmpty {
+                    Text("タグはまだありません。議事録のタイトルの下にある「タグを追加」から付けられます。")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(tags, id: \.name) { tag in
+                    HStack(spacing: 12) {
+                        Label(tag.name, systemImage: "tag").lineLimit(1)
+                        Spacer()
+                        Text("\(tag.count)件").monospacedDigit().foregroundStyle(.secondary)
+                        Button("名前を変更…") {
+                            manage.newName = tag.name
+                            manage.renaming = tag.name
+                        }
+                        Button(role: .destructive) {
+                            manage.deleting = tag
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .help("このタグを削除")
+                        .accessibilityLabel("「\(tag.name)」を削除")
+                    }
+                }
+            } header: {
+                Text("タグ")
+            } footer: {
+                Text("名前を変えると、そのタグが付いたすべての会議で変わります。ほかのタグと同じ名前にすると、ひとつにまとまります。タグを削除しても会議は消えません。")
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 560, height: 520)
+        .alert(
+            "タグの名前を変更",
+            isPresented: Binding(get: { manage.renaming != nil }, set: { if !$0 { manage.renaming = nil } }),
+            presenting: manage.renaming
+        ) { tag in
+            TextField("新しい名前", text: $manage.newName)
+            Button("変更") { store.renameTag(tag, to: manage.newName) }
+                .disabled(MeetingTags.parse(manage.newName).count != 1)
+            Button("キャンセル", role: .cancel) {}
+        } message: { tag in
+            Text("「\(tag)」が付いたすべての会議で名前が変わります。カンマ（、）は使えません。")
+        }
+        .confirmationDialog(
+            "タグを削除しますか？",
+            isPresented: Binding(get: { manage.deleting != nil }, set: { if !$0 { manage.deleting = nil } }),
+            presenting: manage.deleting
+        ) { tag in
+            Button("「\(tag.name)」を削除", role: .destructive) { store.deleteTag(tag.name) }
+            Button("キャンセル", role: .cancel) {}
+        } message: { tag in
+            Text("\(tag.count)件の会議から「\(tag.name)」を外します。会議は削除されません。")
         }
     }
 }
