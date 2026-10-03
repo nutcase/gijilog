@@ -42,6 +42,8 @@ open dist/ギジログ.app
 2. Click 録音を開始 (Start recording). The first time, macOS asks for Screen & System Audio Recording permission: turn on ギジログ in System Settings and reopen the app. Allow microphone access when asked.
 3. Click 録音を開始 again to start recording and writing the minutes.
 
+You can also start and stop from the menu bar icon (a waveform, or a record mark while recording) or the app's 録音 menu (⌘⇧R), even with every window closed.
+
 > [!NOTE]
 > Builds are signed ad hoc by default, so every rebuild loses the recording permission. Clear the stale entry and repeat step 2:
 >

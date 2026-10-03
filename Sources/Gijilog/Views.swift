@@ -69,6 +69,13 @@ struct ViewSwitch {
         dismiss(id: "live")
     }
 }
+// Starting a recording from anywhere (window, menu, menu bar) switches to the compact view beside the call.
+@MainActor func startRecording(_ store: Store, views: ViewSwitch) {
+    Task {
+        await store.start()
+        if store.recording { views.compact() }
+    }
+}
 struct ContentView: View {
     @EnvironmentObject var store: Store
     @Environment(\.openWindow) private var openWindow
@@ -280,7 +287,6 @@ struct RecorderBar: View {
                 Button(action: start) { Label("録音を開始", systemImage: "record.circle") }
                     .buttonStyle(CapsuleButtonStyle(filled: true))
                     .fixedSize()
-                    .keyboardShortcut("r", modifiers: [.command, .shift])
                     .disabled(store.busy || !store.ready || !store.hasKey)
                 if store.busy || store.importing { ProgressView().controlSize(.small) }
             }
@@ -297,13 +303,7 @@ struct RecorderBar: View {
             }
         }
     }
-    // Recording switches to the compact view, which floats beside the video call.
-    private func start() {
-        Task {
-            await store.start()
-            if store.recording { ViewSwitch(open: openWindow, dismiss: dismissWindow).compact() }
-        }
-    }
+    private func start() { startRecording(store, views: ViewSwitch(open: openWindow, dismiss: dismissWindow)) }
     private func live(_ meeting: Meeting) -> some View {
         HStack(spacing: 18) {
             RecordingLamp()
@@ -324,7 +324,6 @@ struct RecorderBar: View {
             }
             .buttonStyle(CapsuleButtonStyle(filled: false))
             .fixedSize()
-            .keyboardShortcut("r", modifiers: [.command, .shift])
             .disabled(store.busy)
         }
     }
@@ -1087,5 +1086,66 @@ struct FloatingWindow: NSViewRepresentable {
     func updateNSView(_ view: NSView, context: Context) {
         let level: NSWindow.Level = floating ? .floating : .normal
         DispatchQueue.main.async { view.window?.level = level }
+    }
+}
+
+// MARK: - Menu bar
+
+// Start and stop from the menu bar and the app's 録音 menu, even with every window closed.
+struct RecordingMenuItems: View {
+    @ObservedObject var store: Store
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
+    var body: some View {
+        let views = ViewSwitch(open: openWindow, dismiss: dismissWindow)
+        if store.recording {
+            Button("録音を停止") { Task { await store.stop() } }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(store.busy)
+        } else {
+            Button("録音を開始") {
+                NSApp.activate()
+                startRecording(store, views: views)
+            }
+            .keyboardShortcut("r", modifiers: [.command, .shift])
+            .disabled(store.busy || !store.ready || !store.hasKey)
+        }
+        Button("ファイルから作成…") {
+            NSApp.activate()
+            store.chooseRecordingFiles()
+        }
+        .disabled(!store.ready || !store.hasKey)
+        Divider()
+        Button("小画面を表示") {
+            NSApp.activate()
+            views.compact()
+        }
+        Button("大きい画面を表示") {
+            NSApp.activate()
+            views.full()
+        }
+    }
+}
+struct MenuBarMenu: View {
+    @ObservedObject var store: Store
+    var body: some View {
+        if store.recording, let meeting = store.activeMeeting {
+            Text("録音中 \(clock(Date().timeIntervalSince(meeting.date)))：\(meeting.title)")
+        } else if !store.hasKey {
+            Text("録音するには、設定で OpenAI の API キーを保存してください")
+        }
+        RecordingMenuItems(store: store)
+        Divider()
+        SettingsLink { Text("設定…") }
+        Button("ギジログを終了") { NSApp.terminate(nil) }
+    }
+}
+// The menu bar shows a waveform, or the recording mark while recording. (A ticking clock in the menu bar label
+// makes SwiftUI's status item re-layout in an endless loop at launch, so the elapsed time lives in the menu.)
+struct MenuBarLabel: View {
+    @ObservedObject var store: Store
+    var body: some View {
+        Image(systemName: store.recording ? "record.circle.fill" : "waveform")
+            .accessibilityLabel(store.recording ? "ギジログ 録音中" : "ギジログ")
     }
 }
