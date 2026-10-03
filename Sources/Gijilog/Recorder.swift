@@ -295,9 +295,6 @@ final class SystemAudioTap {
             mSelector: kAudioTapPropertyFormat, mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain)
         try Self.check(AudioObjectGetPropertyData(tapID, &address, 0, nil, &size, &stream), "Macの音声の形式を読めませんでした。")
-        guard let tapFormat = AVAudioFormat(streamDescription: &stream), let captureFormat,
-            let converter = AVAudioConverter(from: tapFormat, to: captureFormat)
-        else { throw AppError.message("Macの音声を16kHzに変換できません。") }
         let output = try Self.defaultOutputUID()
         let aggregate: [String: Any] = [
             kAudioAggregateDeviceNameKey: "ギジログ",
@@ -313,6 +310,17 @@ final class SystemAudioTap {
         ]
         try Self.check(
             AudioHardwareCreateAggregateDevice(aggregate as CFDictionary, &aggregateID), "Macの音声の取り込みを準備できませんでした。")
+        // The tap reports 48 kHz, but the aggregate device delivers at its main device's rate (44.1 kHz on
+        // MacBook speakers, for example). Converting from the wrong rate made 12 seconds of audio cover 13.
+        var rate = Float64(0)
+        size = UInt32(MemoryLayout<Float64>.size)
+        address.mSelector = kAudioDevicePropertyNominalSampleRate
+        if AudioObjectGetPropertyData(aggregateID, &address, 0, nil, &size, &rate) == noErr, rate > 0 {
+            stream.mSampleRate = rate
+        }
+        guard let tapFormat = AVAudioFormat(streamDescription: &stream), let captureFormat,
+            let converter = AVAudioConverter(from: tapFormat, to: captureFormat)
+        else { throw AppError.message("Macの音声を16kHzに変換できません。") }
         try Self.check(
             AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateID, ioQueue) { _, input, inputTime, _, _ in
                 // The input is only valid during this call: convert it into a buffer of our own right away.
