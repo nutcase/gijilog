@@ -120,6 +120,68 @@ extension Meeting {
         return "\(first.source) \(clock(first.offset)) からの文字起こしに失敗しました（\(failed.count)件）。\(first.lastError ?? "")"
     }
 }
+// The audio a meeting needs only while it is processed: the chunks and any per-track .caf files from earlier
+// versions. 録音.m4a (for listening back) and 議事録.md stay.
+enum WorkingAudio {
+    static func files(in folder: URL) -> [URL] {
+        let manager = FileManager.default
+        let chunks = folder.appendingPathComponent("chunks")
+        let tracks = ((try? manager.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.pathExtension == "caf" }
+        return (manager.fileExists(atPath: chunks.path) ? [chunks] : []) + tracks
+    }
+    static func size(in folder: URL) -> Int64 { files(in: folder).reduce(0) { $0 + diskSize($1) } }
+    /// Deletes the working audio and returns the bytes freed.
+    @discardableResult static func remove(in folder: URL) -> Int64 {
+        var freed: Int64 = 0
+        for url in files(in: folder) {
+            let size = diskSize(url)
+            if (try? FileManager.default.removeItem(at: url)) != nil { freed += size }
+        }
+        return freed
+    }
+    static func diskSize(_ url: URL) -> Int64 {
+        let keys: Set<URLResourceKey> = [.totalFileAllocatedSizeKey, .isDirectoryKey]
+        guard let values = try? url.resourceValues(forKeys: keys) else { return 0 }
+        guard values.isDirectory == true else { return Int64(values.totalFileAllocatedSize ?? 0) }
+        let items = FileManager.default.enumerator(at: url, includingPropertiesForKeys: Array(keys))
+        var total: Int64 = 0
+        while let item = items?.nextObject() as? URL {
+            total += Int64((try? item.resourceValues(forKeys: keys))?.totalFileAllocatedSize ?? 0)
+        }
+        return total
+    }
+}
+// "1.7 MB", and "0 KB" rather than "Zero KB".
+func bytes(_ count: Int64) -> String {
+    let formatter = ByteCountFormatter()
+    formatter.countStyle = .file
+    formatter.allowsNonnumericFormatting = false
+    return formatter.string(fromByteCount: count)
+}
+// How much the save location uses, split by what the files are for.
+struct StorageUsage: Equatable, Sendable {
+    var recordings: Int64 = 0  // 録音.m4a
+    var working: Int64 = 0  // Chunks and per-track audio.
+    var other: Int64 = 0  // Minutes and the app's data.
+    var meetings = 0
+    var total: Int64 { recordings + working + other }
+    static func measure(_ root: URL) -> StorageUsage {
+        var usage = StorageUsage()
+        let folders = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+        for folder in folders
+        where FileManager.default.fileExists(atPath: folder.appendingPathComponent("meeting.json").path) {
+            usage.meetings += 1
+            let all = WorkingAudio.diskSize(folder)
+            let recording = WorkingAudio.diskSize(folder.appendingPathComponent(AudioMixdown.filename))
+            let working = WorkingAudio.size(in: folder)
+            usage.recordings += recording
+            usage.working += working
+            usage.other += max(0, all - recording - working)
+        }
+        return usage
+    }
+}
 // A name that is safe as a file or folder name in Finder.
 func fileSafeName(_ text: String, fallback: String) -> String {
     let unsafe = CharacterSet(charactersIn: "/\\:").union(.newlines).union(.controlCharacters)

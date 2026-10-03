@@ -64,12 +64,12 @@ By default in `~/Documents/ギジログ`, one folder per meeting. You can choose
 └── 2026-10-03 17.26 Weekly sync/
     ├── 議事録.md        minutes and transcript, rewritten as the meeting changes
     ├── 録音.m4a         Mac audio and microphone mixed for listening back, written after recording stops
-    ├── system.caf       the rest is the app's own data
-    ├── microphone.caf
-    ├── chunks/
-    ├── recording.json
+    ├── chunks/          working audio: the recording cut into ~12-second pieces for transcription
+    ├── recording.json   the rest is the app's own data
     └── meeting.json
 ```
+
+While a meeting is recorded and processed, the working audio takes about 230 MB per hour. Once the minutes are complete and `録音.m4a` exists, it is deleted automatically, leaving about 10 MB per hour (you can turn this off in Settings). Settings also shows how much space the save location uses and can clean up the working audio of earlier complete meetings. A full reprocess of a meeting without working audio transcribes `録音.m4a` again, without separating the Mac audio and the microphone.
 
 ## Privacy and consent
 
@@ -97,7 +97,7 @@ If your Documents folder syncs with iCloud Drive, recordings are uploaded too.
 ./scripts/build.sh   # build dist/ギジログ.app after the checks pass
 ```
 
-The 39 regression tests cover chunking and the shared recording clock, incremental minutes and evidence checks, retries and recovery after restart, moving the save location and upgrading from earlier versions, mixing the audio, and importing recording files. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.
+The 41 regression tests cover chunking and the shared recording clock, incremental minutes and evidence checks, retries and recovery after restart, moving the save location and upgrading from earlier versions, mixing the audio, importing recording files, and cleaning up working audio. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.
 
 With only the Command Line Tools installed, SwiftUI's `@State` does not compile, so view state lives in `ObservableObject`s.
 

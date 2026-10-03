@@ -18,7 +18,6 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
         stopCaptureOperation = stopCapture
         super.init()
     }
-    private var files: [SCStreamOutputType: AVAudioFile] = [:]
     private var folder: URL?
     private var chunkFiles: [SCStreamOutputType: AVAudioFile] = [:]
     private var chunkURLs: [SCStreamOutputType: URL] = [:]
@@ -28,7 +27,6 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
     private var expectedNextTime: [SCStreamOutputType: Double] = [:]
     var onChunk: (@Sendable (URL, Double, String) async -> Void)?
     private var deliveries: [UUID: Task<Void, Never>] = [:]
-    private var rawPart: [SCStreamOutputType: Int] = [:]
     private var watchdog: DispatchSourceTimer?
     private var lastMicrophoneInput = Date()
     private var notifiedMissingInput = false
@@ -80,7 +78,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
     func prepareFiles(in folder: URL) throws {
         try queue.sync {
             guard !cancelledStart else { throw CancellationError() }
-            guard !isStopping, !acceptingSamples, stream == nil, files.isEmpty, chunkFiles.isEmpty else {
+            guard !isStopping, !acceptingSamples, stream == nil, chunkFiles.isEmpty else {
                 throw AppError.message("前の録音の停止処理が完了していません。")
             }
             try FileManager.default.createDirectory(
@@ -91,7 +89,6 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
             self.folder = folder
             self.origin = nil
             self.manifest = manifest
-            self.rawPart.removeAll()
             self.lastMicrophoneInput = Date()
             self.notifiedMissingInput = false
             self.chunkStarts.removeAll()
@@ -122,7 +119,6 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
         let pending: [Task<Void, Never>] = await withCheckedContinuation { continuation in
             queue.async {
                 for type in Array(self.chunkFiles.keys) { self.finishChunk(type) }
-                self.files.removeAll()
                 self.chunkFiles.removeAll()
                 self.chunkURLs.removeAll()
                 self.chunkStarts.removeAll()
@@ -154,6 +150,16 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
                 self?.queue.async { [weak self] in self?.deliveries.removeValue(forKey: id) }
             }
         }
+    }
+    // 16-bit PCM halves the float capture format, and CAF stays readable after a forced quit.
+    static func compactSettings(_ format: AVAudioFormat) -> [String: Any] {
+        var settings = format.settings
+        settings[AVFormatIDKey] = kAudioFormatLinearPCM
+        settings[AVLinearPCMBitDepthKey] = 16
+        settings[AVLinearPCMIsFloatKey] = false
+        settings[AVLinearPCMIsBigEndianKey] = false
+        settings[AVLinearPCMIsNonInterleaved] = false
+        return settings
     }
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         queue.async {
@@ -209,25 +215,15 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
                 finishChunk(type)  // Preserve capture gaps instead of compressing the timeline.
             }
             expectedNextTime[type] = timestamp + Double(buffer.frameLength) / format.sampleRate
-            if let file = files[type], !file.processingFormat.isEqual(format) {
-                finishChunk(type)
-                files.removeValue(forKey: type)
-                rawPart[type, default: 0] += 1  // Keep earlier samples when a default device changes format.
+            if let file = chunkFiles[type], !file.processingFormat.isEqual(format) {
+                finishChunk(type)  // A device switched format: the next chunk takes the new one.
             }
-            if files[type] == nil {
-                let base = type == .audio ? "system" : "microphone"
-                let part = rawPart[type, default: 0]
-                let name = base + (part == 0 ? "" : "-\(part)") + ".caf"
-                files[type] = try AVAudioFile(
-                    forWriting: folder.appendingPathComponent(name), settings: format.settings,
-                    commonFormat: format.commonFormat, interleaved: format.isInterleaved)
-            }
-            try files[type]?.write(from: buffer)
             if origin == nil { origin = timestamp }
+            // The chunks are the recording: there is no separate full-length copy of each track.
             if chunkFiles[type] == nil {
                 let url = folder.appendingPathComponent("chunks").appendingPathComponent(UUID().uuidString + ".caf")
                 chunkFiles[type] = try AVAudioFile(
-                    forWriting: url, settings: format.settings, commonFormat: format.commonFormat,
+                    forWriting: url, settings: Self.compactSettings(format), commonFormat: format.commonFormat,
                     interleaved: format.isInterleaved)
                 let offset = max(0, timestamp - (origin ?? timestamp))
                 chunkURLs[type] = url

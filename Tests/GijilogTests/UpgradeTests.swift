@@ -81,7 +81,7 @@ extension ProcessingTests {
         store.pipeline = ProcessingPipeline(store: store, recognize: { _, _, _, _ in [] })
         await store.recover()
         try await store.waitUntilIdle()
-        await store.waitForMixdowns()
+        await store.waitForBackgroundWork()
         let output = folder.appendingPathComponent("録音.m4a")
         try Self.check(FileManager.default.fileExists(atPath: output.path), "the first recovery writes 録音.m4a")
         let seconds = try await AVURLAsset(url: output).load(.duration).seconds

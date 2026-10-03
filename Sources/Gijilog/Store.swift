@@ -36,6 +36,12 @@ import UniformTypeIdentifiers
     @Published var showsTranscript = true  // The live transcript panel beside the minutes.
     @Published var pinsLiveWindow = true  // Keep the compact live window above the video call.
     @Published var dropTargeted = false  // A file is being dragged over the window.
+    // Once a meeting is complete and 録音.m4a exists, its chunks are only needed to reprocess per track.
+    @Published var removesWorkingAudio = true {
+        didSet { if persistsSettings { UserDefaults.standard.set(removesWorkingAudio, forKey: "removesWorkingAudio") } }
+    }
+    @Published private(set) var storageUsage: StorageUsage?
+    @Published private(set) var reclaimableBytes: Int64 = 0
     // Importing is separate from `busy` (capture setup and stop), so a recording can always be stopped.
     @Published private(set) var importing = false
     private var importQueue: [URL] = []
@@ -90,6 +96,7 @@ import UniformTypeIdentifiers
         if loadSettings {
             let defaults = UserDefaults.standard
             microphone = defaults.string(forKey: "microphone") ?? ""
+            removesWorkingAudio = defaults.object(forKey: "removesWorkingAudio") as? Bool ?? true
             key = KeyStore.read()
             let savedModel = defaults.string(forKey: "summaryModel")
             model = savedModel == "gpt-4.1-mini" ? "gpt-6-sol" : (savedModel ?? model)
@@ -482,8 +489,10 @@ import UniformTypeIdentifiers
         pipeline.requestSummary(id, force: true)
         pipeline.pump()
     }
-    func process(rebuild: Bool = false) async {
-        guard ready, !shuttingDown, let id = selected, !busy, id != activeID, !isProcessing(id) else { return }
+    func process(_ meetingID: UUID? = nil, rebuild: Bool = false) async {
+        guard ready, !shuttingDown, let id = meetingID ?? selected, !busy, id != activeID, !isProcessing(id) else {
+            return
+        }
         preparingIDs.insert(id)
         defer { preparingIDs.remove(id) }
         guard hasKey else {
@@ -491,8 +500,24 @@ import UniformTypeIdentifiers
             return
         }
         do {
+            let folder = folder(id)
+            // Without its working audio, a meeting is transcribed again from 録音.m4a (both tracks mixed).
+            let fromMix = try await Task.detached { try Self.workingAudioMissing(folder) }.value
+            var rebuild = rebuild || fromMix
             if let old = meetings.first(where: { $0.id == id }), rebuild || old.settings == nil {
                 try await repository.backup(old)
+                if old.settings == nil { rebuild = true }
+            }
+            if fromMix {
+                let mix = folder.appendingPathComponent(AudioMixdown.filename)
+                guard FileManager.default.fileExists(atPath: mix.path) else {
+                    throw AppError.message("作業用の音声も録音.m4a もないため、再処理できません。")
+                }
+                _ = try await Task.detached {
+                    WorkingAudio.remove(in: folder)
+                    return try await AudioImport.split(mix, into: folder)
+                }.value
+                change(id) { $0.jobs = [] }
             }
             try await discoverJobs(id)
             change(id) { meeting in
@@ -515,6 +540,11 @@ import UniformTypeIdentifiers
             pipeline.resume(id, key: key)
             pipeline.requestSummary(id, force: true)
         } catch { self.error = error.localizedDescription }
+    }
+    /// True when some audio the meeting was cut into is gone (removed to save space, or deleted by hand).
+    nonisolated static func workingAudioMissing(_ folder: URL) throws -> Bool {
+        let inputs = try Processor.recordingInputs(folder: folder, allowMissing: true)
+        return inputs.isEmpty || inputs.contains { !FileManager.default.fileExists(atPath: $0.url.path) }
     }
     func chooseRecordingFiles() {
         let panel = NSOpenPanel()
@@ -580,24 +610,100 @@ import UniformTypeIdentifiers
         status = "「\(title)」の文字起こしを始めました"
     }
     // Writes 録音.m4a next to the minutes in the background, one meeting at a time.
-    private var mixdowns: Task<Void, Never>?
+    // Work on meeting folders runs one step at a time, so working audio is never removed before 録音.m4a exists.
+    private var backgroundWork: Task<Void, Never>?
+    private func enqueueBackground(_ work: @escaping @MainActor () async -> Void) {
+        let previous = backgroundWork
+        backgroundWork = Task { @MainActor in
+            await previous?.value
+            await work()
+        }
+    }
     private func mixDown(_ ids: [UUID], onlyMissing: Bool) {
         let folders = ids.map(folder).filter {
             !onlyMissing
                 || !FileManager.default.fileExists(atPath: $0.appendingPathComponent(AudioMixdown.filename).path)
         }
         guard !folders.isEmpty else { return }
-        let previous = mixdowns
-        mixdowns = Task.detached(priority: .utility) {
-            await previous?.value
-            for folder in folders { try? await AudioMixdown.write(folder: folder) }
+        enqueueBackground {
+            await Task.detached(priority: .utility) {
+                for folder in folders { try? await AudioMixdown.write(folder: folder) }
+            }.value
         }
     }
-    func waitForMixdowns() async { await mixdowns?.value }
+    func waitForBackgroundWork() async {
+        while let work = backgroundWork {
+            await work.value
+            if backgroundWork == work { return }
+        }
+    }
+    func isComplete(_ meeting: Meeting) -> Bool {
+        meeting.capture != .recording && !meeting.segments.isEmpty && meeting.jobs.allSatisfy { $0.state == .completed }
+            && MinutesEngine.batch(meeting.segments, state: meeting.notes ?? MinutesState()).isEmpty
+            && !pipeline.summaryFailed(meeting.id)
+    }
+    /// Complete meetings whose working audio can go: 録音.m4a exists and nothing is working on them.
+    func cleanableMeetings() -> [UUID] {
+        meetings.filter { meeting in
+            meeting.id != activeID && !isProcessing(meeting.id) && isComplete(meeting)
+                && FileManager.default.fileExists(
+                    atPath: folder(meeting.id).appendingPathComponent(AudioMixdown.filename).path)
+        }.map(\.id)
+    }
+    /// Deletes the working audio of complete meetings and returns the bytes freed.
+    @discardableResult func removeWorkingAudio(of ids: [UUID]) async -> Int64 {
+        let ready = Set(cleanableMeetings())
+        let claimed = ids.filter(ready.contains)
+        guard !claimed.isEmpty else { return 0 }
+        preparingIDs.formUnion(claimed)  // Holds off reprocessing and deletion while the files go.
+        defer { preparingIDs.subtract(claimed) }
+        let folders = claimed.map(folder)
+        let freed = await Task.detached { folders.reduce(Int64(0)) { $0 + WorkingAudio.remove(in: $1) } }.value
+        refreshStorageUsage()
+        return freed
+    }
+    func refreshStorageUsage() {
+        let root = root
+        let folders = cleanableMeetings().map(folder)
+        Task {
+            let (usage, reclaimable) = await Task.detached {
+                (StorageUsage.measure(root), folders.reduce(Int64(0)) { $0 + WorkingAudio.size(in: $1) })
+            }.value
+            storageUsage = usage
+            reclaimableBytes = reclaimable
+        }
+    }
+    func confirmWorkingAudioCleanup() {
+        let ids = cleanableMeetings()
+        guard !ids.isEmpty, reclaimableBytes > 0 else { return }
+        let size = bytes(reclaimableBytes)
+        let alert = NSAlert()
+        alert.messageText = "作業用の音声を削除しますか？"
+        alert.informativeText =
+            "完了した会議 \(ids.count)件の作業用の音声（\(size)）を削除します。聞き返し用の録音.m4a と議事録は残ります。"
+            + "全文を再処理するときは録音.m4a から文字起こしし直すため、Mac音声とマイクは区別されなくなります。"
+        alert.addButton(withTitle: "削除")
+        alert.addButton(withTitle: "キャンセル")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        Task {
+            let freed = await removeWorkingAudio(of: ids)
+            status = "作業用の音声を \(bytes(freed)) 削除しました"
+        }
+    }
     /// Retries only the failed transcription chunks, also while the meeting is still being recorded.
     func retryFailedJobs(_ id: UUID) {
         guard hasKey else {
             error = "再試行するには、設定でOpenAI APIキーを保存してください。"
+            return
+        }
+        let folder = folder(id)
+        let missing =
+            meetings.first { $0.id == id }?.jobs.contains {
+                $0.state == .failed
+                    && !FileManager.default.fileExists(atPath: folder.appendingPathComponent($0.filename).path)
+            } ?? false
+        if missing && id != activeID {
+            Task { await process(id, rebuild: true) }
             return
         }
         change(id) { meeting in
@@ -663,6 +769,9 @@ import UniformTypeIdentifiers
         }
         guard meeting.status != result else { return }
         change(id) { $0.status = result }
+        if result == "完了" && removesWorkingAudio {
+            enqueueBackground { [weak self] in await self?.removeWorkingAudio(of: [id]) }
+        }
     }
     func prepareForTermination() async {
         shuttingDown = true

@@ -490,9 +490,6 @@ extension ProcessingTests {
         try Self.check(
             lengths == [16000, 48000] && inputs.map(\.offset) == [0, 1],
             "format changes preserve both segments and the common clock")
-        let first = try AVAudioFile(forReading: root.appendingPathComponent("system.caf")).length
-        let second = try AVAudioFile(forReading: root.appendingPathComponent("system-1.caf")).length
-        try Self.check(first == 16000 && second == 48000, "format changes never overwrite the previous raw track")
     }
 }
 

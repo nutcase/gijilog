@@ -794,11 +794,32 @@ struct SettingsView: View {
                 }
                 Section {
                     LabeledContent("フォルダ") {
-                        Text(displayPath(store.root))
-                            .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                        Text(displayPath(store.root)).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
                     }
+                    LabeledContent("使用量") {
+                        if let usage = store.storageUsage {
+                            VStack(alignment: .trailing, spacing: 3) {
+                                Text("\(bytes(usage.total))（会議 \(usage.meetings)件）")
+                                Group {
+                                    Text("聞き返し用の録音 \(bytes(usage.recordings))")
+                                    Text("作業用の音声 \(bytes(usage.working))")
+                                    Text("議事録とデータ \(bytes(usage.other))")
+                                }
+                                .font(.caption).foregroundStyle(.secondary)
+                            }
+                        } else {
+                            ProgressView().controlSize(.small)
+                        }
+                    }
+                    Toggle("完了した会議の作業用の音声を自動で削除", isOn: $store.removesWorkingAudio)
                     HStack {
                         Button("Finderで表示") { NSWorkspace.shared.open(store.root) }
+                        Button("作業用の音声を整理…") { store.confirmWorkingAudioCleanup() }
+                            .disabled(store.reclaimableBytes == 0)
+                            .help(
+                                store.reclaimableBytes == 0
+                                    ? "削除できる作業用の音声はありません"
+                                    : "完了した会議の作業用の音声 \(bytes(store.reclaimableBytes)) を削除する")
                         Spacer()
                         Button("変更…") { store.chooseStorageFolder() }.disabled(store.recording || store.busy)
                     }
@@ -806,7 +827,7 @@ struct SettingsView: View {
                     Text("保存先")
                 } footer: {
                     Text(
-                        "会議ごとにフォルダを作り、録音（録音.m4a）と議事録（議事録.md）をまとめて保存します。議事録.md はアプリが書き直すので、手を加えるときは別名で保存してください。保存先を変えると、これまでの会議も移動します。"
+                        "会議ごとにフォルダを作り、録音（録音.m4a）と議事録（議事録.md）をまとめて保存します。議事録.md はアプリが書き直すので、手を加えるときは別名で保存してください。作業用の音声は文字起こしのために区切った音声で、削除すると全文の再処理は録音.m4a から行います（Mac音声とマイクは区別されません）。保存先を変えると、これまでの会議も移動します。"
                     )
                     .fixedSize(horizontal: false, vertical: true)
                 }
@@ -825,8 +846,11 @@ struct SettingsView: View {
             }
             .padding(.horizontal, 20).padding(.bottom, 16)
         }
-        .frame(width: 540, height: 640)
-        .onAppear { draft.load(from: store) }
+        .frame(width: 560, height: 760)
+        .onAppear {
+            draft.load(from: store)
+            store.refreshStorageUsage()
+        }
     }
 }
 

@@ -53,8 +53,10 @@ import ScreenCaptureKit
         try await tests.testImportNeverBlocksStoppingARecording()
         try await tests.testImportMixesEveryAudioTrack()
         try tests.testSettingsCarryOverFromEveryEarlierBundleID()
+        try await tests.testCompletedMeetingKeepsOnlyRecordingAndMinutes()
+        try await tests.testStorageUsageAndCleanupOfCompleteMeetingsOnly()
         print(
-            "PASS: 39 checks (recording, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, audio mixdown, file import, upgrade and recovery)"
+            "PASS: 41 checks (recording, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, audio mixdown, file import, upgrade and recovery, storage cleanup)"
         )
     }
     func fixture(seconds: Double, amplitude: Float) throws -> (URL, URL) {
@@ -133,14 +135,18 @@ import ScreenCaptureKit
         try await recorder.stop()
         let chunks = await collector.values
         try Self.check(chunks.count == 4, "two full chunks and two tails")
-        for (filename, source) in [("system.caf", "Mac音声"), ("microphone.caf", "マイク")] {
-            let raw = try AVAudioFile(forReading: folder.appendingPathComponent(filename))
-            try Self.check(raw.length == 208000, "full track frames: " + filename)
+        for source in ["Mac音声", "マイク"] {
             let trackChunks = chunks.filter { $0.2 == source }.sorted { $0.1 < $1.1 }
             try Self.check(trackChunks.map { $0.1 } == [0, 12], "common clock and tail offset")
-            let total = try trackChunks.reduce(Int64(0)) { try $0 + AVAudioFile(forReading: $1.0).length }
-            try Self.check(total == raw.length, "no lost final second: " + source)
+            let files = try trackChunks.map { try AVAudioFile(forReading: $0.0) }
+            try Self.check(files.reduce(Int64(0)) { $0 + $1.length } == 208000, "no lost final second: " + source)
+            try Self.check(
+                files.allSatisfy { $0.fileFormat.commonFormat == .pcmFormatInt16 }, "chunks are 16-bit PCM: " + source)
         }
+        let copies = try FileManager.default.contentsOfDirectory(atPath: folder.path).filter {
+            $0.hasSuffix(".caf") && $0 != "input.caf"
+        }
+        try Self.check(copies.isEmpty, "no second full-length copy of each track is written: \(copies)")
     }
     func audioSample(at second: Int64, amplitude: Float = 0.25, sampleRate: Double = 16000) throws -> CMSampleBuffer {
         let format = try Self.require(
@@ -200,8 +206,13 @@ import ScreenCaptureKit
         recorder.consume(try audioSample(at: 20), of: .audio)
         recorder.consume(try audioSample(at: 21), of: .audio)
         try await recorder.stop()
-        let firstFrames = try AVAudioFile(forReading: first.appendingPathComponent("system.caf")).length
-        let secondFrames = try AVAudioFile(forReading: second.appendingPathComponent("system.caf")).length
+        func frames(_ folder: URL) throws -> Int64 {
+            try Processor.recordingInputs(folder: folder).reduce(Int64(0)) {
+                try $0 + AVAudioFile(forReading: $1.url).length
+            }
+        }
+        let firstFrames = try frames(first)
+        let secondFrames = try frames(second)
         try Self.check(firstFrames == 16000, "previous meeting must not receive later audio")
         try Self.check(secondFrames == 32000, "next meeting must receive its own audio")
         let inputs = try Processor.recordingInputs(folder: second)

@@ -153,7 +153,9 @@ enum Processor {
                     url.lastPathComponent == base + ".caf" || url.lastPathComponent.hasPrefix(base + "-")
                 })
         }
-        let urls = raw + (try recordingInputs(folder: folder, allowMissing: true)).map(\.url)
+        let urls =
+            raw + (try recordingInputs(folder: folder, allowMissing: true)).map(\.url)
+            + [folder.appendingPathComponent(AudioMixdown.filename)]
         var failure: Error?
         for url in urls where FileManager.default.fileExists(atPath: url.path) {
             do { if try AVAudioFile(forReading: url).length > 0 { return true } } catch { failure = error }
@@ -308,7 +310,8 @@ enum AudioImport {
                 if file == nil {
                     let name = String(format: "import-%04d.caf", chunks.count + 1)
                     file = try AVAudioFile(
-                        forWriting: chunksFolder.appendingPathComponent(name), settings: format.settings,
+                        forWriting: chunksFolder.appendingPathComponent(name),
+                        settings: Recorder.compactSettings(format),
                         commonFormat: .pcmFormatFloat32, interleaved: false)
                     chunks.append(RecordedChunk(filename: name, offset: Double(total) / sampleRate, source: source))
                     inChunk = 0

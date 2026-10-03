@@ -31,7 +31,7 @@ extension ProcessingTests {
             summarize: MinutesEngine.stubSummary)
         await store.importRecording(from: audio)
         try await store.waitUntilIdle()
-        await store.waitForMixdowns()
+        await store.waitForBackgroundWork()
         let meeting = try Self.require(store.meetings.first, "imported meeting")
         try Self.check(
             meeting.title == "input" && meeting.jobs.count == 2 && meeting.segments.map(\.time) == [0, 30]
