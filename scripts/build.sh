@@ -10,7 +10,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleExecutable</key><string>Minutes</string>
-<key>CFBundleIdentifier</key><string>local.minutes.kirokuru</string>
+<key>CFBundleIdentifier</key><string>io.github.nutcase.kirokuru</string>
 <key>CFBundleName</key><string>キロクル</string>
 <key>CFBundleDisplayName</key><string>キロクル</string>
 <key>CFBundlePackageType</key><string>APPL</string>
