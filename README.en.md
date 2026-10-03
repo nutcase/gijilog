@@ -22,6 +22,7 @@ Keep its compact window next to the call to see what has been decided, what is s
 - **From existing recordings too**: import a Voice Memo, a Zoom recording, or any audio or video file and get the same minutes afterward.
 - **Audio and minutes together**: each meeting gets a folder with `議事録.md` (minutes) and `録音.m4a` (audio).
 - **Tags**: tag meetings and narrow the list to the ones you need.
+- **Keyword search**: search titles, tags, minutes, and transcripts at once, with every match marked.
 
 ## Requirements
 
@@ -65,6 +66,10 @@ Live updates remain on a 30-second timer. After recording and transcription fini
 Click タグを追加 (Add tag) under a meeting's title, type a tag, and press Return; separate several tags with commas. Tags you used before are offered as suggestions, and right-clicking a meeting in the list opens a タグ (Tags) submenu.
 
 Click tags at the top of the list to show only the meetings that have all of them; 解除 (Clear) shows every meeting again. To rename or delete a tag on every meeting at once, open the タグ (Tags) tab in Settings, or click 管理 (Manage) above the tags. Renaming a tag to another tag's name merges the two; deleting a tag leaves the meetings in place. Tags that differ only in letter case or in full-width and half-width characters count as one tag. Tags are also written under the title in `議事録.md`. Starting a recording or importing a file clears the filter so the new meeting stays in view.
+
+## Keyword search
+
+Type in the search field above the list (⌘F) to show only the meetings whose title, tags, minutes, or transcript contain your keywords; each meeting shows an excerpt of the match. Separate keywords with spaces to find meetings that contain all of them. Letter case and full-width or half-width characters are ignored, and search combines with the tag filter. Opening a meeting marks the matches in its minutes and transcript and scrolls the transcript to the first one.
 
 ## Minutes from a recording file
 
@@ -112,7 +117,7 @@ If your Documents folder syncs with iCloud Drive, recordings are uploaded too.
 ./scripts/build.sh   # build dist/ギジログ.app after the checks pass
 ```
 
-The 51 regression tests cover chunking and the shared recording clock, incremental minutes and evidence checks, retries and recovery after restart, moving the save location and upgrading from earlier versions, mixing the audio, importing recording files, cleaning up working audio, the final review, and tags. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.
+The 53 regression tests cover chunking and the shared recording clock, incremental minutes and evidence checks, retries and recovery after restart, moving the save location and upgrading from earlier versions, mixing the audio, importing recording files, cleaning up working audio, the final review, tags, and search. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.
 
 With only the Command Line Tools installed, SwiftUI's `@State` does not compile, so view state lives in `ObservableObject`s.
 

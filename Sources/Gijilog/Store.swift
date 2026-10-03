@@ -1,5 +1,6 @@
 import AVFoundation
 import AppKit
+import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -39,6 +40,11 @@ import UniformTypeIdentifiers
     @Published private(set) var tagFilter: [String] = []  // The list shows meetings that have every one of these.
     @Published var tagEditor: UUID?  // The meeting whose tag field is open.
     @Published var settingsTab = "一般"
+    @Published var searchText = ""
+    @Published var focusesSearch = false  // Set by ⌘F; the sidebar moves the cursor to its search field.
+    @Published private(set) var searchHits: [UUID: SearchHit] = [:]
+    @Published private(set) var searchedTerms: [String] = []  // The keywords searchHits answers.
+    private var searchUpdates: AnyCancellable?
     // Once a meeting is complete and 録音.m4a exists, its chunks are only needed to reprocess per track.
     @Published var removesWorkingAudio = true {
         didSet { if persistsSettings { UserDefaults.standard.set(removesWorkingAudio, forKey: "removesWorkingAudio") } }
@@ -118,6 +124,10 @@ import UniformTypeIdentifiers
         recorder.onLevel = { [weak self] source, value in
             Task { @MainActor in self?.meter.record(value, microphone: source == "マイク") }
         }
+        // Search once typing pauses, and again as a live meeting grows.
+        searchUpdates = Publishers.CombineLatest($searchText, $meetings)
+            .debounce(for: .milliseconds(200), scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.refreshSearch() } }
         if loadSettings {
             observers.append(
                 NSWorkspace.shared.notificationCenter.addObserver(
@@ -408,7 +418,7 @@ import UniformTypeIdentifiers
                 in: root, name: meetingFolderName(date: meeting.date, title: untitled ? "会議" : meeting.title)
             ).lastPathComponent
         meetings.insert(meeting, at: 0)
-        tagFilter = []  // A new meeting has no tags yet; keep it in the list.
+        showNewMeeting()
         selected = meeting.id
         activeID = meeting.id
         captureInputID = microphone.isEmpty ? AVCaptureDevice.default(for: .audio)?.uniqueID : microphone
@@ -649,7 +659,7 @@ import UniformTypeIdentifiers
                 id: stableID(relative), filename: relative, offset: chunk.offset, source: chunk.source)
         }
         meetings.insert(meeting, at: meetings.firstIndex { $0.date < date } ?? meetings.count)
-        tagFilter = []
+        showNewMeeting()
         if !recording { selected = meeting.id }  // Keep the live meeting on screen.
         do { try await checkpoint(meeting.id) } catch { self.error = error.localizedDescription }
         mixDown([meeting.id], onlyMissing: false)
@@ -895,8 +905,11 @@ extension Store {
             .map(\.element)
     }
     var visibleMeetings: [Meeting] {
-        guard !tagFilter.isEmpty else { return meetings }
-        return meetings.filter { meeting in tagFilter.allSatisfy { MeetingTags.contains(meeting.tags, $0) } }
+        guard !tagFilter.isEmpty || !searchedTerms.isEmpty else { return meetings }
+        return meetings.filter { meeting in
+            tagFilter.allSatisfy { MeetingTags.contains(meeting.tags, $0) }
+                && (searchedTerms.isEmpty || searchHits[meeting.id] != nil)
+        }
     }
     /// Adds tags typed or picked for a meeting. A tag another meeting already has keeps that spelling.
     func addTags(_ text: String, to id: UUID) {
@@ -919,8 +932,7 @@ extension Store {
         } else {
             tagFilter.append(tag)
         }
-        let visible = visibleMeetings
-        if !visible.contains(where: { $0.id == selected }), let first = visible.first { selected = first.id }
+        selectVisibleMeeting()
     }
     func clearTagFilter() { tagFilter = [] }
     /// Renames a tag on every meeting. A name another tag already has merges the two, spelled as typed.
@@ -944,6 +956,33 @@ extension Store {
             change(meeting.id) { meeting in meeting.tags.removeAll { MeetingTags.key($0) == MeetingTags.key(tag) } }
         }
         pruneTagFilter()
+    }
+    /// A selection the list no longer shows moves to the first meeting it does.
+    private func selectVisibleMeeting() {
+        let visible = visibleMeetings
+        if !visible.contains(where: { $0.id == selected }), let first = visible.first { selected = first.id }
+    }
+    /// A new meeting has no tags and matches no search yet; clear both so it shows in the list.
+    private func showNewMeeting() {
+        tagFilter = []
+        if !searchText.isEmpty {
+            searchText = ""
+            refreshSearch()
+        }
+    }
+    /// Finds the meetings that contain every keyword. A new query also moves the selection to its first result.
+    func refreshSearch() {
+        let terms = MeetingSearch.terms(searchText)
+        var hits: [UUID: SearchHit] = [:]
+        if !terms.isEmpty {
+            for meeting in meetings {
+                if let hit = MeetingSearch.search(meeting, terms: terms) { hits[meeting.id] = hit }
+            }
+        }
+        if hits != searchHits { searchHits = hits }
+        guard terms != searchedTerms else { return }
+        searchedTerms = terms
+        selectVisibleMeeting()
     }
     /// A tag no meeting has any more cannot narrow the list.
     private func pruneTagFilter() {

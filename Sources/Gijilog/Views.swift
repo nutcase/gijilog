@@ -56,6 +56,24 @@ extension Store {
     var selectedMeeting: Meeting? { meetings.first { $0.id == selected } }
     var activeMeeting: Meeting? { meetings.first { $0.id == activeID } }
 }
+// The keywords being searched, for marking them in the minutes and transcript of the selected meeting.
+private struct SearchTermsKey: EnvironmentKey { static let defaultValue: [String] = [] }
+extension EnvironmentValues {
+    var searchTerms: [String] {
+        get { self[SearchTermsKey.self] }
+        set { self[SearchTermsKey.self] = newValue }
+    }
+}
+/// The text with every keyword marked like a highlighter pen.
+func highlighted(_ text: String, _ terms: [String]) -> AttributedString {
+    var result = AttributedString(text)
+    for range in MeetingSearch.ranges(of: terms, in: text) {
+        if let marked = Range(range, in: result) {
+            result[marked].swiftUI.backgroundColor = Palette.yamabuki.opacity(0.42)
+        }
+    }
+    return result
+}
 
 // Switching views: the compact window replaces the full window, and its button brings the full window back.
 struct ViewSwitch {
@@ -100,6 +118,7 @@ struct ContentView: View {
                         TranscriptPanel(meeting: meeting).frame(width: 320)
                     }
                 }
+                .environment(\.searchTerms, store.searchedTerms)
             }
             .background(Palette.kon)
             // Dropping recordings on the window makes minutes from them.
@@ -199,15 +218,24 @@ struct ContentView: View {
 
 struct MeetingList: View {
     @EnvironmentObject var store: Store
+    @FocusState private var searchFocused: Bool
     var body: some View {
         List(selection: $store.selected) {
-            if days.isEmpty && !store.tagFilter.isEmpty {
+            if days.isEmpty && !store.searchedTerms.isEmpty {
+                Text(
+                    "「\(store.searchedTerms.joined(separator: " "))」を含む会議はありません。"
+                        + (store.tagFilter.isEmpty ? "" : "タグでも絞り込んでいます。")
+                )
+                .font(.callout).foregroundStyle(.secondary).lineLimit(nil)  // Sidebar rows default to one line.
+            } else if days.isEmpty && !store.tagFilter.isEmpty {
                 Text("選んだタグがすべて付いた会議はありません。").font(.callout).foregroundStyle(.secondary)
+                    .lineLimit(nil)
             }
             ForEach(days, id: \.0) { title, meetings in
                 Section(title) {
                     ForEach(meetings) { meeting in
-                        MeetingRow(meeting: meeting).tag(meeting.id)
+                        MeetingRow(meeting: meeting, hit: store.searchHits[meeting.id], terms: store.searchedTerms)
+                            .tag(meeting.id)
                             .contextMenu {
                                 TagMenu(meeting: meeting)
                                 Divider()
@@ -219,6 +247,17 @@ struct MeetingList: View {
             }
         }
         .listStyle(.sidebar)
+        .searchable(text: $store.searchText, placement: .sidebar, prompt: "キーワードで検索")
+        .searchFocused($searchFocused)
+        .onChange(of: store.focusesSearch, initial: true) {
+            guard store.focusesSearch else { return }
+            store.focusesSearch = false
+            // A window that ⌘F just opened needs a moment before its search field can take focus.
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                searchFocused = true
+            }
+        }
         .scrollContentBackground(.hidden)
         .background(Palette.deepAi)
         .safeAreaInset(edge: .top) {
@@ -259,9 +298,11 @@ struct MeetingList: View {
 }
 struct MeetingRow: View {
     let meeting: Meeting
+    var hit: SearchHit?
+    var terms: [String] = []
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(meeting.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+            Text(highlighted(meeting.title, terms)).font(.system(size: 13, weight: .semibold)).lineLimit(1)
             HStack(spacing: 6) {
                 Circle().fill(statusColor(meeting.status)).frame(width: 6, height: 6)
                 Text(meeting.date.formatted(date: .omitted, time: .shortened))
@@ -272,11 +313,21 @@ struct MeetingRow: View {
                 // Not a Label: the sidebar would tint its icon with the accent color.
                 HStack(spacing: 4) {
                     Image(systemName: "tag").imageScale(.small)
-                    Text(meeting.tags.joined(separator: ", ")).lineLimit(1)
+                    Text(highlighted(meeting.tags.joined(separator: ", "), terms)).lineLimit(1)
                 }
                 .font(.caption).foregroundStyle(.secondary)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("タグ: " + meeting.tags.joined(separator: ", "))
+            }
+            // The title and tags already show their own matches; other matches get a short excerpt.
+            if let hit, hit.place == .minutes || hit.place == .transcript {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Image(systemName: hit.place == .transcript ? "text.quote" : "doc.text").imageScale(.small)
+                    Text(highlighted((hit.time.map { clock($0) + " " } ?? "") + hit.snippet, terms)).lineLimit(2)
+                }
+                .font(.caption).foregroundStyle(Palette.paper.opacity(0.78))
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel((hit.place == .transcript ? "文字起こし: " : "議事録: ") + hit.snippet)
             }
         }
         .padding(.vertical, 4)
@@ -657,6 +708,7 @@ struct EmptyDesk: View {
 }
 struct MinutesDesk: View {
     @EnvironmentObject var store: Store
+    @Environment(\.searchTerms) private var terms
     let meeting: Meeting
     var body: some View {
         ScrollView {
@@ -666,7 +718,7 @@ struct MinutesDesk: View {
                 if let notes = meeting.notes {
                     MinutesSections(notes: notes, segments: meeting.segments)
                 } else if !meeting.minutes.isEmpty {
-                    Text(meeting.minutes).font(.system(size: 14)).lineSpacing(5).padding(.top, 24)
+                    Text(highlighted(meeting.minutes, terms)).font(.system(size: 14)).lineSpacing(5).padding(.top, 24)
                 } else {
                     Text(
                         meeting.transcriptionFailure != nil && meeting.segments.isEmpty
@@ -691,7 +743,7 @@ struct MinutesDesk: View {
     }
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(meeting.title).font(.mincho(26))
+            Text(highlighted(meeting.title, terms)).font(.mincho(26))
             HStack(spacing: 10) {
                 Text(longDate.string(from: meeting.date)).foregroundStyle(.secondary).fixedSize()
                 Text(meeting.status)
@@ -927,6 +979,7 @@ struct NoteSection: View {
     }
 }
 struct NoteRow: View {
+    @Environment(\.searchTerms) private var terms
     let item: NoteItem
     let known: [String: Segment]
     let fresh: Bool
@@ -947,13 +1000,21 @@ struct NoteRow: View {
                 ) { $0[.bottom] + 2 }
             }
             VStack(alignment: .leading, spacing: 5) {
-                Text(item.text).font(.system(size: compact ? 13 : 14.5)).lineSpacing(compact ? 2 : 4)
-                    .strikethrough(item.state == .cancelled)
-                    .foregroundStyle(item.state == .cancelled ? Color.secondary : Palette.sumi)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let reason = item.reason { Text("理由：" + reason).font(.caption).foregroundStyle(.secondary) }
-                if let next = item.nextStep { Text("次の確認：" + next).font(.caption).foregroundStyle(Palette.yamabuki) }
-                if let change = item.changeSummary { Text("経緯：" + change).font(.caption).foregroundStyle(.secondary) }
+                Text(highlighted(item.text, terms)).font(.system(size: compact ? 13 : 14.5)).lineSpacing(
+                    compact ? 2 : 4
+                )
+                .strikethrough(item.state == .cancelled)
+                .foregroundStyle(item.state == .cancelled ? Color.secondary : Palette.sumi)
+                .fixedSize(horizontal: false, vertical: true)
+                if let reason = item.reason {
+                    Text(highlighted("理由：" + reason, terms)).font(.caption).foregroundStyle(.secondary)
+                }
+                if let next = item.nextStep {
+                    Text(highlighted("次の確認：" + next, terms)).font(.caption).foregroundStyle(Palette.yamabuki)
+                }
+                if let change = item.changeSummary {
+                    Text(highlighted("経緯：" + change, terms)).font(.caption).foregroundStyle(.secondary)
+                }
                 HStack(spacing: 8) {
                     if action {
                         Tag(label: "担当", value: item.owner, open: item.state == .open)
@@ -968,7 +1029,7 @@ struct NoteRow: View {
                         ForEach(evidence) { segment in
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("\(clock(segment.time)) \(segment.source)").foregroundStyle(.secondary)
-                                Text(segment.text).fixedSize(horizontal: false, vertical: true)
+                                Text(highlighted(segment.text, terms)).fixedSize(horizontal: false, vertical: true)
                             }
                             .padding(.vertical, 3)
                         }
@@ -1007,15 +1068,25 @@ struct Tag: View {
 }
 struct TranscriptPanel: View {
     @EnvironmentObject var store: Store
+    @Environment(\.searchTerms) private var terms
     @StateObject private var follow = TranscriptFollow()
     let meeting: Meeting
     var body: some View {
         let live = meeting.id == store.activeID
+        let matches =
+            terms.isEmpty
+            ? []
+            : meeting.segments.filter { segment in
+                terms.contains { segment.text.range(of: $0, options: MeetingSearch.options) != nil }
+            }
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
                 Text("文字起こし").font(.headline)
                 Spacer()
                 let pending = meeting.jobs.filter { $0.state == .pending || $0.state == .running }.count
+                if !terms.isEmpty {
+                    Text("一致 \(matches.count)件").font(.caption.weight(.semibold)).foregroundStyle(Palette.yamabuki)
+                }
                 Text(pending > 0 ? "\(meeting.segments.count)件・処理待ち \(pending)件" : "\(meeting.segments.count)件")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -1053,7 +1124,13 @@ struct TranscriptPanel: View {
                         }
                     }
                     .onChange(of: meeting.segments.last?.id) {
-                        if live && follow.atEnd { scrollToEnd(proxy) }
+                        if live && follow.atEnd && terms.isEmpty { scrollToEnd(proxy) }
+                    }
+                    // A new search, or another meeting while searching, opens at the first matching utterance.
+                    .task(id: "\(meeting.id) \(terms.joined(separator: " "))") {
+                        guard let first = matches.first?.id else { return }
+                        try? await Task.sleep(nanoseconds: 100_000_000)  // After the rows are laid out.
+                        proxy.scrollTo(first, anchor: .center)
                     }
                     .overlay(alignment: .bottom) {
                         if live && !follow.atEnd {
@@ -1089,6 +1166,7 @@ struct ScrollMetrics: Equatable {
     var atEnd: Bool { offset + container >= content - 60 }
 }
 struct TranscriptRow: View {
+    @Environment(\.searchTerms) private var terms
     let segment: Segment
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -1098,7 +1176,8 @@ struct TranscriptRow: View {
                 Text(segment.source)
             }
             .font(.caption).foregroundStyle(.secondary)
-            Text(segment.text).font(.system(size: 13.5)).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+            Text(highlighted(segment.text, terms)).font(.system(size: 13.5)).lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -1545,6 +1624,19 @@ struct FloatingWindow: NSViewRepresentable {
 // MARK: - Menu bar
 
 // Start and stop from the menu bar and the app's 録音 menu, even with every window closed.
+// Edit > 検索 (⌘F): search lives in the full window's sidebar, so the compact view switches back to it.
+struct FindMenuItem: View {
+    @ObservedObject var store: Store
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
+    var body: some View {
+        Button("検索") {
+            ViewSwitch(open: openWindow, dismiss: dismissWindow).full()
+            store.focusesSearch = true
+        }
+        .keyboardShortcut("f")
+    }
+}
 struct RecordingMenuItems: View {
     @ObservedObject var store: Store
     @Environment(\.openWindow) private var openWindow

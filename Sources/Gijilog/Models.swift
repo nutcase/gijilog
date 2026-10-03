@@ -147,6 +147,70 @@ enum MeetingTags {
     static func contains(_ list: [String], _ tag: String) -> Bool { list.contains { key($0) == key(tag) } }
 }
 
+// Keyword search across a meeting: its title, tags, minutes and transcript.
+struct SearchHit: Equatable {
+    enum Place: Equatable { case title, tags, minutes, transcript }
+    var place: Place
+    var snippet: String  // The matching passage, cut around the first keyword.
+    var segmentID: String?  // The utterance, when the passage is in the transcript.
+    var time: Double?
+}
+enum MeetingSearch {
+    static let options: String.CompareOptions = [.caseInsensitive, .widthInsensitive]
+    /// Keywords separated by spaces (half-width or full-width). A meeting must contain every one.
+    static func terms(_ query: String) -> [String] {
+        var seen = Set<String>()
+        return query.split(whereSeparator: { $0.isWhitespace }).map(String.init).filter {
+            seen.insert($0.folding(options: [.caseInsensitive, .widthInsensitive], locale: nil)).inserted
+        }
+    }
+    /// Where the meeting matches, or nil unless every keyword appears somewhere in it.
+    /// The passage shown is the first place, in reading order, that has the first keyword.
+    static func search(_ meeting: Meeting, terms: [String]) -> SearchHit? {
+        guard let first = terms.first else { return nil }
+        var places: [(SearchHit.Place, String, Segment?)] = [(.title, meeting.title, nil)]
+        places += meeting.tags.map { (.tags, $0, nil) }
+        if let content = meeting.notes?.content {
+            for item in content.summary + content.decisions + content.unresolved + content.actions {
+                places += [item.text, item.reason, item.nextStep, item.changeSummary, item.owner, item.due]
+                    .compactMap { $0.map { (.minutes, $0, nil) } }
+            }
+        } else if !meeting.minutes.isEmpty {
+            places.append((.minutes, meeting.minutes, nil))
+        }
+        places += meeting.segments.map { (.transcript, $0.text, $0) }
+        for term in terms.dropFirst() where !places.contains(where: { $0.1.range(of: term, options: options) != nil }) {
+            return nil
+        }
+        for (place, text, segment) in places {
+            guard let range = text.range(of: first, options: options) else { continue }
+            return SearchHit(
+                place: place, snippet: snippet(text, around: range), segmentID: segment?.id, time: segment?.time)
+        }
+        return nil
+    }
+    /// Every occurrence of every keyword in the text, for marking them.
+    static func ranges(of terms: [String], in text: String) -> [Range<String.Index>] {
+        var result: [Range<String.Index>] = []
+        for term in terms {
+            var rest = text.startIndex..<text.endIndex
+            while let range = text.range(of: term, options: options, range: rest), !range.isEmpty {
+                result.append(range)
+                rest = range.upperBound..<text.endIndex
+            }
+        }
+        return result
+    }
+    static func snippet(_ text: String, around range: Range<String.Index>, before: Int = 14, after: Int = 40)
+        -> String
+    {
+        let start = text.index(range.lowerBound, offsetBy: -before, limitedBy: text.startIndex) ?? text.startIndex
+        let end = text.index(range.upperBound, offsetBy: after, limitedBy: text.endIndex) ?? text.endIndex
+        let passage = text[start..<end].replacingOccurrences(of: "\n", with: " ")
+        return (start > text.startIndex ? "…" : "") + passage + (end < text.endIndex ? "…" : "")
+    }
+}
+
 func clock(_ seconds: Double) -> String {
     let s = max(0, Int(seconds))
     return s >= 3600

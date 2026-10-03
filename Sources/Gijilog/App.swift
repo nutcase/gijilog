@@ -12,7 +12,10 @@ import SwiftUI
         }
         .defaultSize(width: 1320, height: 860)
         .windowToolbarStyle(.unified)
-        .commands { CommandMenu("録音") { RecordingMenuItems(store: store) } }
+        .commands {
+            CommandMenu("録音") { RecordingMenuItems(store: store) }
+            CommandGroup(after: .textEditing) { FindMenuItem(store: store) }
+        }
         // The compact view floats beside the video call while the minutes are written.
         Window("ギジログ 小画面", id: "live") {
             LiveWindow().environmentObject(store).onAppear { delegate.store = store }
