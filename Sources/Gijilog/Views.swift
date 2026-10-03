@@ -654,9 +654,10 @@ struct TranscriptPanel: View {
                     } action: { old, new in
                         // New speech growing the content is not the user scrolling away; only their own scroll
                         // (same content size, different offset) stops following.
+                        // Publish only real changes, so the modifier does not update several times per frame.
                         if new.content == old.content && new.container == old.container {
-                            follow.atEnd = new.atEnd
-                        } else if new.atEnd {
+                            if follow.atEnd != new.atEnd { follow.atEnd = new.atEnd }
+                        } else if new.atEnd && !follow.atEnd {
                             follow.atEnd = true
                         }
                     }
@@ -687,7 +688,7 @@ struct TranscriptPanel: View {
     private func scrollToEnd(_ proxy: ScrollViewProxy) {
         guard let last = meeting.segments.last?.id else { return }
         proxy.scrollTo(last, anchor: .bottom)
-        follow.atEnd = true
+        if !follow.atEnd { follow.atEnd = true }
     }
 }
 struct ScrollMetrics: Equatable {
