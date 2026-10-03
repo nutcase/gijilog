@@ -275,13 +275,14 @@ enum AudioImport {
     static let sampleRate = 16_000.0
     static func split(_ input: URL, into folder: URL) async throws -> [RecordedChunk] {
         let asset = AVURLAsset(url: input)
-        guard let track = try? await asset.loadTracks(withMediaType: .audio).first else {
+        // Every audio track is mixed, so a recording with each side on its own track keeps both voices.
+        guard let tracks = try? await asset.loadTracks(withMediaType: .audio), !tracks.isEmpty else {
             throw AppError.message("このファイルには音声が含まれていません。")
         }
         let reader = try AVAssetReader(asset: asset)
-        let output = AVAssetReaderTrackOutput(
-            track: track,
-            outputSettings: [
+        let output = AVAssetReaderAudioMixOutput(
+            audioTracks: tracks,
+            audioSettings: [
                 AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: sampleRate, AVNumberOfChannelsKey: 1,
                 AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true, AVLinearPCMIsBigEndianKey: false,
                 AVLinearPCMIsNonInterleaved: false,

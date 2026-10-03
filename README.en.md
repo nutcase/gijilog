@@ -53,7 +53,7 @@ open dist/ギジログ.app
 
 ## Minutes from a recording file
 
-Click ファイルから作成 (Create from file) or drop audio or video files on the window. Each file is cut into about 30-second pieces, transcribed, and then summarized into minutes. The meeting takes the file's name and creation date, and its folder gets `議事録.md` and `録音.m4a`; the original file is left as is.
+Click ファイルから作成 (Create from file) or drop audio or video files on the window. Each file is cut into about 30-second pieces, transcribed, and then summarized into minutes. All audio tracks are mixed, and importing never blocks stopping a recording. The meeting takes the file's name and creation date, and its folder gets `議事録.md` and `録音.m4a`; the original file is left as is.
 
 ## Where meetings are saved
 
@@ -97,7 +97,7 @@ If your Documents folder syncs with iCloud Drive, recordings are uploaded too.
 ./scripts/build.sh   # build dist/ギジログ.app after the checks pass
 ```
 
-The 36 regression tests cover chunking and the shared recording clock, incremental minutes and evidence checks, retries and recovery after restart, moving the save location and upgrading from earlier versions, mixing the audio, and importing recording files. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.
+The 39 regression tests cover chunking and the shared recording clock, incremental minutes and evidence checks, retries and recovery after restart, moving the save location and upgrading from earlier versions, mixing the audio, and importing recording files. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.
 
 With only the Command Line Tools installed, SwiftUI's `@State` does not compile, so view state lives in `ObservableObject`s.
 

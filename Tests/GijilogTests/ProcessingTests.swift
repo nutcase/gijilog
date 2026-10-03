@@ -50,8 +50,11 @@ import ScreenCaptureKit
         try await tests.testTranscriptionFailureIsShownAndRetriedWhileRecording()
         try await tests.testEarlierSettingsAndFoldersCarryOver()
         try await tests.testInterruptedRecordingGetsAudioOnFirstRecovery()
+        try await tests.testImportNeverBlocksStoppingARecording()
+        try await tests.testImportMixesEveryAudioTrack()
+        try tests.testSettingsCarryOverFromEveryEarlierBundleID()
         print(
-            "PASS: 36 checks (recording, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, audio mixdown, file import, upgrade and recovery)"
+            "PASS: 39 checks (recording, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, audio mixdown, file import, upgrade and recovery)"
         )
     }
     func fixture(seconds: Double, amplitude: Float) throws -> (URL, URL) {

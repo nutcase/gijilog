@@ -97,7 +97,7 @@ struct ContentView: View {
             // Dropping recordings on the window makes minutes from them.
             .dropDestination(for: URL.self) { urls, _ in
                 guard !urls.isEmpty else { return false }
-                Task { for url in urls { await store.importRecording(from: url) } }
+                store.importRecordings(urls)
                 return true
             } isTargeted: {
                 store.dropTargeted = $0
@@ -276,13 +276,13 @@ struct RecorderBar: View {
                 .buttonStyle(CapsuleButtonStyle(filled: false, tint: Palette.paper))
                 .fixedSize()
                 .help("録音ファイル（音声・動画）から議事録を作る。ウインドウにドロップしても作れます")
-                .disabled(store.busy || !store.ready || !store.hasKey)
+                .disabled(!store.ready || !store.hasKey)
                 Button(action: start) { Label("録音を開始", systemImage: "record.circle") }
                     .buttonStyle(CapsuleButtonStyle(filled: true))
                     .fixedSize()
                     .keyboardShortcut("r", modifiers: [.command, .shift])
                     .disabled(store.busy || !store.ready || !store.hasKey)
-                if store.busy { ProgressView().controlSize(.small) }
+                if store.busy || store.importing { ProgressView().controlSize(.small) }
             }
             if store.hasKey {
                 Text("Macの音声とマイクを録音し、OpenAIで文字起こしと議事録づくりをします。録音ファイルはドロップしても読み込めます。API利用料がかかります。")

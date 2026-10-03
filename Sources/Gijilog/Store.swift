@@ -36,6 +36,10 @@ import UniformTypeIdentifiers
     @Published var showsTranscript = true  // The live transcript panel beside the minutes.
     @Published var pinsLiveWindow = true  // Keep the compact live window above the video call.
     @Published var dropTargeted = false  // A file is being dragged over the window.
+    // Importing is separate from `busy` (capture setup and stop), so a recording can always be stopped.
+    @Published private(set) var importing = false
+    private var importQueue: [URL] = []
+    private var importTask: Task<Void, Never>?
     // Changed only through saveSettings; the settings form edits its own draft.
     @Published var key = ""
     @Published var model = "gpt-6-sol"
@@ -145,9 +149,12 @@ import UniformTypeIdentifiers
     func folder(_ id: UUID) -> URL {
         root.appendingPathComponent(meetings.first { $0.id == id }?.folderName ?? id.uuidString)
     }
-    // Earlier versions: the app was キロクル (bundle ID local.minutes.kirokuru, default folder ~/Documents/キロクル),
-    // and before that local.minutes.desktop, which kept meetings in Application Support under UUID folders.
-    nonisolated static let previousBundleIDs = ["local.minutes.kirokuru", "local.minutes.desktop"]
+    // Earlier versions, newest first: the app was キロクル (bundle IDs io.github.nutcase.kirokuru and
+    // local.minutes.kirokuru, default folder ~/Documents/キロクル), and before that local.minutes.desktop, which
+    // kept meetings in Application Support under UUID folders. Settings from a newer ID win.
+    nonisolated static let previousBundleIDs = [
+        "io.github.nutcase.kirokuru", "local.minutes.kirokuru", "local.minutes.desktop",
+    ]
     struct PreviousLocation: Sendable {
         let folder: URL
         let renamesFolders: Bool  // UUID-named folders get date-and-title names.
@@ -516,19 +523,27 @@ import UniformTypeIdentifiers
         panel.prompt = "議事録を作成"
         panel.message = "議事録を作る録音ファイル（音声・動画）を選んでください。"
         guard panel.runModal() == .OK else { return }
-        let urls = panel.urls
-        Task { for url in urls { await importRecording(from: url) } }
+        importRecordings(panel.urls)
+    }
+    /// Queues files to import one after another; files dropped while an import runs wait their turn.
+    func importRecordings(_ urls: [URL]) {
+        importQueue += urls
+        guard importTask == nil else { return }
+        importTask = Task {
+            while !importQueue.isEmpty { await importRecording(from: importQueue.removeFirst()) }
+            importTask = nil
+        }
     }
     // Minutes from a recording made elsewhere (Voice Memos, a Zoom recording, any audio or video file).
     // The original file is left untouched; the meeting folder gets the chunks, 録音.m4a and 議事録.md.
     func importRecording(from input: URL) async {
-        guard ready, !busy, !shuttingDown else { return }
+        guard ready, !shuttingDown else { return }
         guard hasKey else {
             error = "議事録を作るには、設定でOpenAI APIキーを保存してください。"
             return
         }
-        busy = true
-        defer { busy = false }
+        importing = true
+        defer { importing = false }
         status = "「\(input.lastPathComponent)」を読み込んでいます"
         let title = input.deletingPathExtension().lastPathComponent
         let date = (try? input.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
@@ -558,7 +573,7 @@ import UniformTypeIdentifiers
                 id: stableID(relative), filename: relative, offset: chunk.offset, source: chunk.source)
         }
         meetings.insert(meeting, at: meetings.firstIndex { $0.date < date } ?? meetings.count)
-        selected = meeting.id
+        if !recording { selected = meeting.id }  // Keep the live meeting on screen.
         do { try await checkpoint(meeting.id) } catch { self.error = error.localizedDescription }
         mixDown([meeting.id], onlyMissing: false)
         pipeline.resume(meeting.id, key: key)

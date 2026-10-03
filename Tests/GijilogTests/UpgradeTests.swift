@@ -88,3 +88,81 @@ extension ProcessingTests {
         try Self.check(abs(seconds - 3) < 0.2, "an unreadable last chunk is skipped: \(seconds)s")
     }
 }
+
+extension ProcessingTests {
+    @MainActor func testImportNeverBlocksStoppingARecording() async throws {
+        let (root, long) = try fixture(seconds: 600, amplitude: 0.25)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = Store(root: root.appendingPathComponent("save"), loadSettings: false)
+        store.key = "TEST"
+        store.pipeline = ProcessingPipeline(
+            store: store, recognize: { _, _, _, _ in [] }, summarize: MinutesEngine.stubSummary)
+        var live = Meeting(title: "live")
+        live.settings = SessionSettings()
+        store.meetings = [live]
+        store.selected = live.id
+        store.activeID = live.id
+        store.recording = true
+        let importing = Task { await store.importRecording(from: long) }
+        let deadline = Date().addingTimeInterval(10)
+        while !store.importing && Date() < deadline { await Task.yield() }
+        try Self.check(store.importing, "the import is under way")
+        // A microphone disconnect arrives while the file is still being read.
+        await store.interrupt("マイクが切断されました。")
+        try Self.check(
+            !store.recording && store.meetings.first { $0.id == live.id }?.capture == .interrupted,
+            "an interruption stops the recording even while a file is importing")
+        try Self.check(store.selected == live.id, "an import does not take the screen away from the live meeting")
+        await importing.value
+        try Self.check(store.meetings.count == 2, "the import still completes after the recording stopped")
+    }
+    func testImportMixesEveryAudioTrack() async throws {
+        let (root, audio) = try fixture(seconds: 2, amplitude: 0.25)
+        defer { try? FileManager.default.removeItem(at: root) }
+        // A movie with two audio tracks: one from 0 to 2 s, the other from 5 to 7 s.
+        let source = AVURLAsset(url: audio)
+        let track = try Self.require(try await source.loadTracks(withMediaType: .audio).first, "source track")
+        let range = CMTimeRange(start: .zero, duration: try await source.load(.duration))
+        let composition = AVMutableComposition()
+        let first = try Self.require(
+            composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid), "first")
+        try first.insertTimeRange(range, of: track, at: .zero)
+        let second = try Self.require(
+            composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid), "second"
+        )
+        try second.insertTimeRange(range, of: track, at: .zero)
+        second.insertEmptyTimeRange(CMTimeRange(start: .zero, duration: CMTime(seconds: 5, preferredTimescale: 600)))
+        let movie = root.appendingPathComponent("two-tracks.mov")
+        let session = try Self.require(
+            AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough), "export session")
+        try await session.export(to: movie, as: .mov)
+        let tracks = try await AVURLAsset(url: movie).loadTracks(withMediaType: .audio)
+        try Self.check(tracks.count == 2, "the test movie has two audio tracks")
+        let folder = root.appendingPathComponent("imported")
+        let chunks = try await AudioImport.split(movie, into: folder)
+        let frames = try chunks.map {
+            try AVAudioFile(forReading: folder.appendingPathComponent("chunks/" + $0.filename)).length
+        }.reduce(0, +)
+        let seconds = Double(frames) / AudioImport.sampleRate
+        try Self.check(abs(seconds - 7) < 0.1, "both tracks are imported, not just the first: \(seconds)s")
+    }
+    func testSettingsCarryOverFromEveryEarlierBundleID() throws {
+        try Self.check(
+            Store.previousBundleIDs == [
+                "io.github.nutcase.kirokuru", "local.minutes.kirokuru", "local.minutes.desktop",
+            ],
+            "every bundle ID an earlier build script used is migrated, newest first")
+        let names = (0..<3).map { _ in "gijilog.test.\(UUID().uuidString)" }
+        defer { for name in names { UserDefaults().removePersistentDomain(forName: name) } }
+        let suites = try names.map { try Self.require(UserDefaults(suiteName: $0), "test defaults") }
+        let (current, newer, older) = (suites[0], suites[1], suites[2])
+        newer.set("/Users/someone/新しい保存先", forKey: "storageFolder")
+        older.set("/Users/someone/古い保存先", forKey: "storageFolder")
+        older.set("old-model", forKey: "summaryModel")
+        Store.adoptPreviousSettings(into: current, from: [newer, older])
+        try Self.check(
+            current.string(forKey: "storageFolder") == "/Users/someone/新しい保存先"
+                && current.string(forKey: "summaryModel") == "old-model",
+            "the newest earlier version wins, and older versions fill the gaps")
+    }
+}
