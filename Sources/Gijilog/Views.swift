@@ -1609,7 +1609,7 @@ struct LiveTabBar: View {
             tab("議事録", systemImage: "doc.text", key: "1", page: Palette.paper, ink: Palette.sumi)
             tab(
                 "文字起こし", systemImage: "text.quote", key: "2", count: meeting.segments.count, page: Palette.deepAi,
-                ink: Palette.paper)
+                ink: Palette.paper, outlined: true)
             Spacer(minLength: 8)
             if pending > 0 {
                 Label("処理待ち \(pending)件", systemImage: "hourglass")
@@ -1618,10 +1618,14 @@ struct LiveTabBar: View {
             }
         }
         .padding(.horizontal, 10)
+        // The line the tabs stand on; a chosen tab covers it, so its page opens into the window below.
+        .background(alignment: .bottom) { Rectangle().fill(Self.edge).frame(height: 1) }
         .background(Palette.kon)
     }
+    private static let edge = Palette.paper.opacity(0.18)
     private func tab(
-        _ title: String, systemImage: String, key: KeyEquivalent, count: Int? = nil, page: Color, ink: Color
+        _ title: String, systemImage: String, key: KeyEquivalent, count: Int? = nil, page: Color, ink: Color,
+        outlined: Bool = false
     ) -> some View {
         let selected = store.liveTab == title
         return Button {
@@ -1641,8 +1645,10 @@ struct LiveTabBar: View {
             .padding(.horizontal, 14).frame(height: 34)
             .background(alignment: .bottom) {
                 if selected {
+                    // The dark page is close to the bar's color, so its tab is outlined to stand out.
                     UnevenRoundedRectangle(topLeadingRadius: 9, topTrailingRadius: 9)
                         .fill(page)
+                        .overlay { if outlined { TabOutline(radius: 9).stroke(Self.edge, lineWidth: 1) } }
                         .matchedGeometryEffect(id: "tab", in: tabs)
                 }
             }
@@ -1652,6 +1658,25 @@ struct LiveTabBar: View {
         .keyboardShortcut(key, modifiers: .command)
         .help(title + "を表示（⌘" + String(key.character) + "）")
         .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+// A tab's top and sides, open at the bottom where it joins its page.
+struct TabOutline: Shape {
+    var radius: CGFloat
+    func path(in rect: CGRect) -> Path {
+        let rect = rect.insetBy(dx: 0.5, dy: 0.5)
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.maxY + 0.5))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + radius))
+        path.addArc(
+            tangent1End: CGPoint(x: rect.minX, y: rect.minY), tangent2End: CGPoint(x: rect.minX + radius, y: rect.minY),
+            radius: radius)
+        path.addLine(to: CGPoint(x: rect.maxX - radius, y: rect.minY))
+        path.addArc(
+            tangent1End: CGPoint(x: rect.maxX, y: rect.minY), tangent2End: CGPoint(x: rect.maxX, y: rect.minY + radius),
+            radius: radius)
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY + 0.5))
+        return path
     }
 }
 struct LiveTicker: View {
