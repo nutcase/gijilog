@@ -34,7 +34,7 @@ extension ProcessingTests {
         let (root, _) = try fixture(seconds: 1, amplitude: 0)
         defer { try? FileManager.default.removeItem(at: root) }
         let names = ["gijilog.test.\(UUID().uuidString)", "gijilog.test.\(UUID().uuidString)"]
-        defer { names.forEach { UserDefaults().removePersistentDomain(forName: $0) } }
+        defer { for name in names { UserDefaults().removePersistentDomain(forName: name) } }
         let current = try Self.require(UserDefaults(suiteName: names[0]), "current defaults")
         let previous = try Self.require(UserDefaults(suiteName: names[1]), "previous defaults")
         previous.set("/Users/someone/議事録", forKey: "storageFolder")
