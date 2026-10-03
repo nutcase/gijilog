@@ -1596,27 +1596,62 @@ struct LiveSection: View {
     }
 }
 // The most recent utterance, so it is clear the meeting is being heard.
-// Switches the compact window between the minutes and the whole transcript.
+// Switches the compact window between the minutes and the whole transcript. The chosen tab takes the color of
+// the page below it (paper for the minutes, ink for the transcript), so it reads as that page's tab.
 struct LiveTabBar: View {
     @EnvironmentObject var store: Store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var tabs
     let meeting: Meeting
     var body: some View {
         let pending = meeting.jobs.filter { $0.state == .pending || $0.state == .running }.count
-        HStack(spacing: 10) {
-            Picker("表示", selection: $store.liveTab) {
-                Text("議事録").tag("議事録")
-                Text("文字起こし \(meeting.segments.count)").tag("文字起こし")
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
-            Spacer(minLength: 0)
+        HStack(alignment: .bottom, spacing: 2) {
+            tab("議事録", systemImage: "doc.text", key: "1", page: Palette.paper, ink: Palette.sumi)
+            tab(
+                "文字起こし", systemImage: "text.quote", key: "2", count: meeting.segments.count, page: Palette.deepAi,
+                ink: Palette.paper)
+            Spacer(minLength: 8)
             if pending > 0 {
-                Text("処理待ち \(pending)件").font(.caption).foregroundStyle(.secondary)
+                Label("処理待ち \(pending)件", systemImage: "hourglass")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .padding(.bottom, 9)
             }
         }
-        .padding(.horizontal, 14).padding(.bottom, 10)
+        .padding(.horizontal, 10)
         .background(Palette.kon)
+    }
+    private func tab(
+        _ title: String, systemImage: String, key: KeyEquivalent, count: Int? = nil, page: Color, ink: Color
+    ) -> some View {
+        let selected = store.liveTab == title
+        return Button {
+            withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) { store.liveTab = title }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: systemImage).imageScale(.small)
+                Text(title).font(.system(size: 13, weight: .semibold))
+                if let count {
+                    Text("\(count)")
+                        .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
+                        .padding(.horizontal, 6).padding(.vertical, 1)
+                        .background(Capsule().fill(selected ? ink.opacity(0.14) : Palette.ai))
+                }
+            }
+            .foregroundStyle(selected ? ink : Palette.paper.opacity(0.55))
+            .padding(.horizontal, 14).frame(height: 34)
+            .background(alignment: .bottom) {
+                if selected {
+                    UnevenRoundedRectangle(topLeadingRadius: 9, topTrailingRadius: 9)
+                        .fill(page)
+                        .matchedGeometryEffect(id: "tab", in: tabs)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut(key, modifiers: .command)
+        .help(title + "を表示（⌘" + String(key.character) + "）")
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 struct LiveTicker: View {
