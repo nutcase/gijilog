@@ -1,36 +1,36 @@
 import AVFoundation
+import CoreAudio
 import CoreMedia
 import Foundation
-import ScreenCaptureKit
 
-final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
+// Records the Mac's audio output and the microphone as two tracks on one clock, cut into ~12-second chunks.
+// Mac audio comes from a Core Audio process tap, which needs only the "System Audio Recording Only" permission
+// (not screen recording); the microphone comes from AVCaptureSession. Both are converted to 16 kHz mono.
+final class Recorder: NSObject, @unchecked Sendable {
+    enum Track: Hashable { case audio, microphone }
     private let queue = DispatchQueue(label: "gijilog.audio")
-    private var stream: SCStream?
+    private var capture: CaptureSession?
     private var acceptingSamples = false
     private var isStopping = false
     private var manifest = RecordingManifest()
-    private let stopCaptureOperation: (SCStream?) async throws -> Void
-    init(
-        stopCapture: @escaping (SCStream?) async throws -> Void = { stream in
-            if let stream { try await stream.stopCapture() }
-        }
-    ) {
+    private let stopCaptureOperation: (CaptureSession?) async throws -> Void
+    init(stopCapture: @escaping (CaptureSession?) async throws -> Void = { $0?.stop() }) {
         stopCaptureOperation = stopCapture
         super.init()
     }
     private var folder: URL?
-    private var chunkFiles: [SCStreamOutputType: AVAudioFile] = [:]
-    private var chunkURLs: [SCStreamOutputType: URL] = [:]
-    private var chunkStarts: [SCStreamOutputType: Double] = [:]
-    private var chunkFrames: [SCStreamOutputType: Int64] = [:]
+    private var chunkFiles: [Track: AVAudioFile] = [:]
+    private var chunkURLs: [Track: URL] = [:]
+    private var chunkStarts: [Track: Double] = [:]
+    private var chunkFrames: [Track: Int64] = [:]
     private var origin: Double?
-    private var expectedNextTime: [SCStreamOutputType: Double] = [:]
+    private var expectedNextTime: [Track: Double] = [:]
     var onChunk: (@Sendable (URL, Double, String) async -> Void)?
     private var deliveries: [UUID: Task<Void, Never>] = [:]
     private var watchdog: DispatchSourceTimer?
     private var lastMicrophoneInput = Date()
     private var notifiedMissingInput = false
-    private var lastMeterUpdate: [SCStreamOutputType: Date] = [:]
+    private var lastMeterUpdate: [Track: Date] = [:]
     private var cancelledStart = false
     var onError: ((String) -> Void)?
     var onLevel: ((String, Float) -> Void)?  // Track name ("Mac音声" or "マイク") and peak level.
@@ -38,30 +38,35 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
         queue.sync { cancelledStart = false }
         guard await AVCaptureDevice.requestAccess(for: .audio) else { throw AppError.message("マイクの使用を許可してください。") }
         try checkStarting()
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        try checkStarting()
-        guard let display = content.displays.first else { throw AppError.message("録音対象のディスプレイがありません。") }
         try prepareFiles(in: folder)
         do {
-            let config = SCStreamConfiguration()
-            config.capturesAudio = true
-            config.captureMicrophone = true
-            config.microphoneCaptureDeviceID = microphone
-            config.excludesCurrentProcessAudio = true
-            config.sampleRate = 16000
-            config.channelCount = 1
-            config.width = 2
-            config.height = 2
-            let capture = SCStream(
-                filter: SCContentFilter(display: display, excludingApplications: [], exceptingWindows: []),
-                configuration: config, delegate: self)
-            try capture.addStreamOutput(self, type: .audio, sampleHandlerQueue: queue)
-            try capture.addStreamOutput(self, type: .microphone, sampleHandlerQueue: queue)
+            let capture = CaptureSession()
             try queue.sync {
                 guard !cancelledStart else { throw CancellationError() }
-                stream = capture
+                self.capture = capture
             }
-            try await capture.startCapture()
+            try capture.start(
+                microphone: microphone, queue: queue,
+                system: { [weak self, weak capture] buffer, time in
+                    guard let self else { return }
+                    let handoff = Handoff(buffer: buffer)
+                    self.queue.async {
+                        guard let capture, self.capture === capture else { return }
+                        self.appendOnQueue(handoff.buffer, at: time, to: .audio)
+                    }
+                },
+                microphone: { [weak self, weak capture] sample, time in
+                    // Delivered on the recorder's queue.
+                    guard let self, let capture, self.capture === capture else { return }
+                    self.consumeOnQueue(sample, of: .microphone, at: time)
+                },
+                failed: { [weak self, weak capture] message in
+                    guard let self else { return }
+                    self.queue.async {
+                        guard let capture, self.capture === capture, self.acceptingSamples else { return }
+                        self.onError?(message)
+                    }
+                })
             try checkStarting()
             queue.sync {
                 let timer = DispatchSource.makeTimerSource(queue: queue)
@@ -78,7 +83,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
     func prepareFiles(in folder: URL) throws {
         try queue.sync {
             guard !cancelledStart else { throw CancellationError() }
-            guard !isStopping, !acceptingSamples, stream == nil, chunkFiles.isEmpty else {
+            guard !isStopping, !acceptingSamples, capture == nil, chunkFiles.isEmpty else {
                 throw AppError.message("前の録音の停止処理が完了していません。")
             }
             try FileManager.default.createDirectory(
@@ -103,14 +108,14 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
         try queue.sync { if cancelledStart { throw CancellationError() } }
     }
     func stop() async throws {
-        let capture: SCStream? = try queue.sync {
+        let capture: CaptureSession? = try queue.sync {
             guard !isStopping else { throw AppError.message("録音の停止処理中です。") }
             isStopping = true
             acceptingSamples = false
             watchdog?.cancel()
             watchdog = nil
-            let capture = stream
-            stream = nil
+            let capture = self.capture
+            self.capture = nil
             return capture
         }
         var stopError: Error?
@@ -136,7 +141,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
         queue.sync { isStopping = false }
         if let stopError { throw stopError }
     }
-    private func finishChunk(_ type: SCStreamOutputType) {
+    private func finishChunk(_ type: Track) {
         guard let url = chunkURLs[type], let offset = chunkStarts[type] else { return }
         chunkFiles.removeValue(forKey: type)  // Close the file before handing it to recognition.
         chunkURLs.removeValue(forKey: type)
@@ -161,18 +166,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
         settings[AVLinearPCMIsNonInterleaved] = false
         return settings
     }
-    func stream(_ stream: SCStream, didStopWithError error: Error) {
-        queue.async {
-            guard self.stream === stream, self.acceptingSamples else { return }
-            self.onError?(error.localizedDescription)
-        }
-    }
-    func stream(_ stream: SCStream, didOutputSampleBuffer sample: CMSampleBuffer, of type: SCStreamOutputType) {
-        // ScreenCaptureKit delivers this callback on the serial sampleHandlerQueue.
-        guard self.stream === stream else { return }
-        consumeOnQueue(sample, of: type)
-    }
-    func consume(_ sample: CMSampleBuffer, of type: SCStreamOutputType) {
+    func consume(_ sample: CMSampleBuffer, of type: Track) {
         queue.sync { consumeOnQueue(sample, of: type) }
     }
     func checkInput(now: Date) { queue.sync { checkInputOnQueue(now: now) } }
@@ -181,8 +175,8 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
         notifiedMissingInput = true
         onError?("マイク音声の入力が途絶えました。保存済み音声を保持して録音を停止します。マイクと権限を確認してください。")
     }
-    private func consumeOnQueue(_ sample: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard acceptingSamples, sample.isValid, let folder, let description = CMSampleBufferGetFormatDescription(sample)
+    private func consumeOnQueue(_ sample: CMSampleBuffer, of type: Track, at time: Double? = nil) {
+        guard acceptingSamples, sample.isValid, let description = CMSampleBufferGetFormatDescription(sample)
         else { return }
         let format = AVAudioFormat(cmAudioFormatDescription: description)
         var block: CMBlockBuffer?
@@ -202,14 +196,19 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
                 blockBufferAllocator: nil, blockBufferMemoryAllocator: nil,
                 flags: UInt32(kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment), blockBufferOut: &block)
                 == noErr,
-            let buffer = AVAudioPCMBuffer(pcmFormat: format, bufferListNoCopy: list), buffer.frameLength > 0
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, bufferListNoCopy: list)
         else { return }
+        appendOnQueue(buffer, at: time ?? CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample)), to: type)
+    }
+    // Times are host-clock seconds for both tracks, so they share one timeline.
+    private func appendOnQueue(_ buffer: AVAudioPCMBuffer, at timestamp: Double, to type: Track) {
+        guard acceptingSamples, let folder, buffer.frameLength > 0 else { return }
+        let format = buffer.format
         do {
             if type == .microphone {
                 lastMicrophoneInput = Date()
                 notifiedMissingInput = false
             }
-            let timestamp = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))
             guard timestamp.isFinite else { throw AppError.message("録音音声の時刻が不正です。") }
             if let expected = expectedNextTime[type], abs(timestamp - expected) > 0.1 {
                 finishChunk(type)  // Preserve capture gaps instead of compressing the timeline.
@@ -248,6 +247,198 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
                 onLevel?(type == .audio ? "Mac音声" : "マイク", peak)
             }
         } catch { onError?(error.localizedDescription) }
+    }
+}
+// A converted buffer the tap allocated for this call and never touches again, moving to the recorder's queue.
+private struct Handoff: @unchecked Sendable { let buffer: AVAudioPCMBuffer }
+// One recording's capture: the Mac audio tap and the microphone, started and stopped together.
+final class CaptureSession: @unchecked Sendable {
+    private let tap = SystemAudioTap()
+    private var microphone: MicrophoneCapture?
+    func start(
+        microphone id: String?, queue: DispatchQueue, system: @escaping (AVAudioPCMBuffer, Double) -> Void,
+        microphone deliver: @escaping (CMSampleBuffer, Double) -> Void, failed: @escaping (String) -> Void
+    ) throws {
+        let microphone = try MicrophoneCapture(deviceID: id, queue: queue, deliver: deliver, failed: failed)
+        self.microphone = microphone
+        try tap.start(deliver: system)
+        microphone.start()
+    }
+    func stop() {
+        microphone?.stop()
+        tap.stop()
+    }
+}
+// 16 kHz mono is all transcription needs, and keeps the working audio small.
+private let captureFormat = AVAudioFormat(
+    commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)
+
+// What every other app plays, through a Core Audio process tap on a private aggregate device. Needs only the
+// "System Audio Recording Only" permission (NSAudioCaptureUsageDescription); this app's own output is excluded.
+final class SystemAudioTap {
+    private var tapID = AudioObjectID(kAudioObjectUnknown)
+    private var aggregateID = AudioObjectID(kAudioObjectUnknown)
+    private var procID: AudioDeviceIOProcID?
+    private let ioQueue = DispatchQueue(label: "gijilog.tap", qos: .userInitiated)
+    private static let permissionHint =
+        "システム設定の「プライバシーとセキュリティ」→「画面とシステムオーディオの録音」の「システムオーディオ録音のみ」でギジログを許可してください。"
+    func start(deliver: @escaping (AVAudioPCMBuffer, Double) -> Void) throws {
+        let description = CATapDescription(monoGlobalTapButExcludeProcesses: Self.ownProcess().map { [$0] } ?? [])
+        description.uuid = UUID()
+        description.name = "ギジログ"
+        description.isPrivate = true
+        description.muteBehavior = .unmuted
+        try Self.check(AudioHardwareCreateProcessTap(description, &tapID), "Macの音声を取り込めませんでした。")
+        var stream = AudioStreamBasicDescription()
+        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioTapPropertyFormat, mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        try Self.check(AudioObjectGetPropertyData(tapID, &address, 0, nil, &size, &stream), "Macの音声の形式を読めませんでした。")
+        guard let tapFormat = AVAudioFormat(streamDescription: &stream), let captureFormat,
+            let converter = AVAudioConverter(from: tapFormat, to: captureFormat)
+        else { throw AppError.message("Macの音声を16kHzに変換できません。") }
+        let output = try Self.defaultOutputUID()
+        let aggregate: [String: Any] = [
+            kAudioAggregateDeviceNameKey: "ギジログ",
+            kAudioAggregateDeviceUIDKey: UUID().uuidString,
+            kAudioAggregateDeviceMainSubDeviceKey: output,
+            kAudioAggregateDeviceIsPrivateKey: true,
+            kAudioAggregateDeviceIsStackedKey: false,
+            kAudioAggregateDeviceTapAutoStartKey: true,
+            kAudioAggregateDeviceSubDeviceListKey: [[kAudioSubDeviceUIDKey: output]],
+            kAudioAggregateDeviceTapListKey: [
+                [kAudioSubTapDriftCompensationKey: true, kAudioSubTapUIDKey: description.uuid.uuidString]
+            ],
+        ]
+        try Self.check(
+            AudioHardwareCreateAggregateDevice(aggregate as CFDictionary, &aggregateID), "Macの音声の取り込みを準備できませんでした。")
+        try Self.check(
+            AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateID, ioQueue) { _, input, inputTime, _, _ in
+                // The input is only valid during this call: convert it into a buffer of our own right away.
+                guard
+                    let source = AVAudioPCMBuffer(pcmFormat: tapFormat, bufferListNoCopy: input, deallocator: nil),
+                    source.frameLength > 0,
+                    let converted = AVAudioPCMBuffer(
+                        pcmFormat: captureFormat,
+                        frameCapacity: AVAudioFrameCount(
+                            (Double(source.frameLength) * captureFormat.sampleRate / tapFormat.sampleRate).rounded(.up))
+                            + 64)
+                else { return }
+                var supplied = false
+                var error: NSError?
+                converter.convert(to: converted, error: &error) { _, status in
+                    if supplied {
+                        status.pointee = .noDataNow
+                        return nil
+                    }
+                    supplied = true
+                    status.pointee = .haveData
+                    return source
+                }
+                guard error == nil, converted.frameLength > 0 else { return }
+                let time = inputTime.pointee
+                let host = time.mFlags.contains(.hostTimeValid) ? time.mHostTime : AudioGetCurrentHostTime()
+                deliver(converted, Double(AudioConvertHostTimeToNanos(host)) / 1_000_000_000)
+            }, "Macの音声の取り込みを準備できませんでした。")
+        try Self.check(AudioDeviceStart(aggregateID, procID), "Macの音声の取り込みを開始できませんでした。")
+    }
+    func stop() {
+        if aggregateID != kAudioObjectUnknown {
+            if let procID {
+                AudioDeviceStop(aggregateID, procID)
+                AudioDeviceDestroyIOProcID(aggregateID, procID)
+            }
+            AudioHardwareDestroyAggregateDevice(aggregateID)
+        }
+        if tapID != kAudioObjectUnknown { AudioHardwareDestroyProcessTap(tapID) }
+        procID = nil
+        aggregateID = AudioObjectID(kAudioObjectUnknown)
+        tapID = AudioObjectID(kAudioObjectUnknown)
+    }
+    private static func check(_ status: OSStatus, _ message: String) throws {
+        guard status == noErr else { throw AppError.message("\(message)（\(status)）\(permissionHint)") }
+    }
+    private static func ownProcess() -> AudioObjectID? {
+        var pid = ProcessInfo.processInfo.processIdentifier
+        var object = AudioObjectID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject, mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address, UInt32(MemoryLayout<pid_t>.size), &pid, &size, &object)
+        return status == noErr && object != kAudioObjectUnknown ? object : nil
+    }
+    // The aggregate device runs on the clock of the output the user is listening to.
+    private static func defaultOutputUID() throws -> String {
+        var device = AudioObjectID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice, mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        try check(
+            AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device),
+            "音声の出力先が見つかりません。")
+        var uid: Unmanaged<CFString>?
+        size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        address.mSelector = kAudioDevicePropertyDeviceUID
+        try check(AudioObjectGetPropertyData(device, &address, 0, nil, &size, &uid), "音声の出力先が見つかりません。")
+        guard let uid = uid?.takeRetainedValue() as String? else { throw AppError.message("音声の出力先が見つかりません。") }
+        return uid
+    }
+}
+// The microphone chosen in Settings (or the system default), delivered as 16 kHz mono on the recorder's queue.
+final class MicrophoneCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
+    private let session = AVCaptureSession()
+    private let deliver: (CMSampleBuffer, Double) -> Void
+    private var observer: NSObjectProtocol?
+    init(
+        deviceID: String?, queue: DispatchQueue, deliver: @escaping (CMSampleBuffer, Double) -> Void,
+        failed: @escaping (String) -> Void
+    ) throws {
+        self.deliver = deliver
+        super.init()
+        guard let device = deviceID.flatMap({ AVCaptureDevice(uniqueID: $0) }) ?? AVCaptureDevice.default(for: .audio)
+        else { throw AppError.message("録音に使うマイクが見つかりません。") }
+        let input = try AVCaptureDeviceInput(device: device)
+        let output = AVCaptureAudioDataOutput()
+        output.audioSettings = [
+            AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 16000, AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true, AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+        ]
+        session.beginConfiguration()
+        guard session.canAddInput(input), session.canAddOutput(output) else {
+            session.commitConfiguration()
+            throw AppError.message("マイク（\(device.localizedName)）から録音できません。")
+        }
+        session.addInput(input)
+        session.addOutput(output)
+        session.commitConfiguration()
+        output.setSampleBufferDelegate(self, queue: queue)
+        observer = NotificationCenter.default.addObserver(
+            forName: AVCaptureSession.runtimeErrorNotification, object: session, queue: nil
+        ) { note in
+            let error = note.userInfo?[AVCaptureSessionErrorKey] as? Error
+            failed("マイクの録音が止まりました。" + (error?.localizedDescription ?? ""))
+        }
+    }
+    func start() { session.startRunning() }
+    func stop() {
+        session.stopRunning()
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+        observer = nil
+    }
+    // Timestamps move to the host clock, the clock the Mac audio tap reports, so both tracks line up.
+    func captureOutput(
+        _ output: AVCaptureOutput, didOutput sample: CMSampleBuffer, from connection: AVCaptureConnection
+    ) {
+        var time = CMSampleBufferGetPresentationTimeStamp(sample)
+        if let clock = session.synchronizationClock {
+            time = CMSyncConvertTime(time, from: clock, to: CMClockGetHostTimeClock())
+        }
+        deliver(sample, CMTimeGetSeconds(time))
     }
 }
 enum AppError: LocalizedError {

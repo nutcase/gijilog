@@ -15,7 +15,7 @@ Keep its compact window next to the call to see what has been decided, what is s
 
 ## Features
 
-- **Records any call**: captures the Mac's audio output and your microphone while you stay in Zoom, Teams, Google Meet, or any other app. Your meeting app's settings are left alone.
+- **Records any call**: captures the Mac's audio output and your microphone as separate tracks while you stay in Zoom, Teams, Google Meet, or any other app. Your meeting app's settings are left alone, and no screen recording permission is needed.
 - **Live minutes**: transcribes about every 12 seconds with OpenAI and extends the minutes every 30 seconds.
 - **Made for running the meeting**: the compact window lists decisions, open questions, and action items, highlights what the latest update changed, and flags actions that still lack an owner or a deadline.
 - **Grounded in what was said**: every item links to the time of the utterances behind it. Items without supporting utterances, and owners or deadlines nobody said, are left out.
@@ -41,7 +41,7 @@ open dist/ギジログ.app
 ```
 
 1. Open Settings (⌘,) and save your OpenAI API key.
-2. Click 録音を開始 (Start recording). The first time, macOS asks for Screen & System Audio Recording permission: turn on ギジログ in System Settings and reopen the app. Allow microphone access when asked.
+2. Click 録音を開始 (Start recording). The first time, macOS asks to let the app record the microphone and system audio (the sound your Mac plays); allow both. No screen recording permission is needed.
 3. Click 録音を開始 again to start recording and writing the minutes.
 
 You can also start and stop from the menu bar icon (a waveform, or a record mark while recording) or the app's 録音 menu (⌘⇧R), even with every window closed.
@@ -50,8 +50,10 @@ You can also start and stop from the menu bar icon (a waveform, or a record mark
 > Builds are signed ad hoc by default, so every rebuild loses the recording permission. Clear the stale entry and repeat step 2:
 >
 > ```sh
-> tccutil reset ScreenCapture io.github.nutcase.gijilog
+> tccutil reset AudioCapture io.github.nutcase.gijilog
 > ```
+>
+> You can change the permission later under System Settings → Privacy & Security → Screen & System Audio Recording → System Audio Recording Only. If the Mac audio waveform stays flat, check it there.
 >
 > To keep the permission across rebuilds, create a self-signed code-signing certificate in Keychain Access (Certificate Assistant → Create a Certificate, identity type Self-Signed Root, certificate type Code Signing) and build with `GIJILOG_SIGN_IDENTITY="<certificate name>" ./scripts/build.sh`.
 

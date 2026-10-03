@@ -1,7 +1,6 @@
 import AVFoundation
 import CoreMedia
 import Foundation
-import ScreenCaptureKit
 
 @main struct ProcessingTests {
     static func check(_ condition: @autoclosure () -> Bool, _ message: String) throws {
