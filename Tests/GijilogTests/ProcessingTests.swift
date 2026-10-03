@@ -45,8 +45,10 @@ import ScreenCaptureKit
         try await tests.testMeetingFolderHoldsMinutesAndAudio()
         try await tests.testSaveLocationMovesWithItsMeetings()
         try tests.testLegacyMeetingsMoveToReadableFolders()
+        try await tests.testImportCutsAnyRecordingIntoChunks()
+        try await tests.testImportedRecordingBecomesMinutes()
         print(
-            "PASS: 31 checks (recording, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, audio mixdown)"
+            "PASS: 33 checks (recording, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, audio mixdown, file import)"
         )
     }
     func fixture(seconds: Double, amplitude: Float) throws -> (URL, URL) {

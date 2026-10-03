@@ -129,7 +129,7 @@ enum Processor {
             return try manifest.chunks.sorted { $0.offset < $1.offset }.map { chunk in
                 guard chunk.filename == URL(fileURLWithPath: chunk.filename).lastPathComponent,
                     chunk.offset.isFinite, chunk.offset >= 0,
-                    ["Mac音声", "マイク"].contains(chunk.source)
+                    ["Mac音声", "マイク", AudioImport.source].contains(chunk.source)
                 else { throw AppError.message("録音時刻データが不正です。") }
                 let url = folder.appendingPathComponent("chunks").appendingPathComponent(chunk.filename)
                 guard allowMissing || FileManager.default.fileExists(atPath: url.path) else {
@@ -264,5 +264,75 @@ enum AudioMixdown {
         let temporary = folder.appendingPathComponent(".録音-\(UUID().uuidString).m4a")
         try await session.export(to: temporary, as: .m4a)
         _ = try FileManager.default.replaceItemAt(output, withItemAt: temporary)
+    }
+}
+// Minutes from a recording made elsewhere: any audio or video file is decoded to 16 kHz mono and cut into
+// ~30-second chunks, so it goes through the same transcription queue, retries and recovery as a live meeting.
+enum AudioImport {
+    static let source = "録音ファイル"
+    static let chunkSeconds = 30.0
+    static let sampleRate = 16_000.0
+    static func split(_ input: URL, into folder: URL) async throws -> [RecordedChunk] {
+        let asset = AVURLAsset(url: input)
+        guard let track = try? await asset.loadTracks(withMediaType: .audio).first else {
+            throw AppError.message("このファイルには音声が含まれていません。")
+        }
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(
+            track: track,
+            outputSettings: [
+                AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: sampleRate, AVNumberOfChannelsKey: 1,
+                AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true, AVLinearPCMIsBigEndianKey: false,
+                AVLinearPCMIsNonInterleaved: false,
+            ])
+        guard reader.canAdd(output),
+            let format = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false)
+        else { throw AppError.message("録音ファイルを読み込めませんでした。") }
+        reader.add(output)
+        guard reader.startReading() else { throw reader.error ?? AppError.message("録音ファイルを読み込めませんでした。") }
+        let chunksFolder = folder.appendingPathComponent("chunks")
+        try FileManager.default.createDirectory(at: chunksFolder, withIntermediateDirectories: true)
+        let framesPerChunk = Int(chunkSeconds * sampleRate)
+        var chunks: [RecordedChunk] = []
+        var file: AVAudioFile?
+        var inChunk = 0
+        var total = 0
+        while let sample = output.copyNextSampleBuffer() {
+            let count = CMSampleBufferGetNumSamples(sample)
+            guard count > 0, let block = CMSampleBufferGetDataBuffer(sample) else { continue }
+            var start = 0
+            while start < count {
+                if file == nil {
+                    let name = String(format: "import-%04d.caf", chunks.count + 1)
+                    file = try AVAudioFile(
+                        forWriting: chunksFolder.appendingPathComponent(name), settings: format.settings,
+                        commonFormat: .pcmFormatFloat32, interleaved: false)
+                    chunks.append(RecordedChunk(filename: name, offset: Double(total) / sampleRate, source: source))
+                    inChunk = 0
+                }
+                let take = min(count - start, framesPerChunk - inChunk)
+                guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(take)),
+                    let channel = buffer.floatChannelData?[0],
+                    CMBlockBufferCopyDataBytes(
+                        block, atOffset: start * MemoryLayout<Float>.size, dataLength: take * MemoryLayout<Float>.size,
+                        destination: channel) == kCMBlockBufferNoErr
+                else { throw AppError.message("録音ファイルの音声を取り出せませんでした。") }
+                buffer.frameLength = AVAudioFrameCount(take)
+                try file?.write(from: buffer)
+                start += take
+                inChunk += take
+                total += take
+                if inChunk >= framesPerChunk { file = nil }  // Closes the chunk.
+            }
+        }
+        file = nil
+        guard reader.status == .completed else {
+            throw reader.error ?? AppError.message("録音ファイルを最後まで読み込めませんでした。")
+        }
+        guard !chunks.isEmpty else { throw AppError.message("このファイルには音声が含まれていません。") }
+        try JSONEncoder().encode(RecordingManifest(chunks: chunks)).write(
+            to: folder.appendingPathComponent("recording.json"), options: .atomic)
+        return chunks
     }
 }

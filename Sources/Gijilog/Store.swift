@@ -1,6 +1,7 @@
 import AVFoundation
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 // The last few seconds of peak levels per track, drawn as a scrolling waveform.
 // Published apart from Store so the 10 Hz meter does not redraw the transcript.
@@ -34,6 +35,7 @@ import SwiftUI
     @Published var deletion: Meeting?  // Awaiting confirmation in the UI.
     @Published var showsTranscript = true  // The live transcript panel beside the minutes.
     @Published var pinsLiveWindow = true  // Keep the compact live window above the video call.
+    @Published var dropTargeted = false  // A file is being dragged over the window.
     // Changed only through saveSettings; the settings form edits its own draft.
     @Published var key = ""
     @Published var model = "gpt-6-sol"
@@ -470,6 +472,61 @@ import SwiftUI
             pipeline.resume(id, key: key)
             pipeline.requestSummary(id, force: true)
         } catch { self.error = error.localizedDescription }
+    }
+    func chooseRecordingFiles() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.audiovisualContent]
+        panel.allowsMultipleSelection = true
+        panel.prompt = "議事録を作成"
+        panel.message = "議事録を作る録音ファイル（音声・動画）を選んでください。"
+        guard panel.runModal() == .OK else { return }
+        let urls = panel.urls
+        Task { for url in urls { await importRecording(from: url) } }
+    }
+    // Minutes from a recording made elsewhere (Voice Memos, a Zoom recording, any audio or video file).
+    // The original file is left untouched; the meeting folder gets the chunks, 録音.m4a and 議事録.md.
+    func importRecording(from input: URL) async {
+        guard ready, !busy, !shuttingDown else { return }
+        guard hasKey else {
+            error = "議事録を作るには、設定でOpenAI APIキーを保存してください。"
+            return
+        }
+        busy = true
+        defer { busy = false }
+        status = "「\(input.lastPathComponent)」を読み込んでいます"
+        let title = input.deletingPathExtension().lastPathComponent
+        let date = (try? input.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
+        let folderName =
+            MeetingRepository.uniqueFolder(in: root, name: meetingFolderName(date: date, title: title))
+            .lastPathComponent
+        let folder = root.appendingPathComponent(folderName)
+        let chunks: [RecordedChunk]
+        do {
+            chunks = try await Task.detached { try await AudioImport.split(input, into: folder) }.value
+        } catch {
+            try? FileManager.default.removeItem(at: folder)  // Only the folder created for this import.
+            self.error = "「\(input.lastPathComponent)」から議事録を作れませんでした。\(error.localizedDescription)"
+            status = "準備完了"
+            return
+        }
+        var meeting = Meeting(title: title)
+        meeting.date = date
+        meeting.folderName = folderName
+        meeting.settings = settings
+        meeting.capture = .stopped
+        meeting.hasAudio = true
+        meeting.status = "録音ファイルを文字起こし中"
+        meeting.jobs = chunks.map { chunk in
+            let relative = "chunks/" + chunk.filename
+            return TranscriptionJob(
+                id: stableID(relative), filename: relative, offset: chunk.offset, source: chunk.source)
+        }
+        meetings.insert(meeting, at: meetings.firstIndex { $0.date < date } ?? meetings.count)
+        selected = meeting.id
+        do { try await checkpoint(meeting.id) } catch { self.error = error.localizedDescription }
+        mixDown([meeting.id], onlyMissing: false)
+        pipeline.resume(meeting.id, key: key)
+        status = "「\(title)」の文字起こしを始めました"
     }
     // Writes 録音.m4a next to the minutes in the background, one meeting at a time.
     private var mixdowns: Task<Void, Never>?

@@ -53,6 +53,9 @@ func statusColor(_ status: String) -> Color {
     }
     return .secondary
 }
+func sourceSymbol(_ source: String) -> String {
+    source == "マイク" ? "mic.fill" : source == AudioImport.source ? "waveform" : "speaker.wave.2.fill"
+}
 extension Store {
     var selectedMeeting: Meeting? { meetings.first { $0.id == selected } }
     var activeMeeting: Meeting? { meetings.first { $0.id == activeID } }
@@ -96,6 +99,27 @@ struct ContentView: View {
                 }
             }
             .background(Palette.kon)
+            // Dropping recordings on the window makes minutes from them.
+            .dropDestination(for: URL.self) { urls, _ in
+                guard !urls.isEmpty else { return false }
+                Task { for url in urls { await store.importRecording(from: url) } }
+                return true
+            } isTargeted: {
+                store.dropTargeted = $0
+            }
+            .overlay {
+                if store.dropTargeted {
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(Palette.asagi, style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
+                        .background(RoundedRectangle(cornerRadius: 12).fill(Palette.kon.opacity(0.85)))
+                        .overlay {
+                            Label("ここにドロップして、録音ファイルから議事録を作成", systemImage: "square.and.arrow.down")
+                                .font(.title3).foregroundStyle(Palette.paper)
+                        }
+                        .padding(16)
+                        .allowsHitTesting(false)
+                }
+            }
             .toolbar { toolbar }
         }
         .preferredColorScheme(.dark)
@@ -249,14 +273,24 @@ struct RecorderBar: View {
                     .background(RoundedRectangle(cornerRadius: 10).fill(Palette.ai))
                     .disabled(store.busy)
                     .onSubmit(start)
+                Button {
+                    store.chooseRecordingFiles()
+                } label: {
+                    Label("ファイルから作成", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(CapsuleButtonStyle(filled: false, tint: Palette.paper))
+                .fixedSize()
+                .help("録音ファイル（音声・動画）から議事録を作る。ウインドウにドロップしても作れます")
+                .disabled(store.busy || !store.ready || !store.hasKey)
                 Button(action: start) { Label("録音を開始", systemImage: "record.circle") }
                     .buttonStyle(CapsuleButtonStyle(filled: true))
+                    .fixedSize()
                     .keyboardShortcut("r", modifiers: [.command, .shift])
                     .disabled(store.busy || !store.ready || !store.hasKey)
                 if store.busy { ProgressView().controlSize(.small) }
             }
             if store.hasKey {
-                Text("Macの音声とマイクを録音し、OpenAIで文字起こしと議事録づくりをします。API利用料がかかります。")
+                Text("Macの音声とマイクを録音し、OpenAIで文字起こしと議事録づくりをします。録音ファイルはドロップしても読み込めます。API利用料がかかります。")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 HStack(spacing: 8) {
@@ -364,22 +398,25 @@ struct TrackWaveform: View {
         return min(1, max(0, (20 * log10(Double(level)) + 60) / 60))
     }
 }
+// Red belongs to recording; other actions use the outline style in another tint.
 struct CapsuleButtonStyle: ButtonStyle {
     let filled: Bool
+    var tint = Palette.beni
     func makeBody(configuration: Configuration) -> some View {
-        CapsuleLabel(configuration: configuration, filled: filled)
+        CapsuleLabel(configuration: configuration, filled: filled, tint: tint)
     }
     private struct CapsuleLabel: View {
         @Environment(\.isEnabled) private var isEnabled
         let configuration: ButtonStyle.Configuration
         let filled: Bool
+        let tint: Color
         var body: some View {
             configuration.label
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(filled ? Color.white : Palette.beni)
+                .foregroundStyle(filled ? Color.white : tint)
                 .padding(.horizontal, 18).frame(height: 40)
-                .background(Capsule().fill(filled ? Palette.beni : Color.clear))
-                .overlay(Capsule().strokeBorder(Palette.beni, lineWidth: filled ? 0 : 1.5))
+                .background(Capsule().fill(filled ? tint : Color.clear))
+                .overlay(Capsule().strokeBorder(tint.opacity(filled ? 0 : 0.8), lineWidth: 1.5))
                 .opacity(isEnabled ? (configuration.isPressed ? 0.75 : 1) : 0.4)
                 .contentShape(Capsule())
         }
@@ -702,7 +739,7 @@ struct TranscriptRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Image(systemName: segment.source == "マイク" ? "mic.fill" : "speaker.wave.2.fill")
+                Image(systemName: sourceSymbol(segment.source))
                 Text(clock(segment.time)).monospacedDigit()
                 Text(segment.source)
             }
@@ -999,7 +1036,7 @@ struct LiveTicker: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             if let last = meeting.segments.last {
-                Image(systemName: last.source == "マイク" ? "mic.fill" : "speaker.wave.2.fill")
+                Image(systemName: sourceSymbol(last.source))
                     .font(.caption).foregroundStyle(.secondary)
                 Text(clock(last.time)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 Text(last.text).font(.callout).lineLimit(2)
