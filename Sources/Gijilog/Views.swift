@@ -426,7 +426,7 @@ struct RecorderBar: View {
                 } label: {
                     Label("ファイルから作成", systemImage: "square.and.arrow.down")
                 }
-                .buttonStyle(CapsuleButtonStyle(filled: false, tint: Palette.paper))
+                .buttonStyle(QuietButtonStyle())
                 .fixedSize()
                 .help("録音ファイル（音声・動画）から議事録を作る。ウインドウにドロップしても作れます")
                 .disabled(!store.ready || !store.hasKey)
@@ -617,6 +617,24 @@ final class WaveformView: NSView {
     static func loudness(_ level: Float) -> Double {
         guard level > 0 else { return 0 }
         return min(1, max(0, (20 * log10(Double(level)) + 60) / 60))
+    }
+}
+// A secondary action beside the record button: text only, so recording stays the obvious choice.
+struct QuietButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        QuietLabel(configuration: configuration)
+    }
+    private struct QuietLabel: View {
+        @Environment(\.isEnabled) private var isEnabled
+        let configuration: ButtonStyle.Configuration
+        var body: some View {
+            configuration.label
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Palette.paper.opacity(configuration.isPressed ? 0.45 : 0.68))
+                .padding(.horizontal, 6).frame(height: 40)
+                .opacity(isEnabled ? 1 : 0.4)
+                .contentShape(Rectangle())
+        }
     }
 }
 // Red belongs to recording; other actions use the outline style in another tint.
