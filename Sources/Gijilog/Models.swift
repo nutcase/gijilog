@@ -92,10 +92,11 @@ struct Meeting: Codable, Identifiable {
     // The meeting's folder inside the save location. Loading sets it from the folder actually found,
     // so a folder renamed in Finder keeps working. Older meetings live in a folder named by their UUID.
     var folderName: String?
+    var tags: [String] = []  // In the order they were added; see MeetingTags for spelling and duplicates.
     init(title: String) { self.title = title }
     enum CodingKeys: String, CodingKey {
         case id, title, date, segments, minutes, status, capture, settings, jobs, notes, captureError, hasAudio,
-            revision, folderName, finalReviewPending
+            revision, folderName, finalReviewPending, tags
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -115,7 +116,35 @@ struct Meeting: Codable, Identifiable {
         hasAudio = try c.decodeIfPresent(Bool.self, forKey: .hasAudio)
         revision = try c.decodeIfPresent(UInt64.self, forKey: .revision) ?? 0
         folderName = try c.decodeIfPresent(String.self, forKey: .folderName)
+        tags = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
     }
+}
+
+// Tags are the user's own labels for finding meetings again. They never leave the Mac.
+enum MeetingTags {
+    static let maxLength = 40
+    /// Splits typed or pasted text into tags. Commas (, 、 ，) and line breaks separate tags.
+    static func parse(_ text: String) -> [String] {
+        text.components(separatedBy: CharacterSet(charactersIn: ",、，\n\r")).compactMap(normalize)
+    }
+    /// Trims the tag, drops leading #s (as in "#定例"), and folds runs of whitespace into one space.
+    static func normalize(_ tag: String) -> String? {
+        let words = tag.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        let name = String(words.drop(while: { $0 == "#" || $0 == "＃" })).trimmingCharacters(in: .whitespaces)
+        return name.isEmpty ? nil : String(name.prefix(maxLength))
+    }
+    /// Tags that differ only in case or character width ("Sales", "sales", "ｓａｌｅｓ") are the same tag.
+    static func key(_ tag: String) -> String {
+        tag.folding(options: [.caseInsensitive, .widthInsensitive], locale: nil)
+    }
+    /// Appends the tags the list does not have yet, keeping its order.
+    static func adding(_ tags: [String], to list: [String]) -> [String] {
+        var result = list
+        var keys = Set(list.map(key))
+        for tag in tags.compactMap(normalize) where keys.insert(key(tag)).inserted { result.append(tag) }
+        return result
+    }
+    static func contains(_ list: [String], _ tag: String) -> Bool { list.contains { key($0) == key(tag) } }
 }
 
 func clock(_ seconds: Double) -> String {

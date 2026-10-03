@@ -21,6 +21,7 @@ Keep its compact window next to the call to see what has been decided, what is s
 - **Grounded in what was said**: every item links to the time of the utterances behind it. Items without supporting utterances, and owners or deadlines nobody said, are left out.
 - **From existing recordings too**: import a Voice Memo, a Zoom recording, or any audio or video file and get the same minutes afterward.
 - **Audio and minutes together**: each meeting gets a folder with `議事録.md` (minutes) and `録音.m4a` (audio).
+- **Tags**: tag meetings and narrow the list to the ones you need.
 
 ## Requirements
 
@@ -52,6 +53,18 @@ You can also start and stop from the menu bar icon (a waveform, or a record mark
 > ```
 >
 > To keep the permission across rebuilds, create a self-signed code-signing certificate in Keychain Access (Certificate Assistant → Create a Certificate, identity type Self-Signed Root, certificate type Code Signing) and build with `GIJILOG_SIGN_IDENTITY="<certificate name>" ./scripts/build.sh`.
+
+## Decision-focused minutes
+
+Minutes include decision reasons, the next checks needed for unresolved issues, and the history of changed or withdrawn plans. Action items come last; unsupported owners and deadlines remain unassigned. Expand an item's evidence to read its timestamped source utterances.
+
+Live updates remain on a 30-second timer. After recording and transcription finish, a checkpointed review revisits all available utterances in bounded batches. This uses additional API calls. Failed reviews keep the draft and can resume. The meeting menu also offers “議事録を仕上げる” to refine a saved transcript without transcribing or uploading the audio again. Completed older meetings are not automatically reprocessed. Semantic quality still needs evaluation on real meetings; source-ID and timestamp checks alone do not prove that a conclusion or rationale is correct.
+
+## Tags
+
+Click タグを追加 (Add tag) under a meeting's title, type a tag, and press Return; separate several tags with commas. Tags you used before are offered as suggestions, and right-clicking a meeting in the list opens a タグ (Tags) submenu.
+
+Click tags at the top of the list to show only the meetings that have all of them; 解除 (Clear) shows every meeting again. Tags that differ only in letter case or in full-width and half-width characters count as one tag. Tags are also written under the title in `議事録.md`. Starting a recording or importing a file clears the filter so the new meeting stays in view.
 
 ## Minutes from a recording file
 
@@ -99,7 +112,7 @@ If your Documents folder syncs with iCloud Drive, recordings are uploaded too.
 ./scripts/build.sh   # build dist/ギジログ.app after the checks pass
 ```
 
-The 41 regression tests cover chunking and the shared recording clock, incremental minutes and evidence checks, retries and recovery after restart, moving the save location and upgrading from earlier versions, mixing the audio, importing recording files, and cleaning up working audio. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.
+The 50 regression tests cover chunking and the shared recording clock, incremental minutes and evidence checks, retries and recovery after restart, moving the save location and upgrading from earlier versions, mixing the audio, importing recording files, cleaning up working audio, the final review, and tags. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.
 
 With only the Command Line Tools installed, SwiftUI's `@State` does not compile, so view state lives in `ObservableObject`s.
 
@@ -110,9 +123,3 @@ Issues and pull requests are welcome. Run `./scripts/check.sh` before opening a 
 ## License
 
 [MIT](LICENSE)
-
-### Decision-focused minutes
-
-Minutes now include decision reasons, the next checks needed for unresolved issues, and the history of changed or withdrawn plans. Action items come last; unsupported owners and deadlines remain unassigned. Expand an item's evidence to read its timestamped source utterances.
-
-Live updates remain on a 30-second timer. After recording and transcription finish, a checkpointed review revisits all available utterances in bounded batches. This uses additional API calls. Failed reviews keep the draft and can resume. The meeting menu also offers “議事録を仕上げる” to refine a saved transcript without transcribing or uploading the audio again. Completed older meetings are not automatically reprocessed. Semantic quality still needs evaluation on real meetings; source-ID and timestamp checks alone do not prove that a conclusion or rationale is correct.

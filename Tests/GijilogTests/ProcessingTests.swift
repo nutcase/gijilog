@@ -62,8 +62,10 @@ import ScreenCaptureKit
         try await tests.testFinalReviewCheckpointsAndResumesWithoutAudio()
         try await tests.testReviewWaitsForRecordingAndPendingTranscription()
         try await tests.testRefineSavedTranscriptWithoutRetranscription()
+        try tests.testTagsAreNormalizedAndDeduplicated()
+        try await tests.testTagsFilterTheListAndAreSaved()
         print(
-            "PASS: 48 checks (recording, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, audio mixdown, file import, upgrade and recovery, storage cleanup, minutes quality and final review)"
+            "PASS: 50 checks (recording, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, audio mixdown, file import, upgrade and recovery, storage cleanup, minutes quality and final review, tags)"
         )
     }
     func fixture(seconds: Double, amplitude: Float) throws -> (URL, URL) {

@@ -210,9 +210,9 @@ enum MinutesEngine {
         result.updatedAt = Date()
         return result
     }
-    static func render(_ state: MinutesState, segments: [Segment], title: String? = nil, transcript: String? = nil)
-        -> String
-    {
+    static func render(
+        _ state: MinutesState, segments: [Segment], title: String? = nil, transcript: String? = nil, tags: [String] = []
+    ) -> String {
         let known = Dictionary(segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         func plain(_ text: String) -> String {
             text.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\r", with: " ")
@@ -239,7 +239,7 @@ enum MinutesEngine {
         let history = state.content.history.isEmpty ? "" : "\n\n## 議論の経緯\n" + lines(state.content.history)
         let original = transcript.map { "\n\n## 文字起こし\n" + $0 } ?? ""
         return
-            "# \(plain(title ?? "議事録"))\n\(notice)\n## 要約\n\(lines(state.content.summary.filter { $0.state != .cancelled }))\n\n## 決定事項と理由\(candidate)\n\(lines(state.content.decisions.filter { $0.state != .cancelled }))\n\n## 未決事項・次の確認\(candidate)\n\(lines(state.content.unresolved.filter { $0.state == .open }))\(history)\(original)\n\n## アクションアイテム\n\(lines(state.content.actions.filter { $0.state != .cancelled }, actions: true))"
+            "# \(plain(title ?? "議事録"))\n\(tagLine(tags))\(notice)\n## 要約\n\(lines(state.content.summary.filter { $0.state != .cancelled }))\n\n## 決定事項と理由\(candidate)\n\(lines(state.content.decisions.filter { $0.state != .cancelled }))\n\n## 未決事項・次の確認\(candidate)\n\(lines(state.content.unresolved.filter { $0.state == .open }))\(history)\(original)\n\n## アクションアイテム\n\(lines(state.content.actions.filter { $0.state != .cancelled }, actions: true))"
     }
     /// The readable minutes: one top-level heading (the meeting title), the minutes, the transcript, then actions.
     /// Nil when the meeting has nothing to show yet.
@@ -248,12 +248,19 @@ enum MinutesEngine {
         let transcript = meeting.segments.map { "[\(Int($0.time))秒 / \($0.source)] \($0.text)" }.joined(
             separator: "\n\n")
         if let notes = meeting.notes {
-            return render(notes, segments: meeting.segments, title: meeting.title, transcript: transcript)
+            return render(
+                notes, segments: meeting.segments, title: meeting.title, transcript: transcript, tags: meeting.tags)
         }
         let title = meeting.title.components(separatedBy: .newlines).joined(separator: " ")
         let minutes = meeting.minutes.components(separatedBy: "\n").map { $0.hasPrefix("#") ? "#" + $0 : $0 }
             .joined(separator: "\n")
-        return "# \(title)\n\n## 文字起こし\n\n\(transcript)" + (minutes.isEmpty ? "" : "\n\n\(minutes)")
+        return "# \(title)\n\(tagLine(meeting.tags))\n## 文字起こし\n\n\(transcript)"
+            + (minutes.isEmpty ? "" : "\n\n\(minutes)")
+    }
+    /// A paragraph under the title, or nothing when the meeting has no tags.
+    static func tagLine(_ tags: [String]) -> String {
+        tags.isEmpty
+            ? "" : "\nタグ: " + tags.map { $0.replacingOccurrences(of: "\n", with: " ") }.joined(separator: ", ") + "\n"
     }
     static func cloudDelta(_ input: String, key: String, model: String, reviewing: Bool = false) async throws -> String
     {

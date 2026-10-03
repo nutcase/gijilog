@@ -36,6 +36,8 @@ import UniformTypeIdentifiers
     @Published var showsTranscript = true  // The live transcript panel beside the minutes.
     @Published var pinsLiveWindow = true  // Keep the compact live window above the video call.
     @Published var dropTargeted = false  // A file is being dragged over the window.
+    @Published private(set) var tagFilter: [String] = []  // The list shows meetings that have every one of these.
+    @Published var tagEditor: UUID?  // The meeting whose tag field is open.
     // Once a meeting is complete and 録音.m4a exists, its chunks are only needed to reprocess per track.
     @Published var removesWorkingAudio = true {
         didSet { if persistsSettings { UserDefaults.standard.set(removesWorkingAudio, forKey: "removesWorkingAudio") } }
@@ -405,6 +407,7 @@ import UniformTypeIdentifiers
                 in: root, name: meetingFolderName(date: meeting.date, title: untitled ? "会議" : meeting.title)
             ).lastPathComponent
         meetings.insert(meeting, at: 0)
+        tagFilter = []  // A new meeting has no tags yet; keep it in the list.
         selected = meeting.id
         activeID = meeting.id
         captureInputID = microphone.isEmpty ? AVCaptureDevice.default(for: .audio)?.uniqueID : microphone
@@ -645,6 +648,7 @@ import UniformTypeIdentifiers
                 id: stableID(relative), filename: relative, offset: chunk.offset, source: chunk.source)
         }
         meetings.insert(meeting, at: meetings.firstIndex { $0.date < date } ?? meetings.count)
+        tagFilter = []
         if !recording { selected = meeting.id }  // Keep the live meeting on screen.
         do { try await checkpoint(meeting.id) } catch { self.error = error.localizedDescription }
         mixDown([meeting.id], onlyMissing: false)
@@ -775,7 +779,8 @@ import UniformTypeIdentifiers
         revisions[id] = nil
         savedSizes[id] = nil
         meetings.removeAll { $0.id == id }
-        if selected == id { selected = meetings.first?.id }
+        pruneTagFilter()
+        if selected == id { selected = visibleMeetings.first?.id }
         status = "会議をゴミ箱に移動しました"
         refreshProcessingCounts()
     }
@@ -861,4 +866,65 @@ import UniformTypeIdentifiers
         }
     }
     nonisolated static func exportFilename(_ title: String) -> String { fileSafeName(title, fallback: "議事録") + ".md" }
+}
+
+// MARK: - Tags
+
+extension Store {
+    /// Every tag in use with the number of meetings that have it, most used first.
+    /// A tag spelled differently across meetings is listed with its most recent meeting's spelling.
+    var allTags: [(name: String, count: Int)] {
+        var counts: [String: (name: String, count: Int)] = [:]
+        var order: [String] = []
+        for meeting in meetings {
+            for tag in meeting.tags {
+                let key = MeetingTags.key(tag)
+                if let entry = counts[key] {
+                    counts[key] = (entry.name, entry.count + 1)
+                } else {
+                    counts[key] = (tag, 1)
+                    order.append(key)
+                }
+            }
+        }
+        return order.compactMap { counts[$0] }.enumerated()
+            .sorted {
+                $0.element.count != $1.element.count ? $0.element.count > $1.element.count : $0.offset < $1.offset
+            }
+            .map(\.element)
+    }
+    var visibleMeetings: [Meeting] {
+        guard !tagFilter.isEmpty else { return meetings }
+        return meetings.filter { meeting in tagFilter.allSatisfy { MeetingTags.contains(meeting.tags, $0) } }
+    }
+    /// Adds tags typed or picked for a meeting. A tag another meeting already has keeps that spelling.
+    func addTags(_ text: String, to id: UUID) {
+        let known = allTags.map(\.name)
+        let tags = MeetingTags.parse(text).map { tag in
+            known.first { MeetingTags.key($0) == MeetingTags.key(tag) } ?? tag
+        }
+        guard !tags.isEmpty else { return }
+        change(id) { $0.tags = MeetingTags.adding(tags, to: $0.tags) }
+    }
+    func removeTag(_ tag: String, from id: UUID) {
+        change(id) { meeting in meeting.tags.removeAll { MeetingTags.key($0) == MeetingTags.key(tag) } }
+        pruneTagFilter()
+    }
+    /// Narrows the list to meetings with the tag, or widens it again. A selection the list no longer shows
+    /// moves to the first meeting it does.
+    func toggleTagFilter(_ tag: String) {
+        if MeetingTags.contains(tagFilter, tag) {
+            tagFilter.removeAll { MeetingTags.key($0) == MeetingTags.key(tag) }
+        } else {
+            tagFilter.append(tag)
+        }
+        let visible = visibleMeetings
+        if !visible.contains(where: { $0.id == selected }), let first = visible.first { selected = first.id }
+    }
+    func clearTagFilter() { tagFilter = [] }
+    /// A tag no meeting has any more cannot narrow the list.
+    private func pruneTagFilter() {
+        let used = Set(meetings.flatMap { $0.tags.map(MeetingTags.key) })
+        tagFilter.removeAll { !used.contains(MeetingTags.key($0)) }
+    }
 }

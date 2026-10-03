@@ -194,11 +194,16 @@ struct MeetingList: View {
     @EnvironmentObject var store: Store
     var body: some View {
         List(selection: $store.selected) {
+            if days.isEmpty && !store.tagFilter.isEmpty {
+                Text("選んだタグがすべて付いた会議はありません。").font(.callout).foregroundStyle(.secondary)
+            }
             ForEach(days, id: \.0) { title, meetings in
                 Section(title) {
                     ForEach(meetings) { meeting in
                         MeetingRow(meeting: meeting).tag(meeting.id)
                             .contextMenu {
+                                TagMenu(meeting: meeting)
+                                Divider()
                                 Button("ゴミ箱に移動…", role: .destructive) { store.deletion = meeting }
                                     .disabled(!store.canDelete(meeting.id))
                             }
@@ -210,12 +215,15 @@ struct MeetingList: View {
         .scrollContentBackground(.hidden)
         .background(Palette.deepAi)
         .safeAreaInset(edge: .top) {
-            HStack(spacing: 10) {
-                Image(systemName: "waveform").font(.system(size: 20, weight: .semibold))
-                Text("ギジログ").font(.mincho(22))
-                Spacer()
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 10) {
+                    Image(systemName: "waveform").font(.system(size: 20, weight: .semibold))
+                    Text("ギジログ").font(.mincho(22))
+                    Spacer()
+                }
+                .foregroundStyle(Palette.paper)
+                if !store.allTags.isEmpty { TagFilterBar() }
             }
-            .foregroundStyle(Palette.paper)
             .padding(.horizontal, 18).padding(.top, 8).padding(.bottom, 12)
         }
         .safeAreaInset(edge: .bottom) {
@@ -229,7 +237,7 @@ struct MeetingList: View {
     private var days: [(String, [Meeting])] {
         let calendar = Calendar.current
         var result: [(String, [Meeting])] = []
-        for meeting in store.meetings {
+        for meeting in store.visibleMeetings {
             let title =
                 calendar.isDateInToday(meeting.date)
                 ? "今日" : calendar.isDateInYesterday(meeting.date) ? "昨日" : dayTitle.string(from: meeting.date)
@@ -253,8 +261,131 @@ struct MeetingRow: View {
                 Text(meeting.status).lineLimit(1)
             }
             .font(.caption).foregroundStyle(.secondary)
+            if !meeting.tags.isEmpty {
+                // Not a Label: the sidebar would tint its icon with the accent color.
+                HStack(spacing: 4) {
+                    Image(systemName: "tag").imageScale(.small)
+                    Text(meeting.tags.joined(separator: ", ")).lineLimit(1)
+                }
+                .font(.caption).foregroundStyle(.secondary)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("タグ: " + meeting.tags.joined(separator: ", "))
+            }
         }
         .padding(.vertical, 4)
+    }
+}
+// Narrows the sidebar to meetings that have every selected tag.
+struct TagFilterBar: View {
+    @EnvironmentObject var store: Store
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("タグで絞り込む", systemImage: "line.3.horizontal.decrease").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                if !store.tagFilter.isEmpty {
+                    Button("解除") { store.clearTagFilter() }
+                        .buttonStyle(.plain).font(.caption.weight(.semibold)).foregroundStyle(Palette.asagi)
+                        .help("すべての会議を表示")
+                }
+            }
+            // Many tags scroll within a few rows instead of pushing the meetings down.
+            if store.allTags.count > 12 { ScrollView { chips }.frame(height: 96) } else { chips }
+        }
+    }
+    private var chips: some View {
+        FlowLayout(spacing: 6) {
+            ForEach(store.allTags, id: \.name) { tag in
+                let on = MeetingTags.contains(store.tagFilter, tag.name)
+                Button {
+                    store.toggleTagFilter(tag.name)
+                } label: {
+                    HStack(spacing: 5) {
+                        Text(tag.name).lineLimit(1)
+                        Text("\(tag.count)").foregroundStyle(on ? Palette.kon.opacity(0.65) : Color.secondary)
+                    }
+                }
+                .buttonStyle(FilterChipStyle(on: on))
+                .accessibilityAddTraits(on ? .isSelected : [])
+                .help(on ? "「\(tag.name)」での絞り込みをやめる" : "「\(tag.name)」の付いた会議だけを表示")
+            }
+        }
+    }
+}
+struct FilterChipStyle: ButtonStyle {
+    let on: Bool
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(on ? Palette.kon : Palette.paper.opacity(0.85))
+            .padding(.horizontal, 9).padding(.vertical, 4)
+            .background(Capsule().fill(on ? Palette.asagi : Color.clear))
+            .overlay(Capsule().strokeBorder(on ? Color.clear : Palette.paper.opacity(0.22), lineWidth: 1))
+            .opacity(configuration.isPressed ? 0.7 : 1)
+            .contentShape(Capsule())
+    }
+}
+// Tags from a meeting's context menu: existing tags as checkmarks, or open the tag field for a new one.
+struct TagMenu: View {
+    @EnvironmentObject var store: Store
+    let meeting: Meeting
+    var body: some View {
+        Menu("タグ") {
+            ForEach(store.allTags, id: \.name) { tag in
+                Toggle(
+                    tag.name,
+                    isOn: Binding(
+                        get: { MeetingTags.contains(meeting.tags, tag.name) },
+                        set: {
+                            $0 ? store.addTags(tag.name, to: meeting.id) : store.removeTag(tag.name, from: meeting.id)
+                        }
+                    ))
+            }
+            if !store.allTags.isEmpty { Divider() }
+            Button("新しいタグ…") {
+                store.selected = meeting.id
+                // Open the field once the meeting's sheet is on screen to anchor it.
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 150_000_000)
+                    store.tagEditor = meeting.id
+                }
+            }
+        }
+    }
+}
+// Lays out chips left to right and wraps them onto new rows.
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let frames = arrange(subviews, width: proposal.width ?? .infinity)
+        let width = frames.map(\.maxX).max() ?? 0
+        return CGSize(width: proposal.width.map { min($0, width) } ?? width, height: frames.map(\.maxY).max() ?? 0)
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (subview, frame) in zip(subviews, arrange(subviews, width: bounds.width)) {
+            subview.place(
+                at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                proposal: ProposedViewSize(frame.size))
+        }
+    }
+    private func arrange(_ subviews: Subviews, width: CGFloat) -> [CGRect] {
+        var frames: [CGRect] = []
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            var size = subview.sizeThatFits(.unspecified)
+            size.width = min(size.width, width)  // A chip wider than the row is truncated, not overflowed.
+            if x > 0 && x + size.width > width {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            frames.append(CGRect(origin: CGPoint(x: x, y: y), size: size))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        return frames
     }
 }
 
@@ -562,8 +693,36 @@ struct MinutesDesk: View {
                 Spacer(minLength: 0)
             }
             .font(.callout)
+            tags
             updateState.font(.caption)
             Rectangle().fill(Palette.sumi).frame(height: 1.5).padding(.top, 6)
+        }
+    }
+    private var tags: some View {
+        FlowLayout(spacing: 6) {
+            ForEach(meeting.tags, id: \.self) { tag in
+                TagChip(name: tag) { store.removeTag(tag, from: meeting.id) }
+            }
+            Button {
+                store.tagEditor = meeting.id
+            } label: {
+                if meeting.tags.isEmpty {
+                    Label("タグを追加", systemImage: "tag")
+                } else {
+                    Image(systemName: "plus").padding(.horizontal, 4).accessibilityLabel("タグを追加")
+                }
+            }
+            .buttonStyle(.plain).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
+            .padding(.vertical, 3)
+            .help("タグを付けると、一覧をタグで絞り込めます")
+            .popover(
+                isPresented: Binding(
+                    get: { store.tagEditor == meeting.id }, set: { if !$0 { store.tagEditor = nil } }),
+                arrowEdge: .bottom
+            ) {
+                // The popover is app chrome, not part of the light paper sheet it is anchored to.
+                TagEditor(meetingID: meeting.id).environmentObject(store).environment(\.colorScheme, .dark)
+            }
         }
     }
     // While a meeting is live, say when the minutes last changed and whether an update is running.
@@ -608,6 +767,85 @@ struct MinutesDesk: View {
     }
     private var canResume: Bool { meeting.id != store.activeID && store.hasKey && !store.isProcessing(meeting.id) }
     private func resume() { Task { await store.process() } }
+}
+struct TagChip: View {
+    let name: String
+    let remove: () -> Void
+    var body: some View {
+        HStack(spacing: 5) {
+            Text(name).lineLimit(1)
+            Button(action: remove) {
+                Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+            }
+            .buttonStyle(.plain).foregroundStyle(.secondary)
+            .help("このタグを外す")
+            .accessibilityLabel("「\(name)」を外す")
+        }
+        .font(.system(size: 12, weight: .medium))
+        .foregroundStyle(Palette.sumi)
+        .padding(.leading, 9).padding(.trailing, 7).padding(.vertical, 3)
+        .background(Capsule().fill(Palette.asagi.opacity(0.14)))
+    }
+}
+final class TagDraft: ObservableObject {
+    @Published var text = ""
+}
+// Type a tag and press Enter, or pick one used before. Enter on an empty field closes it.
+struct TagEditor: View {
+    @EnvironmentObject var store: Store
+    let meetingID: UUID
+    @StateObject private var draft = TagDraft()
+    @FocusState private var focused: Bool
+    var body: some View {
+        let current = store.meetings.first { $0.id == meetingID }?.tags ?? []
+        let typed = draft.text.trimmingCharacters(in: .whitespaces)
+        let suggestions = store.allTags.map(\.name).filter { name in
+            !MeetingTags.contains(current, name) && (typed.isEmpty || name.localizedStandardContains(typed))
+        }
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("タグを入力して Enter", text: $draft.text)
+                .textFieldStyle(.roundedBorder)
+                .focused($focused)
+                .onSubmit {
+                    if typed.isEmpty {
+                        store.tagEditor = nil
+                    } else {
+                        store.addTags(draft.text, to: meetingID)
+                        draft.text = ""
+                    }
+                }
+            if !suggestions.isEmpty {
+                Text(typed.isEmpty ? "これまでに使ったタグ" : "一致するタグ").font(.caption)
+                    .foregroundStyle(Palette.paper.opacity(0.6))
+                FlowLayout(spacing: 6) {
+                    ForEach(suggestions.prefix(20), id: \.self) { name in
+                        Button(name) {
+                            store.addTags(name, to: meetingID)
+                            draft.text = ""
+                        }
+                        .buttonStyle(SuggestionChipStyle())
+                    }
+                }
+            }
+            Text("カンマ（、）で区切ると、まとめて追加できます。").font(.caption)
+                .foregroundStyle(Palette.paper.opacity(0.6))
+        }
+        .foregroundStyle(Palette.paper)  // Not the sheet's ink: the popover is dark app chrome.
+        .padding(14)
+        .frame(width: 300, alignment: .leading)
+        .onAppear { focused = true }
+    }
+}
+struct SuggestionChipStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: .medium)).lineLimit(1)
+            .foregroundStyle(Palette.paper)
+            .padding(.horizontal, 9).padding(.vertical, 3)
+            .overlay(Capsule().strokeBorder(Palette.paper.opacity(0.35), lineWidth: 1))
+            .opacity(configuration.isPressed ? 0.6 : 1)
+            .contentShape(Capsule())
+    }
 }
 struct Notice: View {
     let text: String
