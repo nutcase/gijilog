@@ -56,7 +56,7 @@ enum MinutesEngine {
             "id": ["type": "string"], "text": ["type": "string"],
             "owner": ["type": ["string", "null"]], "due": ["type": ["string", "null"]],
             "evidence": ["type": "array", "items": ["type": "string"]],
-            "state": ["type": "string", "enum": ["open", "done", "cancelled"]],
+            "state": ["type": "string", "enum": ItemState.allCases.map(\.rawValue)],
         ]
         let item: [String: Any] = [
             "type": "object", "properties": properties,
@@ -74,42 +74,40 @@ enum MinutesEngine {
     {
         let new = batch(segments, state: previous)
         guard !new.isEmpty else { return previous }
-        let extraction =
-            !settings.cloudSummary && settings.localModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let delta: NotesDelta
-        if extraction {
-            delta = extract(new)
-        } else {
-            let content = try input(previous, batch: new)
-            let text =
-                settings.cloudSummary
-                ? try await cloudDelta(content, key: key, model: settings.model)
-                : try await localDelta(content, model: settings.localModel)
-            delta = try JSONDecoder().decode(NotesDelta.self, from: Data(text.utf8))
-        }
-        var result = try merge(previous, delta: delta, batch: new, segments: segments)
-        result.extractionOnly = extraction
+        let text = try await cloudDelta(try input(previous, batch: new), key: key, model: settings.model)
+        let delta = try JSONDecoder().decode(NotesDelta.self, from: Data(text.utf8))
+        var result = merge(previous, delta: delta, batch: new, segments: segments)
+        result.extractionOnly = false
         return result
     }
-    static func merge(_ previous: MinutesState, delta: NotesDelta, batch: [Segment], segments: [Segment]) throws
+    // Each AI item is verified on its own so one bad item cannot stall the meeting's minutes.
+    // Items without valid evidence are dropped and counted; an owner or deadline that does not appear
+    // verbatim in the cited utterances is cleared to unknown rather than invented.
+    static func merge(_ previous: MinutesState, delta: NotesDelta, batch: [Segment], segments: [Segment])
         -> MinutesState
     {
         let known = Dictionary(segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let newIDs = Set(batch.map(\.id))
-        func upsert(_ old: [NoteItem], _ changes: [NoteItem], section: String) throws -> [NoteItem] {
+        var rejected = 0
+        func upsert(_ old: [NoteItem], _ changes: [NoteItem], section: String) -> [NoteItem] {
             var items = old
             for var item in changes {
                 let evidence = Set(item.evidence)
                 guard !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !evidence.isEmpty,
-                    evidence.allSatisfy({ known[$0] != nil }), !evidence.isDisjoint(with: newIDs),
-                    ["open", "done", "cancelled"].contains(item.state)
-                else { throw AppError.message("議事録の根拠発言が不正です。前の議事録を保持しました。") }
-                let original = item.evidence.compactMap { known[$0]?.text }.joined(separator: "\n")
-                for field in [item.owner, item.due].compactMap({ $0 }) {
-                    guard !field.isEmpty, original.contains(field) else {
-                        throw AppError.message("担当者・期限が根拠発言にありません。前の議事録を保持しました。")
-                    }
+                    evidence.allSatisfy({ known[$0] != nil }), !evidence.isDisjoint(with: newIDs)
+                else {
+                    rejected += 1
+                    continue
                 }
+                let original = item.evidence.compactMap { known[$0]?.text }.joined(separator: "\n")
+                func grounded(_ field: String?) -> String? {
+                    guard let field = field?.trimmingCharacters(in: .whitespacesAndNewlines), !field.isEmpty,
+                        original.contains(field)
+                    else { return nil }
+                    return field
+                }
+                item.owner = grounded(item.owner)
+                item.due = grounded(item.due)
                 if let i = items.firstIndex(where: { $0.id == item.id && !item.id.isEmpty }) {
                     item.owner = item.owner ?? items[i].owner
                     item.due = item.due ?? items[i].due
@@ -129,26 +127,19 @@ enum MinutesEngine {
             return items
         }
         var result = previous
-        result.content.summary = Array(
-            try upsert(previous.content.summary, delta.summary, section: "summary").suffix(8))
-        result.content.decisions = try upsert(previous.content.decisions, delta.decisions, section: "decision")
-        result.content.unresolved = try upsert(previous.content.unresolved, delta.unresolved, section: "unresolved")
-        result.content.actions = try upsert(previous.content.actions, delta.actions, section: "action")
+        result.content.summary = Array(upsert(previous.content.summary, delta.summary, section: "summary").suffix(8))
+        result.content.decisions = upsert(previous.content.decisions, delta.decisions, section: "decision")
+        result.content.unresolved = upsert(previous.content.unresolved, delta.unresolved, section: "unresolved")
+        result.content.actions = upsert(previous.content.actions, delta.actions, section: "action")
+        if rejected > 0 { result.rejectedItems = (previous.rejectedItems ?? 0) + rejected }
         result.appliedSegmentIDs.formUnion(newIDs)
+        result.latestSegmentIDs = newIDs
         result.updatedAt = Date()
         return result
     }
-    static func extract(_ segments: [Segment]) -> NotesDelta {
-        func item(_ segment: Segment) -> NoteItem { NoteItem(id: "", text: segment.text, evidence: [segment.id]) }
-        var delta = NotesDelta(summary: segments.prefix(5).map(item))
-        delta.decisions = segments.filter { s in ["決定", "決まり", "合意", "にします"].contains { s.text.contains($0) } }.map(
-            item)
-        delta.unresolved = segments.filter { s in ["検討", "未定", "次回", "保留"].contains { s.text.contains($0) } }.map(item)
-        delta.actions = segments.filter { s in ["対応", "お願い", "までに", "確認します"].contains { s.text.contains($0) } }.map(
-            item)
-        return delta
-    }
-    static func render(_ state: MinutesState, segments: [Segment], transcript: String? = nil) -> String {
+    static func render(_ state: MinutesState, segments: [Segment], title: String? = nil, transcript: String? = nil)
+        -> String
+    {
         let known = Dictionary(segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         func plain(_ text: String) -> String {
             text.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\r", with: " ")
@@ -158,10 +149,10 @@ enum MinutesEngine {
             return items.map { item in
                 let evidence = item.evidence.compactMap { known[$0] }.sorted { $0.time < $1.time }
                 let times = evidence.map { "\(Int($0.time))秒・\($0.source)" }.joined(separator: ", ")
-                let mark = item.state == "done" ? "完了" : (item.state == "cancelled" ? "撤回" : "")
+                let mark = item.state == .done ? "完了" : (item.state == .cancelled ? "撤回" : "")
                 if actions {
                     return
-                        "- [\(item.state == "done" ? "x" : " ")] \(plain(item.text))（担当者: \(plain(item.owner ?? "不明")) / 期限: \(plain(item.due ?? "不明")) / 根拠: \(times)\(mark.isEmpty ? "" : " / " + mark)）"
+                        "- [\(item.state == .done ? "x" : " ")] \(plain(item.text))（担当者: \(plain(item.owner ?? "不明")) / 期限: \(plain(item.due ?? "不明")) / 根拠: \(times)\(mark.isEmpty ? "" : " / " + mark)）"
                 }
                 let time = evidence.first.map { "[\(Int($0.time))秒] " } ?? ""
                 return "- \(time)\(plain(item.text))\(mark.isEmpty ? "" : "（" + mark + "）")"
@@ -171,7 +162,21 @@ enum MinutesEngine {
         let notice = state.extractionOnly ? "\nキーワードに基づく発言抽出の候補です。原文で確認してください。\n" : ""
         let original = transcript.map { "\n\n## 文字起こし\n" + $0 } ?? ""
         return
-            "# 議事録\n\(notice)\n## 要約\n\(lines(state.content.summary))\n\n## 決定事項\(candidate)\n\(lines(state.content.decisions))\n\n## 未決事項\(candidate)\n\(lines(state.content.unresolved))\(original)\n\n## アクションアイテム\n\(lines(state.content.actions, actions: true))"
+            "# \(plain(title ?? "議事録"))\n\(notice)\n## 要約\n\(lines(state.content.summary))\n\n## 決定事項\(candidate)\n\(lines(state.content.decisions))\n\n## 未決事項\(candidate)\n\(lines(state.content.unresolved))\(original)\n\n## アクションアイテム\n\(lines(state.content.actions, actions: true))"
+    }
+    /// The readable minutes: one top-level heading (the meeting title), the minutes, the transcript, then actions.
+    /// Nil when the meeting has nothing to show yet.
+    static func document(_ meeting: Meeting) -> String? {
+        guard meeting.notes != nil || !meeting.segments.isEmpty || !meeting.minutes.isEmpty else { return nil }
+        let transcript = meeting.segments.map { "[\(Int($0.time))秒 / \($0.source)] \($0.text)" }.joined(
+            separator: "\n\n")
+        if let notes = meeting.notes {
+            return render(notes, segments: meeting.segments, title: meeting.title, transcript: transcript)
+        }
+        let title = meeting.title.components(separatedBy: .newlines).joined(separator: " ")
+        let minutes = meeting.minutes.components(separatedBy: "\n").map { $0.hasPrefix("#") ? "#" + $0 : $0 }
+            .joined(separator: "\n")
+        return "# \(title)\n\n## 文字起こし\n\n\(transcript)" + (minutes.isEmpty ? "" : "\n\n\(minutes)")
     }
     static func cloudDelta(_ input: String, key: String, model: String) async throws -> String {
         var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
@@ -205,39 +210,5 @@ enum MinutesEngine {
             .joined()
         guard !text.isEmpty else { throw AppError.message("議事録の応答が空でした。") }
         return text
-    }
-    static func localDelta(_ input: String, model: String) async throws -> String {
-        let session = URLSession(configuration: .ephemeral, delegate: LocalOnlySession(), delegateQueue: nil)
-        defer { session.invalidateAndCancel() }
-        var show = URLRequest(url: URL(string: "http://127.0.0.1:11434/api/show")!)
-        show.httpMethod = "POST"
-        show.timeoutInterval = 15
-        show.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        show.httpBody = try JSONSerialization.data(withJSONObject: ["model": model])
-        let (metadata, response) = try await session.data(for: show)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-            let info = try JSONSerialization.jsonObject(with: metadata) as? [String: Any],
-            (info["remote_host"] as? String ?? "").isEmpty, (info["remote_model"] as? String ?? "").isEmpty,
-            let details = info["details"] as? [String: Any], let format = details["format"] as? String, !format.isEmpty
-        else {
-            throw AppError.message("Mac内のOllamaモデルを確認できません。外部モデルへは送信しません。")
-        }
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:11434/api/chat")!)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 180
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": model, "stream": false, "format": schema,
-            "messages": [["role": "system", "content": instructions], ["role": "user", "content": input]],
-        ])
-        let (data, result) = try await session.data(for: request)
-        guard let http = result as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw AppError.message("Mac内AIの議事録作成に失敗しました。")
-        }
-        struct Response: Decodable {
-            struct Message: Decodable { var content: String }
-            var message: Message
-        }
-        return try JSONDecoder().decode(Response.self, from: data).message.content
     }
 }

@@ -1,7 +1,6 @@
 import AVFoundation
 import Foundation
 import Security
-import Speech
 
 struct RecordedChunk: Codable {
     var filename: String
@@ -52,68 +51,6 @@ enum KeyStore {
         }
     }
 }
-final class LocalRecognition {
-    private var task: SFSpeechRecognitionTask?
-    func transcribe(_ url: URL) async throws -> [Segment] {
-        let permission = await withCheckedContinuation { c in
-            SFSpeechRecognizer.requestAuthorization { c.resume(returning: $0) }
-        }
-        guard permission == .authorized else { throw AppError.message("音声認識を許可してください。") }
-        guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "ja-JP")),
-            recognizer.supportsOnDeviceRecognition
-        else { throw AppError.message("日本語の端末内音声認識が利用できません。クラウド処理へ自動送信はしません。") }
-        return try await withCheckedThrowingContinuation { c in
-            let request = SFSpeechURLRecognitionRequest(url: url)
-            request.requiresOnDeviceRecognition = true
-            request.shouldReportPartialResults = false
-            var finished = false
-            let lock = NSLock()
-            let timeout = DispatchWorkItem { [weak self] in
-                lock.lock()
-                guard !finished else {
-                    lock.unlock()
-                    return
-                }
-                finished = true
-                lock.unlock()
-                self?.task?.cancel()
-                c.resume(throwing: AppError.message("端末内音声認識がタイムアウトしました。音声は保存されています。"))
-            }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 90, execute: timeout)
-            task = recognizer.recognitionTask(with: request) { result, error in
-                lock.lock()
-                guard !finished else {
-                    lock.unlock()
-                    return
-                }
-                if let result, result.isFinal {
-                    finished = true
-                    lock.unlock()
-                    timeout.cancel()
-                    c.resume(
-                        returning: result.bestTranscription.segments.map {
-                            Segment(time: $0.timestamp, source: "", text: $0.substring)
-                        })
-                } else if let error {
-                    finished = true
-                    lock.unlock()
-                    timeout.cancel()
-                    c.resume(throwing: error)
-                } else {
-                    lock.unlock()
-                }
-            }
-        }
-    }
-}
-final class LocalOnlySession: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    func urlSession(
-        _ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-        newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void
-    ) {
-        completionHandler(nil)
-    }
-}
 enum Processor {
     static func isRetryable(_ error: Error) -> Bool {
         if let error = error as? CloudFailure { return error.code == 429 || error.code >= 500 }
@@ -122,6 +59,10 @@ enum Processor {
                 error.code)
         }
         return false
+    }
+    /// The backoff for a retry, extended to the server's Retry-After (capped at two minutes).
+    static func retryDelay(after error: Error, attempt: Int, base: (Int) -> TimeInterval) -> TimeInterval {
+        max(base(attempt), min((error as? CloudFailure)?.retryAfter ?? 0, 120))
     }
     // Short PCM chunks keep recognition requests bounded and uploads below the file limit.
     static func chunks(_ url: URL, directory: URL) throws -> [(URL, Double)] {
@@ -150,9 +91,7 @@ enum Processor {
         }
         return result
     }
-    static func recognizeChunk(_ url: URL, offset: Double, source: String, cloud: Bool, key: String) async throws
-        -> [Segment]
-    {
+    static func recognizeChunk(_ url: URL, offset: Double, source: String, key: String) async throws -> [Segment] {
         let temporary = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: temporary) }
@@ -172,20 +111,9 @@ enum Processor {
                 }
             }
             guard peak > 0.002 else { continue }
-            if cloud {
-                let text = try await cloudTranscribe(wav, key: key)
-                if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    result.append(Segment(time: offset + relative, source: source, text: text))
-                }
-            } else {
-                let recognizer = LocalRecognition()
-                let words = try await recognizer.transcribe(wav)
-                if !words.isEmpty {
-                    result.append(
-                        Segment(
-                            time: offset + relative + (words.first?.time ?? 0), source: source,
-                            text: words.map(\.text).joined()))
-                }
+            let text = try await cloudTranscribe(wav, key: key)
+            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                result.append(Segment(time: offset + relative, source: source, text: text))
             }
         }
         return result
@@ -233,29 +161,37 @@ enum Processor {
         if let failure { throw failure }
         return false
     }
-    static func transcribe(folder: URL, cloud: Bool, key: String, progress: @escaping (String) async -> Void)
-        async throws -> [Segment]
-    {
-        if !FileManager.default.fileExists(atPath: folder.appendingPathComponent("recording.json").path) {
-            await progress("旧録音を再処理中（トラック間の開始時刻は不明）")
-        }
-        var all: [Segment] = []
-        for input in try recordingInputs(folder: folder) {
-            await progress("\(input.source) \(Int(input.offset))秒〜を文字起こし中")
-            // Both live and replay use the same silence gate and recognition path.
-            all.append(
-                contentsOf: try await recognizeChunk(
-                    input.url, offset: input.offset, source: input.source, cloud: cloud, key: key))
-        }
-        return all.sorted { $0.time < $1.time }
-    }
     static func send(_ request: URLRequest) async throws -> Data {
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            throw CloudFailure(code: code)
+        let http = response as? HTTPURLResponse
+        guard let http, (200..<300).contains(http.statusCode) else {
+            throw CloudFailure(
+                code: http?.statusCode ?? 0, message: serverMessage(data), retryAfter: http.flatMap(retryAfter))
         }
         return data
+    }
+    // Error bodies say what to fix (model name, quota). Keys echoed back by the API are masked before
+    // the message is shown or saved with a failed job.
+    static func serverMessage(_ data: Data) -> String? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        let error = json["error"]
+        guard
+            let text = ((error as? [String: Any])?["message"] as? String ?? error as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty
+        else { return nil }
+        let masked = text.replacingOccurrences(of: #"sk-[A-Za-z0-9_\-*]+"#, with: "sk-***", options: .regularExpression)
+        return masked.count > 200 ? String(masked.prefix(200)) + "…" : masked
+    }
+    static func retryAfter(_ response: HTTPURLResponse) -> TimeInterval? {
+        if let milliseconds = response.value(forHTTPHeaderField: "retry-after-ms").flatMap(Double.init) {
+            return max(0, milliseconds / 1000)
+        }
+        guard let value = response.value(forHTTPHeaderField: "Retry-After") else { return nil }
+        if let seconds = Double(value) { return max(0, seconds) }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        return formatter.date(from: value).map { max(0, $0.timeIntervalSinceNow) }
     }
     static func cloudTranscribe(_ url: URL, key: String) async throws -> String {
         let boundary = UUID().uuidString
@@ -278,18 +214,55 @@ enum Processor {
         struct Result: Decodable { let text: String }
         return try JSONDecoder().decode(Result.self, from: await send(request)).text
     }
-    static func summarize(_ segments: [Segment], cloud: Bool, key: String, model: String, localModel: String = "")
-        async throws -> String
-    {
-        var state = MinutesState()
-        let settings = SessionSettings(mode: cloud ? "cloud" : "local", model: model, localModel: localModel)
-        while !MinutesEngine.batch(segments, state: state).isEmpty {
-            state = try await MinutesEngine.update(state, segments: segments, settings: settings, key: key)
-        }
-        return MinutesEngine.render(state, segments: segments)
-    }
 }
 struct CloudFailure: LocalizedError {
     var code: Int
-    var errorDescription: String? { "クラウドAPIエラー (\(code))。APIキー・利用上限・モデル設定を確認してください。" }
+    var message: String?
+    var retryAfter: TimeInterval?
+    var errorDescription: String? {
+        "クラウドAPIエラー (\(code))\(message.map { ": " + $0 } ?? "")。APIキー・利用上限・モデル設定を確認してください。"
+    }
+}
+// One file to listen back to: the Mac audio and microphone tracks mixed on the common recording clock.
+enum AudioMixdown {
+    static let filename = "録音.m4a"
+    static func write(folder: URL) async throws {
+        let composition = AVMutableComposition()
+        var tracks: [String: AVMutableCompositionTrack] = [:]
+        let inputs = try Processor.recordingInputs(folder: folder, allowMissing: true).filter {
+            FileManager.default.fileExists(atPath: $0.url.path)
+        }
+        for input in inputs {
+            let asset = AVURLAsset(url: input.url)
+            guard let source = try await asset.loadTracks(withMediaType: .audio).first else { continue }
+            let duration = try await asset.load(.duration)
+            guard duration > .zero else { continue }
+            guard
+                let track = tracks[input.source]
+                    ?? composition.addMutableTrack(
+                        withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+            else { continue }
+            tracks[input.source] = track
+            // Keep silence before and between chunks; a chunk never moves earlier than the end of the previous one.
+            // An empty track cannot take a leading gap, so its first chunk goes in first and the gap is inserted before it.
+            let range = CMTimeRange(start: .zero, duration: duration)
+            let start = CMTime(seconds: input.offset, preferredTimescale: 48_000)
+            if track.segments.isEmpty {
+                try track.insertTimeRange(range, of: source, at: .zero)
+                if start > .zero { track.insertEmptyTimeRange(CMTimeRange(start: .zero, duration: start)) }
+            } else {
+                let end = track.timeRange.end
+                if start > end { track.insertEmptyTimeRange(CMTimeRange(start: end, end: start)) }
+                try track.insertTimeRange(range, of: source, at: max(start, end))
+            }
+        }
+        guard !tracks.isEmpty, composition.duration > .zero else { return }
+        guard let session = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A) else {
+            throw AppError.message("録音ファイルを作成できません。")
+        }
+        let output = folder.appendingPathComponent(filename)
+        let temporary = folder.appendingPathComponent(".録音-\(UUID().uuidString).m4a")
+        try await session.export(to: temporary, as: .m4a)
+        _ = try FileManager.default.replaceItemAt(output, withItemAt: temporary)
+    }
 }

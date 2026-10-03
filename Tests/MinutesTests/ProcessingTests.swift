@@ -12,10 +12,11 @@ import ScreenCaptureKit
         return value
     }
     static func main() async throws {
+        _ = URLProtocol.registerClass(BlockNetworkProtocol.self)  // Consulted after the per-test mocks.
         let tests = ProcessingTests()
         try tests.testChunkingPreservesFramesAndOffsets()
         try await tests.testSilentCloudChunkDoesNotCallAPI()
-        try await tests.testLocalMinutesKeepsEvidenceAndDoesNotInventOwner()
+        try tests.testLegacyExtractionNotesRender()
         try await tests.testRecorderKeepsBothTracksAndFlushesTail()
         try await tests.testStopFailureClosesFilesBeforeRestart()
         try await tests.testReplayPreservesDelayedTracksAndGaps()
@@ -34,8 +35,18 @@ import ScreenCaptureKit
         try await tests.testSummaryCoalescesLatestUtterances()
         try await tests.testFullReprocessBacksUpAndReplacesOldNotes()
         try await tests.testRetryBudgetAndMissingChunkIsolation()
+        try tests.testOnlyTheActiveInputStopsRecording()
+        try await tests.testLiveSummaryRecoversAfterFailure()
+        try tests.testCloudErrorDetailAndRetryAfter()
+        try await tests.testCheckpointsCoalesceAndSkipCleanMeetings()
+        try await tests.testRecoverySkipsSettledMeetings()
+        try tests.testExportHasOneTitleHeading()
+        try await tests.testDeleteMovesFolderAndBlocksLateWrites()
+        try await tests.testMeetingFolderHoldsMinutesAndAudio()
+        try await tests.testSaveLocationMovesWithItsMeetings()
+        try tests.testLegacyMeetingsMoveToReadableFolders()
         print(
-            "PASS: 21 checks (recording, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API)"
+            "PASS: 31 checks (recording, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, audio mixdown)"
         )
     }
     func fixture(seconds: Double, amplitude: Float) throws -> (URL, URL) {
@@ -71,7 +82,7 @@ import ScreenCaptureKit
     func testSilentCloudChunkDoesNotCallAPI() async throws {
         let (folder, url) = try fixture(seconds: 1, amplitude: 0)
         defer { try? FileManager.default.removeItem(at: folder) }
-        let segments = try await Processor.recognizeChunk(url, offset: 12, source: "マイク", cloud: true, key: "")
+        let segments = try await Processor.recognizeChunk(url, offset: 12, source: "マイク", key: "")
         try Self.check(segments.isEmpty, "silent chunk must skip network")
     }
     actor ChunkCollector {
@@ -203,7 +214,7 @@ import ScreenCaptureKit
         try Self.check(URLProtocol.registerClass(MockCloudProtocol.self), "register mock transport")
         defer { URLProtocol.unregisterClass(MockCloudProtocol.self) }
         MockCloudProtocol.reset()
-        let segments = try await Processor.transcribe(folder: folder, cloud: true, key: "TEST", progress: { _ in })
+        let segments = try await Processor.transcribe(folder: folder, key: "TEST", progress: { _ in })
         try Self.check(segments.map(\.time) == [0, 5, 10], "transcription must use the persisted common clock")
         try Self.check(MockCloudProtocol.count == 3, "all three audible chunks must be recognized")
     }
@@ -217,21 +228,20 @@ import ScreenCaptureKit
         try Self.check(URLProtocol.registerClass(MockCloudProtocol.self), "register mock transport")
         defer { URLProtocol.unregisterClass(MockCloudProtocol.self) }
         MockCloudProtocol.reset()
-        let newSegments = try await Processor.transcribe(folder: folder, cloud: true, key: "TEST", progress: { _ in })
+        let newSegments = try await Processor.transcribe(folder: folder, key: "TEST", progress: { _ in })
         try Self.check(newSegments.isEmpty && MockCloudProtocol.count == 0, "new silent recording must not upload")
         let legacy = folder.appendingPathComponent("legacy")
         try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
         try FileManager.default.copyItem(at: url, to: legacy.appendingPathComponent("system.caf"))
-        let oldSegments = try await Processor.transcribe(folder: legacy, cloud: true, key: "TEST", progress: { _ in })
+        let oldSegments = try await Processor.transcribe(folder: legacy, key: "TEST", progress: { _ in })
         try Self.check(oldSegments.isEmpty && MockCloudProtocol.count == 0, "legacy silent recording must not upload")
-        let localSegments = try await Processor.transcribe(folder: folder, cloud: false, key: "", progress: { _ in })
-        try Self.check(localSegments.isEmpty, "local silence must skip speech recognition too")
     }
     @MainActor func testStoreDistinguishesEmptyUnrecognizedAndComplete() async throws {
         let (folder, audio) = try fixture(seconds: 1, amplitude: 0.25)
         defer { try? FileManager.default.removeItem(at: folder) }
         let store = Store(root: folder.appendingPathComponent("meetings"), loadSettings: false)
-        store.processingMode = "local"
+        store.key = "TEST"
+        store.pipeline = ProcessingPipeline(store: store, summarize: MinutesEngine.stubSummary)
         func activate(_ input: Meeting) async throws {
             var meeting = input
             meeting.settings = store.settings
@@ -239,13 +249,13 @@ import ScreenCaptureKit
             store.selected = meeting.id
             store.recording = true
             store.activeID = meeting.id
-            try await store.persist(meeting)
-            store.pipeline.resume(meeting.id, key: "")
+            try await store.checkpoint(meeting.id)
+            store.pipeline.resume(meeting.id, key: "TEST")
         }
         let empty = Meeting(title: "empty")
         try await activate(empty)
         await store.stop()
-        try await store.pipeline.waitUntilIdle()
+        try await store.waitUntilIdle()
         try Self.check(store.meetings[0].status == "録音なし", "missing audio cannot be complete")
         try Self.check(!store.status.contains("保存しました"), "missing audio must not show success")
         try Self.check(store.activeID == nil && !store.busy, "empty stop must release the UI")
@@ -255,11 +265,11 @@ import ScreenCaptureKit
         try store.recorder.prepareFiles(in: store.folder(silent.id))
         store.recorder.consume(try audioSample(at: 0, amplitude: 0), of: .audio)
         await store.stop()
-        try await store.pipeline.waitUntilIdle()
+        try await store.waitUntilIdle()
         try Self.check(store.meetings[0].status == "録音済み・認識結果なし", "saved audio without words cannot be complete")
         try Self.check(store.meetings[0].minutes.isEmpty, "empty transcript must not produce minutes")
         await store.process()
-        try await store.pipeline.waitUntilIdle()
+        try await store.waitUntilIdle()
         try Self.check(store.meetings[0].status == "録音済み・認識結果なし", "replay must use the same empty-result state")
 
         var complete = Meeting(title: "complete")
@@ -271,18 +281,23 @@ import ScreenCaptureKit
         try await activate(complete)
         try FileManager.default.copyItem(at: audio, to: store.folder(complete.id).appendingPathComponent("system.caf"))
         await store.stop()
-        try await store.pipeline.waitUntilIdle()
-        try Self.check(store.meetings[0].status == "完了・端末内", "real audio and transcript can complete")
+        try await store.waitUntilIdle()
+        try Self.check(store.meetings[0].status == "完了", "real audio and transcript can complete")
         try Self.check(store.meetings[0].minutes.contains("アクションアイテム"), "successful stop must produce minutes")
         let saved = try JSONDecoder().decode(
             Meeting.self, from: Data(contentsOf: store.folder(complete.id).appendingPathComponent("meeting.json")))
         try Self.check(saved.status == store.meetings[0].status, "completion state must be persisted")
     }
-    func testLocalMinutesKeepsEvidenceAndDoesNotInventOwner() async throws {
+    // Meetings recorded with the former keyword-extraction mode still render, labeled as candidates.
+    func testLegacyExtractionNotesRender() throws {
         let segments = [
-            Segment(time: 12, source: "Mac音声", text: "次回までに検討します"), Segment(time: 24, source: "マイク", text: "この案に決定します"),
+            Segment(id: "a", time: 12, source: "Mac音声", text: "次回までに検討します"),
+            Segment(id: "b", time: 24, source: "マイク", text: "この案に決定します"),
         ]
-        let text = try await Processor.summarize(segments, cloud: false, key: "", model: "")
+        var state = MinutesEngine.merge(
+            MinutesState(), delta: MinutesEngine.extract(segments), batch: segments, segments: segments)
+        state.extractionOnly = true
+        let text = MinutesEngine.render(state, segments: segments)
         try Self.check(text.contains("[24秒] この案に決定します"), "decision evidence")
         try Self.check(text.contains("[12秒] 次回までに検討します"), "pending evidence")
         try Self.check(text.contains("候補"), "unconfirmed candidate label")
@@ -290,6 +305,7 @@ import ScreenCaptureKit
         try Self.check(lastSection.hasPrefix("アクションアイテム\n"), "actions must be the final section")
         try Self.check(lastSection.contains("- [ ] 次回までに検討します"), "action checklist")
         try Self.check(lastSection.contains("担当者: 不明 / 期限: 不明"), "no invented owner or deadline")
+        try Self.check(state.latestSegmentIDs == ["a", "b"], "the latest update remembers its utterances")
     }
 }
 

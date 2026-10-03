@@ -10,18 +10,18 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleExecutable</key><string>Minutes</string>
-<key>CFBundleIdentifier</key><string>local.minutes.desktop</string>
+<key>CFBundleIdentifier</key><string>local.minutes.kirokuru</string>
 <key>CFBundleName</key><string>キロクル</string>
 <key>CFBundleDisplayName</key><string>キロクル</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>
 <key>LSMinimumSystemVersion</key><string>15.0</string>
 <key>NSMicrophoneUsageDescription</key><string>会議中のあなたの声を録音します。</string>
-<key>NSSpeechRecognitionUsageDescription</key><string>保存した音声をMac内で文字起こしします。</string>
 <key>NSAudioCaptureUsageDescription</key><string>会議アプリなどのMac音声を録音します。</string>
 <key>NSHighResolutionCapable</key><true/>
-<key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict></plist>
 PLIST
-codesign --force --sign - "$APP"
+# Ad-hoc signing (the default) changes the signature on every build, so macOS drops the screen and
+# audio recording permission. Set KIROKURU_SIGN_IDENTITY to a code-signing certificate name to keep it.
+codesign --force --sign "${KIROKURU_SIGN_IDENTITY:--}" "$APP"
 printf '%s\n' "$APP"

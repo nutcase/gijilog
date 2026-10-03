@@ -2,6 +2,25 @@ import AVFoundation
 import AppKit
 import SwiftUI
 
+// The last few seconds of peak levels per track, drawn as a scrolling waveform.
+// Published apart from Store so the 10 Hz meter does not redraw the transcript.
+@MainActor final class LevelMeter: ObservableObject {
+    static let length = 48  // About 5 seconds at the recorder's 10 Hz updates.
+    @Published private(set) var system = [Float](repeating: 0, count: length)
+    @Published private(set) var microphone = [Float](repeating: 0, count: length)
+    func record(_ value: Float, microphone isMicrophone: Bool) {
+        if isMicrophone {
+            microphone = Array(microphone.dropFirst()) + [value]
+        } else {
+            system = Array(system.dropFirst()) + [value]
+        }
+    }
+    func reset() {
+        system = [Float](repeating: 0, count: Self.length)
+        microphone = system
+    }
+}
+
 @MainActor final class Store: ObservableObject {
     @Published var meetings: [Meeting] = []
     @Published var selected: UUID?
@@ -10,49 +29,65 @@ import SwiftUI
     @Published var ready = true
     @Published var status = "準備完了"
     @Published var error: String?
-    @Published var level: Float = 0
     @Published var tab = "議事録"
     @Published var title = ""
-    @Published var processingMode = "hybrid"
-    var cloud: Bool { processingMode == "cloud" }
-    var cloudSummary: Bool { processingMode != "local" }
+    @Published var deletion: Meeting?  // Awaiting confirmation in the UI.
+    @Published var showsTranscript = true  // The live transcript panel beside the minutes.
+    @Published var pinsLiveWindow = true  // Keep the compact live window above the video call.
+    // Changed only through saveSettings; the settings form edits its own draft.
     @Published var key = ""
     @Published var model = "gpt-6-sol"
-    @Published var localModel = ""
     @Published var microphone = ""
     @Published var pendingChunks = 0
-    @Published var liveFailures = 0
     @Published private(set) var preparingIDs: Set<UUID> = []
+    let meter = LevelMeter()
     let recorder: Recorder
-    let root: URL
+    @Published private(set) var root: URL  // The save location: one folder per meeting.
     let repository: MeetingRepository
+    private let persistsSettings: Bool
     var activeID: UUID?
     lazy var pipeline = ProcessingPipeline(store: self)
+    private var captureInputID: String?  // The microphone in use, so unrelated devices cannot stop a recording.
     private var summaryTimer: Timer?
     private var activity: NSObjectProtocol?
     private var shuttingDown = false
     private var pendingCaptureError: String?
     private var observers: [NSObjectProtocol] = []
-    private(set) var pendingWrites = 0
+    // Every change is written by a coalesced checkpoint; lifecycle steps also call checkpoint() directly.
+    // Revisions live here rather than in the published meetings so a save does not redraw the UI.
+    private var dirtyIDs: Set<UUID> = []
+    private var revisions: [UUID: UInt64] = [:]
+    private var savedSizes: [UUID: Int] = [:]
+    private var flushTask: Task<Void, Never>?
+    private var writesInFlight = 0
+    var hasPendingWrites: Bool { !dirtyIDs.isEmpty || writesInFlight > 0 }
     var devices: [AVCaptureDevice] {
         AVCaptureDevice.DiscoverySession(
             deviceTypes: [.microphone, .external], mediaType: .audio, position: .unspecified
         ).devices
     }
-    init(root: URL? = nil, recorder: Recorder = Recorder(), loadSettings: Bool = true) {
+    init(
+        root: URL? = nil, recorder: Recorder = Recorder(), loadSettings: Bool = true,
+        discardFolder: (@Sendable (URL) throws -> Void)? = nil
+    ) {
         self.recorder = recorder
-        self.root =
-            root
-            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Minutes/Meetings")
-        repository = MeetingRepository(root: self.root)
+        let root =
+            root ?? UserDefaults.standard.string(forKey: "storageFolder").map(URL.init(fileURLWithPath:))
+            ?? Self.defaultRoot
+        self.root = root
+        persistsSettings = loadSettings
+        repository = MeetingRepository(root: root, discard: discardFolder)
         if loadSettings {
-            localModel = UserDefaults.standard.string(forKey: "localSummaryModel") ?? ""
+            let defaults = UserDefaults.standard
+            microphone = defaults.string(forKey: "microphone") ?? ""
             key = KeyStore.read()
-            let savedModel = UserDefaults.standard.string(forKey: "summaryModel")
+            let savedModel = defaults.string(forKey: "summaryModel")
             model = savedModel == "gpt-4.1-mini" ? "gpt-6-sol" : (savedModel ?? model)
             ready = false
-            Task { await recover() }
+            Task {
+                await moveLegacyMeetings()
+                await recover()
+            }
         }
         recorder.onError = { [weak self] message in
             Task { @MainActor in await self?.interrupt(message) }
@@ -60,7 +95,9 @@ import SwiftUI
         recorder.onChunk = { [weak self] url, offset, source in
             await self?.enqueueChunk(url, offset: offset, source: source)
         }
-        recorder.onLevel = { [weak self] value in Task { @MainActor in self?.level = value } }
+        recorder.onLevel = { [weak self] source, value in
+            Task { @MainActor in self?.meter.record(value, microphone: source == "マイク") }
+        }
         if loadSettings {
             observers.append(
                 NSWorkspace.shared.notificationCenter.addObserver(
@@ -72,9 +109,12 @@ import SwiftUI
                 NotificationCenter.default.addObserver(
                     forName: AVCaptureDevice.wasDisconnectedNotification, object: nil, queue: .main
                 ) { [weak self] note in
-                    let id = (note.object as? AVCaptureDevice)?.uniqueID
+                    let device = note.object as? AVCaptureDevice
+                    let id = device?.uniqueID
+                    let isAudio = device?.hasMediaType(.audio) ?? false
                     Task { @MainActor in
-                        guard let self, self.microphone.isEmpty || self.microphone == id else { return }
+                        guard let self, Store.isCaptureInputLost(id, isAudio: isAudio, inUse: self.captureInputID)
+                        else { return }
                         await self.interrupt("マイクが切断されました。入力機器を確認して録音を開始してください。")
                     }
                 })
@@ -86,47 +126,167 @@ import SwiftUI
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
         }
     }
-    var settings: SessionSettings { SessionSettings(mode: processingMode, model: model, localModel: localModel) }
-    func folder(_ id: UUID) -> URL { root.appendingPathComponent(id.uuidString) }
+    // Cameras and microphones other than the one being recorded may come and go during a meeting.
+    // When the default input is used, a later default change is followed by capture and covered by the watchdog.
+    nonisolated static func isCaptureInputLost(_ id: String?, isAudio: Bool, inUse: String?) -> Bool {
+        isAudio && id != nil && id == inUse
+    }
+    var settings: SessionSettings { SessionSettings(model: model) }
+    var hasKey: Bool { !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    nonisolated static var defaultRoot: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("キロクル")
+    }
+    func folder(_ id: UUID) -> URL {
+        root.appendingPathComponent(meetings.first { $0.id == id }?.folderName ?? id.uuidString)
+    }
+    // Meetings used to live in Application Support under UUID folders. Move them once into the save location,
+    // renamed by date and title, so the audio and minutes are easy to find.
+    private func moveLegacyMeetings() async {
+        let legacy = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Minutes/Meetings")
+        let target = root
+        guard FileManager.default.fileExists(atPath: legacy.path) else { return }
+        let result = await Task.detached { () -> Result<[String], Error> in
+            Result {
+                try MeetingRepository.moveMeetings(
+                    from: legacy, to: target, rename: { meetingFolderName(date: $0.date, title: $0.title) })
+            }
+        }.value
+        switch result {
+        case .success(let failures) where !failures.isEmpty:
+            error =
+                "一部の会議を新しい保存先へ移動できませんでした。元の場所に残っています: \(legacy.path)\n"
+                + failures.joined(separator: "\n")
+        case .failure(let failure):
+            error =
+                "保存先（\(displayPath(target))）に書き込めません。これまでの会議は元の場所に残っています。\n"
+                + failure.localizedDescription
+        default: break
+        }
+    }
+    // Changing the save location moves every meeting with it, so the list always matches one folder.
+    func chooseStorageFolder() {
+        guard ready, !recording, !busy, !meetings.contains(where: { isProcessing($0.id) }) else {
+            error = "録音中や処理中は保存先を変更できません。終わってから変更してください。"
+            return
+        }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "ここに保存"
+        panel.directoryURL = root.deletingLastPathComponent()
+        guard panel.runModal() == .OK, let url = panel.url?.standardizedFileURL, url != root.standardizedFileURL else {
+            return
+        }
+        guard !url.path.hasPrefix(root.standardizedFileURL.path + "/") else {
+            error = "今の保存先の中のフォルダは選べません。"
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "保存先を変更しますか？"
+        alert.informativeText = "これまでの会議 \(meetings.count)件のフォルダも「\(url.lastPathComponent)」へ移動します。"
+        alert.addButton(withTitle: "移動して変更")
+        alert.addButton(withTitle: "キャンセル")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        Task { await changeStorage(to: url) }
+    }
+    func changeStorage(to newRoot: URL) async {
+        await flushCheckpoints()
+        busy = true
+        defer { busy = false }
+        do {
+            let failures = try await repository.relocate(to: newRoot)
+            root = newRoot
+            if persistsSettings { UserDefaults.standard.set(newRoot.path, forKey: "storageFolder") }
+            await recover()
+            status = "保存先を変更しました"
+            if !failures.isEmpty {
+                error = "一部の会議を移動できませんでした。元の場所に残っています。\n" + failures.joined(separator: "\n")
+            }
+        } catch { self.error = "保存先を変更できませんでした: " + error.localizedDescription }
+    }
     func change(_ id: UUID, _ update: (inout Meeting) -> Void) {
         guard let i = meetings.firstIndex(where: { $0.id == id }) else { return }
         update(&meetings[i])
+        dirtyIDs.insert(id)
+        scheduleFlush(id)
     }
-    func persist(_ meeting: Meeting) async throws { try await repository.save(meeting) }
     func checkpoint(_ id: UUID) async throws {
-        guard let i = meetings.firstIndex(where: { $0.id == id }) else { return }
-        meetings[i].revision += 1
-        try await repository.save(meetings[i])
+        guard var meeting = meetings.first(where: { $0.id == id }) else { return }
+        dirtyIDs.remove(id)  // Changes made while this write is in flight mark the meeting dirty again.
+        let revision = max(revisions[id] ?? 0, meeting.revision) + 1
+        revisions[id] = revision
+        meeting.revision = revision
+        writesInFlight += 1
+        defer { writesInFlight -= 1 }
+        do {
+            savedSizes[id] = try await repository.save(meeting)
+        } catch {
+            dirtyIDs.insert(id)
+            throw error
+        }
+    }
+    // Rewriting a long meeting on every chunk grows with the square of its length. Writes are coalesced and,
+    // for large meetings, limited to about 50 KB/s (at most every 10 seconds). A crash re-runs only the latest jobs.
+    private func scheduleFlush(_ id: UUID) {
+        guard flushTask == nil else { return }
+        let delay = min(10, max(1, Double(savedSizes[id] ?? 0) / 50_000))
+        flushTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await self?.flushCheckpoints()
+        }
+    }
+    func flushCheckpoints() async {
+        flushTask?.cancel()
+        flushTask = nil
+        var failed: Set<UUID> = []
+        while let id = dirtyIDs.subtracting(failed).first {
+            do { try await checkpoint(id) } catch {
+                failed.insert(id)
+                self.error = error.localizedDescription
+                pipeline.pause()
+                // Do not await stop here: a delivery callback may be waiting on this flush.
+                if id == activeID { Task { await interrupt("処理状態を保存できませんでした。録音を停止します。") } }
+            }
+        }
     }
     func recover() async {
         defer { ready = true }
         do {
             let (saved, failures) = try await repository.load()
             meetings = saved
+            for meeting in saved { revisions[meeting.id] = meeting.revision }
+            await repository.writeMissingDocuments(saved)
+            mixDown(saved.filter { $0.capture != .recording && $0.hasAudio == true }.map(\.id), onlyMissing: true)
             selected = meetings.first?.id
             if !failures.isEmpty { error = "一部の会議を読み込めませんでした。保存場所のデータは保持しています。\n" + failures.joined(separator: "\n") }
-            for id in meetings.map(\.id) {
-                guard let meeting = meetings.first(where: { $0.id == id }) else { continue }
+            for meeting in saved {
+                let id = meeting.id
                 let interrupted = meeting.capture == .recording
-                change(id) { m in
-                    if interrupted {
-                        m.capture = .interrupted
-                        m.status = "録音中断・未処理を復旧中"
-                    }
-                    for i in m.jobs.indices where m.jobs[i].state == .running {
-                        m.jobs[i].state = .pending
-                        m.jobs[i].retryAfter = nil
+                if interrupted || meeting.jobs.contains(where: { $0.state == .running }) {
+                    change(id) { m in
+                        if interrupted {
+                            m.capture = .interrupted
+                            m.status = "録音中断・未処理を復旧中"
+                        }
+                        for i in m.jobs.indices where m.jobs[i].state == .running {
+                            m.jobs[i].state = .pending
+                            m.jobs[i].retryAfter = nil
+                        }
                     }
                 }
-                if let settings = meeting.settings {
+                if meeting.settings != nil {
+                    // Settled meetings are left untouched; only unfinished work, or audio never inspected, is recovered.
                     let needsRecovery =
-                        interrupted || meeting.notes == nil
+                        interrupted || (meeting.notes == nil && meeting.hasAudio == nil)
                         || meeting.jobs.contains { $0.state == .pending || $0.state == .running }
                         || !MinutesEngine.batch(meeting.segments, state: meeting.notes ?? MinutesState()).isEmpty
                     guard needsRecovery else { continue }
                     do {
                         try await discoverJobs(id)
-                        if !settings.cloudSummary || !key.isEmpty {
+                        if hasKey {
                             try await checkpoint(id)
                             pipeline.resume(id, key: key)
                         } else {
@@ -168,20 +328,28 @@ import SwiftUI
     }
     func start() async {
         guard ready, !recording, !busy, !shuttingDown else { return }
-        if cloudSummary && key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            error = "クラウド要約には設定でOpenAI APIキーを入力してください。"
+        guard hasKey else {
+            error = "録音するには、設定でOpenAI APIキーを保存してください。"
+            return
+        }
+        if !microphone.isEmpty && AVCaptureDevice(uniqueID: microphone) == nil {
+            error = "設定で選んだマイクが見つかりません。接続を確認するか、設定でマイクを選び直してください。"
             return
         }
         busy = true
         pendingCaptureError = nil
         defer { busy = false }
-        var meeting = Meeting(
-            title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? "会議 \(Date().formatted(date: .numeric, time: .shortened))" : title)
+        let untitled = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        var meeting = Meeting(title: untitled ? "会議 \(Date().formatted(date: .numeric, time: .shortened))" : title)
         meeting.settings = settings
+        meeting.folderName =
+            MeetingRepository.uniqueFolder(
+                in: root, name: meetingFolderName(date: meeting.date, title: untitled ? "会議" : meeting.title)
+            ).lastPathComponent
         meetings.insert(meeting, at: 0)
         selected = meeting.id
         activeID = meeting.id
+        captureInputID = microphone.isEmpty ? AVCaptureDevice.default(for: .audio)?.uniqueID : microphone
         do {
             try await checkpoint(meeting.id)
             pipeline.resume(meeting.id, key: key)
@@ -206,11 +374,14 @@ import SwiftUI
                 $0.status = "録音開始失敗"
             }
             activeID = nil
+            captureInputID = nil
             self.error = error.localizedDescription
             try? await checkpoint(meeting.id)
         }
     }
-    func enqueueChunk(_ url: URL, offset: Double, source: String) async {
+    // The new job is saved by the next coalesced checkpoint; the chunk is also listed in recording.json,
+    // so recovery finds it even if the app stops before that write.
+    func enqueueChunk(_ url: URL, offset: Double, source: String) {
         guard let id = activeID else { return }
         let relative = "chunks/" + url.lastPathComponent
         change(id) { meeting in
@@ -220,14 +391,7 @@ import SwiftUI
                 meeting.jobs.sort { $0.offset < $1.offset }
             }
         }
-        do {
-            try await checkpoint(id)
-            pipeline.pump()
-        } catch {
-            self.error = error.localizedDescription
-            // Do not await stop inside a delivery callback: stop waits for deliveries itself.
-            Task { await interrupt("処理状態を保存できませんでした。録音を停止します。") }
-        }
+        pipeline.pump()
     }
     func updateLiveSummary() { if recording, let id = activeID { pipeline.requestSummary(id) } }
     func interrupt(_ message: String) async {
@@ -248,12 +412,13 @@ import SwiftUI
         summaryTimer?.invalidate()
         summaryTimer = nil
         recording = false
-        level = 0
+        meter.reset()
         do { try await recorder.stop() } catch {
             change(id) { $0.captureError = error.localizedDescription }
             self.error = error.localizedDescription
         }
         activeID = nil
+        captureInputID = nil
         if let activity {
             ProcessInfo.processInfo.endActivity(activity)
             self.activity = nil
@@ -267,17 +432,17 @@ import SwiftUI
             change(id) { $0.captureError = error.localizedDescription }
         }
         do { try await checkpoint(id) } catch { self.error = error.localizedDescription }
+        mixDown([id], onlyMissing: false)
         status = "録音を停止しました。残りはバックグラウンドで処理します。次の録音を開始できます。"
-        pipeline.requestSummary(id)
+        pipeline.requestSummary(id, force: true)
         pipeline.pump()
     }
     func process(rebuild: Bool = false) async {
         guard ready, !shuttingDown, let id = selected, !busy, id != activeID, !isProcessing(id) else { return }
         preparingIDs.insert(id)
         defer { preparingIDs.remove(id) }
-        let chosen = rebuild ? settings : (meetings.first { $0.id == id }?.settings ?? settings)
-        guard !chosen.cloudSummary || !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            error = "設定でOpenAI APIキーを入力してください。"
+        guard hasKey else {
+            error = "処理するには、設定でOpenAI APIキーを保存してください。"
             return
         }
         do {
@@ -303,14 +468,52 @@ import SwiftUI
             }
             try await checkpoint(id)
             pipeline.resume(id, key: key)
-            pipeline.requestSummary(id)
+            pipeline.requestSummary(id, force: true)
         } catch { self.error = error.localizedDescription }
     }
+    // Writes 録音.m4a next to the minutes in the background, one meeting at a time.
+    private var mixdowns: Task<Void, Never>?
+    private func mixDown(_ ids: [UUID], onlyMissing: Bool) {
+        let folders = ids.map(folder).filter {
+            !onlyMissing
+                || !FileManager.default.fileExists(atPath: $0.appendingPathComponent(AudioMixdown.filename).path)
+        }
+        guard !folders.isEmpty else { return }
+        let previous = mixdowns
+        mixdowns = Task.detached(priority: .utility) {
+            await previous?.value
+            for folder in folders { try? await AudioMixdown.write(folder: folder) }
+        }
+    }
+    func waitForMixdowns() async { await mixdowns?.value }
     func isProcessing(_ id: UUID) -> Bool { preparingIDs.contains(id) || pipeline.isProcessing(id) }
+    func canDelete(_ id: UUID) -> Bool { ready && id != activeID && !busy && !isProcessing(id) }
+    /// Moves the meeting's audio, transcript and minutes to the Trash.
+    func delete(_ id: UUID) async {
+        guard canDelete(id) else { return }
+        preparingIDs.insert(id)
+        defer { preparingIDs.remove(id) }
+        guard let meeting = meetings.first(where: { $0.id == id }) else { return }
+        do { try await repository.delete(meeting) } catch {
+            self.error = "会議を削除できませんでした: " + error.localizedDescription
+            return
+        }
+        pipeline.forget(id)
+        dirtyIDs.remove(id)
+        revisions[id] = nil
+        savedSizes[id] = nil
+        meetings.removeAll { $0.id == id }
+        if selected == id { selected = meetings.first?.id }
+        status = "会議をゴミ箱に移動しました"
+        refreshProcessingCounts()
+    }
     func refreshProcessingCounts() {
-        pendingChunks = meetings.flatMap(\.jobs).filter { $0.state == .pending || $0.state == .running }.count
-        liveFailures = meetings.flatMap(\.jobs).filter { $0.state == .failed }.count
-        if recording { status = "録音中 · 文字起こし待機 \(pendingChunks)件 / 要約は30秒ごとに更新" }
+        let pending = meetings.flatMap(\.jobs).filter { $0.state == .pending || $0.state == .running }.count
+        if pendingChunks != pending { pendingChunks = pending }
+        if recording {
+            let text = "録音中（文字起こし待ち \(pending)件）"
+            if status != text { status = text }
+        }
     }
     func refreshCompletion(_ id: UUID, summaryFailed: Bool) {
         guard let meeting = meetings.first(where: { $0.id == id }), meeting.capture != .recording,
@@ -332,16 +535,10 @@ import SwiftUI
         } else if meeting.capture == .interrupted {
             result = "録音中断・保存済み"
         } else {
-            result =
-                "完了・\(meeting.settings?.cloud == true ? "クラウド" : (meeting.settings?.cloudSummary == true ? "Mac内認識＋クラウド要約" : "端末内"))"
+            result = "完了"
         }
         guard meeting.status != result else { return }
         change(id) { $0.status = result }
-        pendingWrites += 1
-        Task {
-            defer { pendingWrites -= 1 }
-            do { try await checkpoint(id) } catch { self.error = error.localizedDescription }
-        }
     }
     func prepareForTermination() async {
         shuttingDown = true
@@ -357,30 +554,34 @@ import SwiftUI
             }
             activeID = nil
         }
-        for id in meetings.map(\.id) {
-            do { try await checkpoint(id) } catch { self.error = error.localizedDescription }
-        }
-        await repository.flush()
+        await flushCheckpoints()  // Only meetings changed since their last checkpoint are written.
     }
-    func saveSettings() {
-        do {
-            try KeyStore.save(key)
-            UserDefaults.standard.set(model, forKey: "summaryModel")
-            UserDefaults.standard.set(localModel, forKey: "localSummaryModel")
-            status = "設定を保存しました"
-        } catch { self.error = error.localizedDescription }
+    @discardableResult func saveSettings(microphone: String, key: String, model: String) -> Bool {
+        let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        let model = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        do { try KeyStore.save(key) } catch {
+            self.error = error.localizedDescription
+            return false
+        }
+        self.key = key
+        self.model = model.isEmpty ? "gpt-6-sol" : model
+        self.microphone = microphone
+        let defaults = UserDefaults.standard
+        defaults.set(self.model, forKey: "summaryModel")
+        defaults.set(microphone, forKey: "microphone")
+        status = "設定を保存しました"
+        return true
     }
     func export(_ meeting: Meeting) {
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "議事録.md"
+        panel.nameFieldStringValue = Self.exportFilename(meeting.title)
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        let transcript = meeting.segments.map { "[\(Int($0.time))秒 / \($0.source)] \($0.text)" }.joined(
-            separator: "\n\n")
-        let minutes =
-            meeting.notes.map { MinutesEngine.render($0, segments: meeting.segments, transcript: transcript) }
-            ?? "## 文字起こし\n\n\(transcript)\n\n\(meeting.minutes)"
-        do { try "# \(meeting.title)\n\n\(minutes)".write(to: url, atomically: true, encoding: .utf8) } catch {
+        do {
+            try (MinutesEngine.document(meeting) ?? "# \(meeting.title)\n").write(
+                to: url, atomically: true, encoding: .utf8)
+        } catch {
             self.error = error.localizedDescription
         }
     }
+    nonisolated static func exportFilename(_ title: String) -> String { fileSafeName(title, fallback: "議事録") + ".md" }
 }

@@ -2,20 +2,22 @@ import Foundation
 
 // A bounded worker pool. The disk checkpoint, rather than a chain of Tasks, owns job state.
 @MainActor final class ProcessingPipeline {
-    typealias Recognize = (URL, Double, String, Bool, String) async throws -> [Segment]
+    typealias Recognize = (URL, Double, String, String) async throws -> [Segment]
     typealias Summarize = (MinutesState, [Segment], SessionSettings, String) async throws -> MinutesState
     private weak var store: Store?
     private var keys: [UUID: String] = [:]  // Credentials are never written into a meeting.
     private var allowed: Set<UUID> = []
     private var workers: [String: Task<Void, Never>] = [:]
-    private var localWorkers: Set<String> = []
     private var requestedSummaries: Set<UUID> = []
     private var summaryTask: Task<Void, Never>?
     private var summarizingID: UUID?
     private var retryWake: Task<Void, Never>?
     private var suspended = false
     private var closing = false
-    private var summaryFailures: Set<UUID> = []
+    // Consecutive summary failures per meeting. Live (timer) requests back off after a failure;
+    // stop and resume retry at once. Automatic re-requests stay off until a summary succeeds.
+    private var summaryFailures: [UUID: Int] = [:]
+    private var summaryRetryAt: [UUID: Date] = [:]
     private var lastScheduledID: UUID?
     private var lastSummaryID: UUID?
     private let recognize: Recognize
@@ -23,9 +25,7 @@ import Foundation
     private let retryDelay: (Int) -> TimeInterval
     init(
         store: Store,
-        recognize: @escaping Recognize = {
-            try await Processor.recognizeChunk($0, offset: $1, source: $2, cloud: $3, key: $4)
-        },
+        recognize: @escaping Recognize = { try await Processor.recognizeChunk($0, offset: $1, source: $2, key: $3) },
         summarize: @escaping Summarize = { try await MinutesEngine.update($0, segments: $1, settings: $2, key: $3) },
         retryDelay: @escaping (Int) -> TimeInterval = { pow(2, Double($0)) }
     ) {
@@ -39,14 +39,25 @@ import Foundation
         suspended = false
         allowed.insert(id)
         keys[id] = key
-        summaryFailures.remove(id)
+        summaryFailures[id] = nil
+        summaryRetryAt[id] = nil
         pump()
     }
-    func requestSummary(_ id: UUID) {
+    func requestSummary(_ id: UUID, force: Bool = false) {
         guard allowed.contains(id), !suspended else { return }
-        guard !summaryFailures.contains(id) else { return }
+        if !force, let retryAt = summaryRetryAt[id], retryAt > Date() { return }
+        summaryRetryAt[id] = nil
         requestedSummaries.insert(id)
         pump()
+    }
+    func summaryFailed(_ id: UUID) -> Bool { summaryFailures[id] != nil }
+    func isSummarizing(_ id: UUID) -> Bool { summarizingID == id }
+    func forget(_ id: UUID) {
+        allowed.remove(id)
+        keys[id] = nil
+        summaryFailures[id] = nil
+        summaryRetryAt[id] = nil
+        requestedSummaries.remove(id)
     }
     func pause(terminal: Bool = false) {
         suspended = true
@@ -54,20 +65,12 @@ import Foundation
         retryWake?.cancel()
         retryWake = nil
     }
+    var isIdle: Bool { workers.isEmpty && summaryTask == nil && retryWake == nil && requestedSummaries.isEmpty }
     func isProcessing(_ id: UUID) -> Bool {
         workers.keys.contains { $0.hasPrefix(id.uuidString + "/") } || summarizingID == id
             || requestedSummaries.contains(id)
             || (!suspended && allowed.contains(id)
                 && store?.meetings.first(where: { $0.id == id })?.jobs.contains(where: { $0.state == .pending }) == true)
-    }
-    func waitUntilIdle(timeout: TimeInterval = 10) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !workers.isEmpty || summaryTask != nil || retryWake != nil || !requestedSummaries.isEmpty
-            || (store?.pendingWrites ?? 0) > 0
-        {
-            if Date() > deadline { throw AppError.message("処理キューの検証がタイムアウトしました。") }
-            try? await Task.sleep(nanoseconds: 10_000_000)
-        }
     }
     func pump() {
         guard !suspended, let store else { return }
@@ -80,8 +83,6 @@ import Foundation
                 ordered = Array(ordered.dropFirst(i + 1)) + Array(ordered.prefix(i + 1))
             }
             for meeting in ordered {
-                let settings = meeting.settings ?? SessionSettings(mode: "local")
-                if !settings.cloud && !localWorkers.isEmpty { continue }
                 if let job = meeting.jobs.first(where: {
                     $0.state == .pending && ($0.retryAfter ?? .distantPast) <= Date()
                 }) {
@@ -92,22 +93,20 @@ import Foundation
             guard let (meeting, job) = candidate else { break }
             lastScheduledID = meeting.id
             let token = meeting.id.uuidString + "/" + job.id
-            let settings = meeting.settings ?? SessionSettings(mode: "local")
             let key = keys[meeting.id] ?? ""
             // Reserve synchronously so the next pump cannot schedule this job twice.
+            // Job progress is persisted by the store's coalesced checkpoints; a crash re-runs only the latest jobs.
             store.change(meeting.id) { m in
                 if let i = m.jobs.firstIndex(where: { $0.id == job.id }) {
                     m.jobs[i].state = .running
                     m.jobs[i].attempts += 1
                 }
             }
-            if !settings.cloud { localWorkers.insert(token) }
             workers[token] = Task { [weak self] in
                 guard let self, let store = self.store else { return }
                 do {
-                    try await store.checkpoint(meeting.id)
                     let url = store.folder(meeting.id).appendingPathComponent(job.filename)
-                    let result = try await self.recognize(url, job.offset, job.source, settings.cloud, key)
+                    let result = try await self.recognize(url, job.offset, job.source, key)
                     let segments = result.enumerated().map { index, segment in
                         Segment(
                             id: job.id + ":" + String(index), time: segment.time, source: segment.source,
@@ -123,7 +122,6 @@ import Foundation
                             m.jobs[i].retryAfter = nil
                         }
                     }
-                    try await store.checkpoint(meeting.id)
                 } catch {
                     let retry = Processor.isRetryable(error)
                     store.change(meeting.id) { m in
@@ -132,16 +130,15 @@ import Foundation
                             m.jobs[i].state = again ? .pending : .failed
                             m.jobs[i].lastError = error.localizedDescription
                             m.jobs[i].retryAfter =
-                                again ? Date().addingTimeInterval(self.retryDelay(m.jobs[i].attempts)) : nil
+                                again
+                                ? Date().addingTimeInterval(
+                                    Processor.retryDelay(
+                                        after: error, attempt: m.jobs[i].attempts, base: self.retryDelay))
+                                : nil
                         }
-                    }
-                    do { try await store.checkpoint(meeting.id) } catch {
-                        store.error = error.localizedDescription
-                        self.pause()
                     }
                 }
                 self.workers.removeValue(forKey: token)
-                self.localWorkers.remove(token)
                 self.pump()
             }
         }
@@ -159,11 +156,11 @@ import Foundation
         for meeting in store.meetings where allowed.contains(meeting.id) && meeting.capture != .recording {
             if !meeting.jobs.contains(where: { $0.state == .pending || $0.state == .running }) {
                 if !MinutesEngine.batch(meeting.segments, state: meeting.notes ?? MinutesState()).isEmpty
-                    && !summaryFailures.contains(meeting.id)
+                    && summaryFailures[meeting.id] == nil
                 {
                     requestedSummaries.insert(meeting.id)
                 }
-                store.refreshCompletion(meeting.id, summaryFailed: summaryFailures.contains(meeting.id))
+                store.refreshCompletion(meeting.id, summaryFailed: summaryFailures[meeting.id] != nil)
             }
         }
         requestedSummaries = requestedSummaries.filter { id in
@@ -189,12 +186,12 @@ import Foundation
                             do {
                                 result = try await self.summarize(
                                     meeting.notes ?? MinutesState(), meeting.segments,
-                                    meeting.settings ?? SessionSettings(mode: "local"), self.keys[id] ?? "")
+                                    meeting.settings ?? SessionSettings(), self.keys[id] ?? "")
                                 break
                             } catch {
                                 guard Processor.isRetryable(error), attempt < 3, !self.closing else { throw error }
-                                try await Task.sleep(
-                                    nanoseconds: UInt64(max(0.01, self.retryDelay(attempt)) * 1_000_000_000))
+                                let delay = Processor.retryDelay(after: error, attempt: attempt, base: self.retryDelay)
+                                try await Task.sleep(nanoseconds: UInt64(max(0.01, delay) * 1_000_000_000))
                             }
                         }
                         guard let notes = result else { throw AppError.message("議事録の更新に失敗しました。") }
@@ -204,10 +201,14 @@ import Foundation
                             m.minutes = MinutesEngine.render(notes, segments: m.segments)
                         }
                         try await store.checkpoint(id)
+                        self.summaryFailures[id] = nil
                     } catch {
-                        self.summaryFailures.insert(id)
+                        let failures = (self.summaryFailures[id] ?? 0) + 1
+                        self.summaryFailures[id] = failures
+                        self.summaryRetryAt[id] = Date().addingTimeInterval(min(300, 30 * pow(2, Double(failures - 1))))
                         requestedSummaries.remove(id)
-                        store.error = error.localizedDescription
+                        // Alert once per failure streak; the meeting view keeps showing the failure.
+                        if failures == 1 { store.error = error.localizedDescription }
                     }
                     self.summaryTask = nil
                     self.summarizingID = nil

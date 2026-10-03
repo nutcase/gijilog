@@ -32,10 +32,10 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
     private var watchdog: DispatchSourceTimer?
     private var lastMicrophoneInput = Date()
     private var notifiedMissingInput = false
-    private var lastMeterUpdate = Date.distantPast
+    private var lastMeterUpdate: [SCStreamOutputType: Date] = [:]
     private var cancelledStart = false
     var onError: ((String) -> Void)?
-    var onLevel: ((Float) -> Void)?
+    var onLevel: ((String, Float) -> Void)?  // Track name ("Mac音声" or "マイク") and peak level.
     func start(folder: URL, microphone: String?) async throws {
         queue.sync { cancelledStart = false }
         guard await AVCaptureDevice.requestAccess(for: .audio) else { throw AppError.message("マイクの使用を許可してください。") }
@@ -243,11 +243,13 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
             try chunkFiles[type]?.write(from: buffer)
             chunkFrames[type, default: 0] += Int64(buffer.frameLength)
             if Double(chunkFrames[type, default: 0]) / format.sampleRate >= 12 { finishChunk(type) }
-            if let samples = buffer.floatChannelData?[0], Date().timeIntervalSince(lastMeterUpdate) >= 0.1 {
-                lastMeterUpdate = Date()
+            if let samples = buffer.floatChannelData?[0],
+                Date().timeIntervalSince(lastMeterUpdate[type] ?? .distantPast) >= 0.1
+            {
+                lastMeterUpdate[type] = Date()
                 var peak: Float = 0
                 for i in 0..<Int(buffer.frameLength) { peak = max(peak, abs(samples[i])) }
-                onLevel?(peak)
+                onLevel?(type == .audio ? "Mac音声" : "マイク", peak)
             }
         } catch { onError?(error.localizedDescription) }
     }
