@@ -96,6 +96,8 @@ AI apps that support MCP, such as Claude Code and Claude Desktop, can read your 
 1. In Settings → AI 連携, click Claude Code に追加 (Add to Claude Code) or Claude Desktop に追加 (Add to Claude Desktop), once. Claude Code is registered with `claude mcp add` (the command is copied if `claude` cannot be found); Claude Desktop opens an extension (`ギジログ.mcpb`) to install. For other apps, register the command shown there (`ギジログ.app/Contents/MacOS/gijilog-mcp`) as a stdio MCP server, or copy the JSON configuration.
 2. Then just ask. ギジログ starts in the background if it is not running, and the connection comes back on the next question if it quits.
 
+The Claude Desktop extension also works in the Claude desktop app's Code tab (Claude Code). To unregister, remove the extension under Settings → Extensions in Claude Desktop, or run `claude mcp remove --scope user gijilog` for Claude Code.
+
 Tools: `list_meetings` (list and keyword search, by date range and tag), `get_meeting` (minutes with reasons, open questions, actions, and agenda), `get_transcript` (by time range, in pages), `list_action_items` (across meetings, by status and owner), `get_current_meeting` (the meeting being recorded and its current topic), and `list_tags`. All tools only read; nothing deletes meetings or starts or stops recording.
 
 ギジログ listens on a Unix socket only you can open (`~/Library/Application Support/Gijilog/mcp.sock`) and opens no network port. What an AI app reads is sent to that app's provider: you can withhold transcripts, hide meetings by tag, see recent tool calls, or turn the feature off in the same Settings tab.
