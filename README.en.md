@@ -24,6 +24,7 @@ Keep its compact window next to the call to see what has been decided, what is s
 - **Tags**: tag meetings and narrow the list to the ones you need.
 - **Agenda**: prepare the topics before the meeting; during it, the AI follows which topic is being discussed from the transcript and the compact window shows it with its time. The minutes record how long each topic took.
 - **Keyword search**: search titles, tags, minutes, and transcripts at once, with every match marked.
+- **Use from AI apps (MCP)**: ask Claude Code, Claude Desktop, or another MCP client "What did we decide in last week's sync?" or "Which actions are still open?" Everything stays on your Mac.
 
 ## Requirements
 
@@ -88,6 +89,17 @@ When the meeting starts, keep the prepared meeting selected and click 録音を�
 
 Type in the search field above the list (⌘F) to show only the meetings whose title, tags, minutes, or transcript contain your keywords; each meeting shows an excerpt of the match. Separate keywords with spaces to find meetings that contain all of them. Letter case and full-width or half-width characters are ignored, and search combines with the tag filter. Opening a meeting marks the matches in its minutes and transcript and scrolls the transcript to the first one.
 
+## Use from AI apps (MCP)
+
+AI apps that support MCP, such as Claude Code and Claude Desktop, can read your meetings.
+
+1. In Settings → AI 連携, click Claude Code に追加 (Add to Claude Code) or Claude Desktop に追加 (Add to Claude Desktop), once. Claude Code is registered with `claude mcp add` (the command is copied if `claude` cannot be found); Claude Desktop opens an extension (`ギジログ.mcpb`) to install. For other apps, register the command shown there (`ギジログ.app/Contents/MacOS/gijilog-mcp`) as a stdio MCP server, or copy the JSON configuration.
+2. Then just ask. ギジログ starts in the background if it is not running, and the connection comes back on the next question if it quits.
+
+Tools: `list_meetings` (list and keyword search, by date range and tag), `get_meeting` (minutes with reasons, open questions, actions, and agenda), `get_transcript` (by time range, in pages), `list_action_items` (across meetings, by status and owner), `get_current_meeting` (the meeting being recorded and its current topic), and `list_tags`. All tools only read; nothing deletes meetings or starts or stops recording.
+
+ギジログ listens on a Unix socket only you can open (`~/Library/Application Support/Gijilog/mcp.sock`) and opens no network port. What an AI app reads is sent to that app's provider: you can withhold transcripts, hide meetings by tag, see recent tool calls, or turn the feature off in the same Settings tab.
+
 ## Minutes from a recording file
 
 Click 読み込み (Import) in the toolbar (⌘O) or drop audio or video files on the window. Each file is cut into about 30-second pieces, transcribed, and then summarized into minutes. All audio tracks are mixed, and importing never blocks stopping a recording. The meeting takes the file's name and creation date, and its folder gets `議事録.md` and `録音.m4a`; the original file is left as is.
@@ -111,7 +123,8 @@ While a meeting is recorded and processed, the working audio takes about 230 MB 
 ## Privacy and consent
 
 - **Sent to OpenAI**: about 12 seconds of audio at a time (silence is skipped), the transcript text, the minutes so far, and, while recording, the agenda (topics and goals). Meeting titles and tags are not sent. Minutes are requested with `store: false`.
-- **Kept on your Mac**: recordings, transcripts, minutes, agendas, and tags. The API key stays in the Keychain and is never written to meeting files.
+- **Kept on your Mac**: recordings, transcripts, minutes, agendas, and tags.
+- **Given to AI apps over MCP**: the minutes, agendas, and transcripts the app asks for (transcripts and meetings with chosen tags can be withheld), which the app sends to its provider. The API key stays in the Keychain and is never written to meeting files.
 - **Consent**: tell participants and get their consent before recording or transcribing a meeting, and follow the laws and policies that apply to you.
 - **Review**: the minutes are an AI summary. Check anything important against the transcript.
 
@@ -135,7 +148,7 @@ If your Documents folder syncs with iCloud Drive, recordings are uploaded too.
 ./scripts/build.sh   # build dist/ギジログ.app after the checks pass
 ```
 
-The 58 regression tests cover chunking and the shared recording clock, incremental minutes and evidence checks, retries and recovery after restart, moving the save location and upgrading from earlier versions, mixing the audio, importing recording files, cleaning up working audio, the final review, tags, search, and the agenda. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.
+The 62 regression tests cover chunking and the shared recording clock, incremental minutes and evidence checks, retries and recovery after restart, moving the save location and upgrading from earlier versions, mixing the audio, importing recording files, cleaning up working audio, the final review, tags, search, the agenda, and the MCP server. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.
 
 With only the Command Line Tools installed, SwiftUI's `@State` does not compile, so view state lives in `ObservableObject`s.
 

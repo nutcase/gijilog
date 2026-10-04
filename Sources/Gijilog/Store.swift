@@ -52,6 +52,26 @@ import UniformTypeIdentifiers
     @Published var removesWorkingAudio = true {
         didSet { if persistsSettings { UserDefaults.standard.set(removesWorkingAudio, forKey: "removesWorkingAudio") } }
     }
+    // Local MCP: AI apps on this Mac read meetings through the bundled bridge. See MCPServer.swift.
+    @Published var mcpEnabled = true {
+        didSet {
+            guard persistsSettings else { return }
+            UserDefaults.standard.set(mcpEnabled, forKey: "mcpEnabled")
+            updateMCPServer()
+        }
+    }
+    @Published var mcpIncludesTranscript = true {
+        didSet {
+            if persistsSettings { UserDefaults.standard.set(mcpIncludesTranscript, forKey: "mcpIncludesTranscript") }
+        }
+    }
+    @Published var mcpHiddenTags: [String] = [] {  // Meetings with any of these tags are never shown to AI apps.
+        didSet { if persistsSettings { UserDefaults.standard.set(mcpHiddenTags, forKey: "mcpHiddenTags") } }
+    }
+    @Published private(set) var mcpAccesses: [MCPAccess] = []
+    @Published private(set) var mcpConnections = 0
+    @Published private(set) var mcpProblem: String?
+    private var mcpServer: MCPSocketServer?
     @Published private(set) var storageUsage: StorageUsage?
     @Published private(set) var reclaimableBytes: Int64 = 0
     // Importing is separate from `busy` (capture setup and stop), so a recording can always be stopped.
@@ -109,6 +129,9 @@ import UniformTypeIdentifiers
             let defaults = UserDefaults.standard
             microphone = defaults.string(forKey: "microphone") ?? ""
             removesWorkingAudio = defaults.object(forKey: "removesWorkingAudio") as? Bool ?? true
+            mcpEnabled = defaults.object(forKey: "mcpEnabled") as? Bool ?? true
+            mcpIncludesTranscript = defaults.object(forKey: "mcpIncludesTranscript") as? Bool ?? true
+            mcpHiddenTags = defaults.stringArray(forKey: "mcpHiddenTags") ?? []
             key = KeyStore.read()
             let savedModel = defaults.string(forKey: "summaryModel")
             model = savedModel == "gpt-4.1-mini" ? "gpt-6-sol" : (savedModel ?? model)
@@ -132,6 +155,7 @@ import UniformTypeIdentifiers
             .debounce(for: .milliseconds(200), scheduler: DispatchQueue.main)
             .sink { [weak self] _ in MainActor.assumeIsolated { self?.refreshSearch() } }
         if loadSettings {
+            updateMCPServer()
             observers.append(
                 NSWorkspace.shared.notificationCenter.addObserver(
                     forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
@@ -877,6 +901,7 @@ import UniformTypeIdentifiers
     }
     func prepareForTermination() async {
         shuttingDown = true
+        stopMCPServer()  // The bridge starts the app again when an AI app next asks.
         pipeline.pause(terminal: true)
         recorder.cancelPendingStart()
         if recording {
@@ -1078,5 +1103,44 @@ extension Store {
     func followAgenda(_ id: UUID, _ topic: AgendaTopic) {
         guard id == activeID else { return }
         change(id) { $0.agenda = MeetingAgenda.follow($0.agenda, topic) }
+    }
+}
+
+// MARK: - MCP
+
+extension Store {
+    /// Opens or closes the local MCP socket to match the setting. Only the app itself (not tests) serves it.
+    func updateMCPServer() {
+        guard persistsSettings else { return }
+        if mcpEnabled, mcpServer == nil {
+            let server = MCPSocketServer(path: MCPPaths.socket.path) { [unowned self] in MCPHandler(store: self) }
+            server.onConnectionsChanged = { [weak self] count in self?.mcpConnections = count }
+            do {
+                try server.start()
+                mcpServer = server
+                mcpProblem = nil
+            } catch {
+                mcpProblem = error.localizedDescription
+            }
+        } else if !mcpEnabled, let server = mcpServer {
+            server.stop()
+            mcpServer = nil
+            mcpConnections = 0
+        }
+    }
+    func stopMCPServer() {
+        mcpServer?.stop()
+        mcpServer = nil
+    }
+    func recordMCPAccess(client: String, tool: String, detail: String) {
+        mcpAccesses.insert(MCPAccess(date: Date(), client: client, tool: tool, detail: detail), at: 0)
+        if mcpAccesses.count > 50 { mcpAccesses.removeLast(mcpAccesses.count - 50) }
+    }
+    func toggleMCPHiddenTag(_ tag: String) {
+        if MeetingTags.contains(mcpHiddenTags, tag) {
+            mcpHiddenTags.removeAll { MeetingTags.key($0) == MeetingTags.key(tag) }
+        } else {
+            mcpHiddenTags.append(tag)
+        }
     }
 }

@@ -71,8 +71,12 @@ import Foundation
         try tests.testMinutesModelJudgesTheTopic()
         try await tests.testPreparedMeetingWaitsWithItsAgenda()
         try await tests.testAgendaRecordsWhereTheTimeWent()
+        try tests.testMCPSpeaksBothProtocolEras()
+        try tests.testMCPToolsReadMeetings()
+        try tests.testMCPKeepsWhatTheUserWithholds()
+        try await tests.testMCPAnswersOverItsSocket()
         print(
-            "PASS: 58 checks (recording, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, audio mixdown, file import, upgrade and recovery, storage cleanup, minutes quality and final review, tags, search, agenda)"
+            "PASS: 62 checks (recording, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, audio mixdown, file import, upgrade and recovery, storage cleanup, minutes quality and final review, tags, search, agenda, MCP)"
         )
     }
     func fixture(seconds: Double, amplitude: Float) throws -> (URL, URL) {

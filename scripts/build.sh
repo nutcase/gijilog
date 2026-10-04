@@ -5,6 +5,8 @@ cd "$(dirname "$0")/.."
 APP="$PWD/dist/ギジログ.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/Gijilog "$APP/Contents/MacOS/Gijilog"
+# The MCP bridge AI apps run (see MCPServer.swift); it is signed before the app that contains it.
+cp .build/release/gijilog-mcp "$APP/Contents/MacOS/gijilog-mcp"
 # Package the chosen artwork at every standard macOS icon size, including Retina variants.
 iconset_dir="$PWD/.build/AppIcon.iconset"
 mkdir -p "$iconset_dir"
@@ -39,5 +41,6 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 # Ad-hoc signing (the default) changes the signature on every build, so macOS drops the screen and
 # audio recording permission. Set GIJILOG_SIGN_IDENTITY to a code-signing certificate name to keep it.
+codesign --force --sign "${GIJILOG_SIGN_IDENTITY:--}" "$APP/Contents/MacOS/gijilog-mcp"
 codesign --force --sign "${GIJILOG_SIGN_IDENTITY:--}" "$APP"
 printf '%s\n' "$APP"

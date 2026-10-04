@@ -1285,6 +1285,7 @@ struct SettingsView: View {
         TabView(selection: $store.settingsTab) {
             GeneralSettings().tabItem { Label("一般", systemImage: "gearshape") }.tag("一般")
             TagSettings().tabItem { Label("タグ", systemImage: "tag") }.tag("タグ")
+            MCPSettings().tabItem { Label("AI 連携", systemImage: "sparkles") }.tag("AI 連携")
         }
     }
 }
@@ -1693,6 +1694,109 @@ struct AgendaBanner: View {
         .padding(.horizontal, 14).padding(.bottom, 10)
         .background(Palette.kon)
         .help("話している議題は、文字起こしから AI が判断します（約30秒ごと）")
+    }
+}
+
+@MainActor final class MCPSetupResult: ObservableObject {
+    @Published var shown: (title: String, message: String)?
+    @Published var adding = false
+}
+// AI apps on this Mac read meetings through MCP: what they may see, how to register them, and what they read.
+struct MCPSettings: View {
+    @EnvironmentObject var store: Store
+    @StateObject private var result = MCPSetupResult()
+    var body: some View {
+        Form {
+            Section {
+                Toggle("AI アプリから会議を読めるようにする", isOn: $store.mcpEnabled)
+                LabeledContent("状態") {
+                    Text(status).foregroundStyle(store.mcpProblem == nil ? Color.secondary : Palette.yamabuki)
+                }
+            } header: {
+                Text("MCP サーバー")
+            } footer: {
+                Text(
+                    "この Mac の AI アプリ（Claude Code、Claude Desktop など）が、MCP でギジログの会議を読み取れます。通信はこの Mac の中だけで、ほかのコンピュータからは接続できません。AI アプリに渡した内容は、そのアプリの提供元に送られます。"
+                )
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            Section {
+                Toggle("文字起こしも渡す", isOn: $store.mcpIncludesTranscript)
+                ForEach(store.allTags, id: \.name) { tag in
+                    Toggle(
+                        "「\(tag.name)」の会議を渡さない",
+                        isOn: Binding(
+                            get: { MeetingTags.contains(store.mcpHiddenTags, tag.name) },
+                            set: { _ in store.toggleMCPHiddenTag(tag.name) }))
+                }
+            } header: {
+                Text("渡す内容")
+            } footer: {
+                Text("文字起こしをオフにすると、議事録とアジェンダだけを渡します。チェックしたタグが付いた会議は、AI アプリからは見えません。")
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Section {
+                HStack {
+                    Button("Claude Code に追加") {
+                        result.adding = true
+                        Task {
+                            result.shown = await MCPSetup.addToClaudeCode()
+                            result.adding = false
+                        }
+                    }
+                    .disabled(result.adding)
+                    Button("Claude Desktop に追加") { result.shown = MCPSetup.addToClaudeDesktop() }
+                    if result.adding { ProgressView().controlSize(.small) }
+                }
+                LabeledContent("コマンド") {
+                    HStack(spacing: 6) {
+                        Text(MCPSetup.bridgePath).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                        Button("コピー") { MCPSetup.copy(MCPSetup.bridgePath) }
+                    }
+                }
+                Button("ほかの AI アプリ用の設定（JSON）をコピー") { MCPSetup.copy(MCPSetup.desktopConfig) }
+            } header: {
+                Text("AI アプリに登録")
+            } footer: {
+                Text(
+                    "登録は最初の一度だけです。あとは AI アプリが必要なときにギジログにつなぎ、ギジログが起動していなければ起動します。ギジログのアプリを別の場所に移したら、Claude Code では登録し直してください。"
+                )
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            Section {
+                if store.mcpAccesses.isEmpty {
+                    Text("まだありません").foregroundStyle(.secondary)
+                }
+                ForEach(store.mcpAccesses.prefix(20)) { access in
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack {
+                            Text(access.tool).font(.callout.monospaced())
+                            Spacer()
+                            Text(access.date.formatted(date: .omitted, time: .standard)).foregroundStyle(.secondary)
+                        }
+                        Text(access.client + (access.detail.isEmpty ? "" : "　" + access.detail))
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+            } header: {
+                Text("最近のアクセス（このアプリを開いている間）")
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 560, height: 680)
+        .alert(
+            result.shown?.title ?? "",
+            isPresented: Binding(get: { result.shown != nil }, set: { if !$0 { result.shown = nil } })
+        ) {
+            Button("OK") { result.shown = nil }
+        } message: {
+            Text(result.shown?.message ?? "")
+        }
+    }
+    private var status: String {
+        if !store.mcpEnabled { return "オフ" }
+        if let problem = store.mcpProblem { return problem }
+        return store.mcpConnections > 0 ? "接続中（AI アプリ \(store.mcpConnections)件）" : "待ち受け中"
     }
 }
 
