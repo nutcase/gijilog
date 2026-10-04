@@ -10,6 +10,8 @@ extension ProcessingTests {
         try Self.check(
             merged == ["SALES", "定例", "採用 面接"],
             "tags differing only in case or width are one tag, and the first spelling stays: \(merged)")
+        let counts = [7, 9999, 12345, 1_234_567].map(shortCount)
+        try Self.check(counts == ["7", "9999", "1.2万", "123万"], "chip counts stay short: \(counts)")
         let long = try Self.require(MeetingTags.normalize(String(repeating: "長", count: 60)), "long tag")
         try Self.check(long.count == MeetingTags.maxLength, "a tag is cut to \(MeetingTags.maxLength) characters")
         try Self.check(MeetingTags.parse(" , 、#\n").isEmpty, "separators and # alone make no tag")

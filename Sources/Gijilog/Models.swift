@@ -211,6 +211,10 @@ enum MeetingSearch {
     }
 }
 
+/// A count short enough for a chip or badge: up to 9999 as is, then 1.2万, 123万 and so on.
+func shortCount(_ count: Int) -> String {
+    count.formatted(.number.notation(.compactName).locale(Locale(identifier: "ja_JP")))
+}
 func clock(_ seconds: Double) -> String {
     let s = max(0, Int(seconds))
     return s >= 3600

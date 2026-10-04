@@ -364,7 +364,7 @@ struct TagFilterBar: View {
                 } label: {
                     HStack(spacing: 5) {
                         Text(tag.name).lineLimit(1)
-                        Text("\(tag.count)").foregroundStyle(on ? Palette.kon.opacity(0.65) : Color.secondary)
+                        Text(shortCount(tag.count)).foregroundStyle(on ? Palette.kon.opacity(0.65) : Color.secondary)
                     }
                 }
                 .buttonStyle(FilterChipStyle(on: on))
@@ -1665,7 +1665,7 @@ struct PageTab: View {
             Image(systemName: systemImage).imageScale(.small)
             Text(title).font(.system(size: 13, weight: .semibold))
             if let count {
-                Text("\(count)")
+                Text(shortCount(count))
                     .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
                     .padding(.horizontal, 6).padding(.vertical, 1)
                     .background(Capsule().fill(selected ? ink.opacity(0.14) : Palette.ai))
