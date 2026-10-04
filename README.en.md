@@ -10,7 +10,7 @@ Keep its compact window next to the call to see what has been decided, what is s
 
 <p>
   <img src="docs/images/compact.jpg" alt="Compact window during a meeting" height="420">
-  <img src="docs/images/main.jpg" alt="Full window for reviewing a meeting" height="420">
+  <img src="docs/images/main.jpg" alt="Full window with the meeting list, the minutes with an agenda, and the transcript" height="420">
 </p>
 
 ## Features
@@ -42,13 +42,21 @@ open dist/ギジログ.app
 ```
 
 1. Open Settings (⌘,) and save your OpenAI API key.
-2. Click 録音を開始 (Start recording). The first time, macOS asks to let the app record the microphone and system audio (the sound your Mac plays); allow both. No screen recording permission is needed.
-3. Click 録音を開始 again to start recording and writing the minutes.
+2. Click 録音を開始 (Start recording) to start recording and writing the minutes. The first time, macOS asks to let the app record the microphone and system audio (the sound your Mac plays); allow both. No screen recording permission is needed.
 
 You can also start and stop from the menu bar icon (a waveform, or a record mark while recording) or the app's 録音 menu (⌘⇧R), even with every window closed.
 
+| Shortcut | Action |
+| --- | --- |
+| ⌘⇧R | Start or stop recording |
+| ⌘N | Prepare an agenda (create a meeting before recording it) |
+| ⌘O | Import a recording file |
+| ⌘F | Search meetings |
+| ⌘1 / ⌘2 / ⌘3 | Compact window tabs: minutes, transcript, agenda |
+| ⌘, | Settings |
+
 > [!NOTE]
-> Builds are signed ad hoc by default, so every rebuild loses the recording permission. Clear the stale entry and repeat step 2:
+> Builds are signed ad hoc by default, so every rebuild loses the recording permission, and reading the saved API key asks for Keychain access again (click Always Allow). Clear the stale permission and repeat step 2:
 >
 > ```sh
 > tccutil reset AudioCapture io.github.nutcase.gijilog
@@ -102,8 +110,8 @@ While a meeting is recorded and processed, the working audio takes about 230 MB 
 
 ## Privacy and consent
 
-- **Sent to OpenAI**: about 12 seconds of audio at a time (silence is skipped), the transcript text, and the minutes so far. Minutes are requested with `store: false`.
-- **Kept on your Mac**: recordings, transcripts, and minutes. The API key stays in the Keychain and is never written to meeting files.
+- **Sent to OpenAI**: about 12 seconds of audio at a time (silence is skipped), the transcript text, the minutes so far, and, while recording, the agenda (topics and goals). Meeting titles and tags are not sent. Minutes are requested with `store: false`.
+- **Kept on your Mac**: recordings, transcripts, minutes, agendas, and tags. The API key stays in the Keychain and is never written to meeting files.
 - **Consent**: tell participants and get their consent before recording or transcribing a meeting, and follow the laws and policies that apply to you.
 - **Review**: the minutes are an AI summary. Check anything important against the transcript.
 
@@ -114,6 +122,7 @@ If your Documents folder syncs with iCloud Drive, recordings are uploaded too.
 - No speaker identification: "Mac音声" and "マイク" are where the sound came from, not who spoke.
 - Playing the call through speakers records it twice through the microphone. Use headphones.
 - 30 seconds is the update interval, not a guarantee; slow networks or APIs delay updates.
+- The current agenda topic is judged with these updates, so it changes about 30 seconds after the talk moves on, and as an AI judgment it can be wrong.
 - Very long meetings send the growing minutes each time and can approach the model's input limit.
 - No Developer ID signing or notarization yet: build from source.
 
