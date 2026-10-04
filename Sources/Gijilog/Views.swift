@@ -1082,18 +1082,27 @@ struct TranscriptPanel: View {
             }
         VStack(alignment: .leading, spacing: 0) {
             if showsHeader {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("文字起こし").font(.headline)
-                    Spacer()
+                // The same tab as the compact window's, so the panel reads as the transcript's page.
+                HStack(alignment: .bottom, spacing: 8) {
+                    PageTab(
+                        title: "文字起こし", systemImage: "text.quote", count: meeting.segments.count,
+                        page: Palette.deepAi, ink: Palette.paper, outlined: true)
+                    Spacer(minLength: 0)
                     let pending = meeting.jobs.filter { $0.state == .pending || $0.state == .running }.count
-                    if !terms.isEmpty {
-                        Text("一致 \(matches.count)件").font(.caption.weight(.semibold)).foregroundStyle(Palette.yamabuki)
+                    HStack(spacing: 8) {
+                        if !terms.isEmpty {
+                            Text("一致 \(matches.count)件").font(.caption.weight(.semibold)).foregroundStyle(
+                                Palette.yamabuki)
+                        }
+                        if pending > 0 {
+                            Label("処理待ち \(pending)件", systemImage: "hourglass").font(.caption).foregroundStyle(
+                                .secondary)
+                        }
                     }
-                    Text(pending > 0 ? "\(meeting.segments.count)件・処理待ち \(pending)件" : "\(meeting.segments.count)件")
-                        .font(.caption).foregroundStyle(.secondary)
+                    .padding(.bottom, 9)
                 }
-                .padding(.horizontal, 16).padding(.vertical, 12)
-                Rectangle().fill(Palette.ai).frame(height: 1)
+                .padding(.top, 10)
+                .pageTabBar()
             }
             if meeting.segments.isEmpty {
                 Text(live ? "最初の発言は12秒ほどで表示されます。" : "文字起こしはまだありません。")
@@ -1617,12 +1626,8 @@ struct LiveTabBar: View {
                     .padding(.bottom, 9)
             }
         }
-        .padding(.horizontal, 10)
-        // The line the tabs stand on; a chosen tab covers it, so its page opens into the window below.
-        .background(alignment: .bottom) { Rectangle().fill(Self.edge).frame(height: 1) }
-        .background(Palette.kon)
+        .pageTabBar()
     }
-    private static let edge = Palette.paper.opacity(0.18)
     private func tab(
         _ title: String, systemImage: String, key: KeyEquivalent, count: Int? = nil, page: Color, ink: Color,
         outlined: Bool = false
@@ -1631,33 +1636,59 @@ struct LiveTabBar: View {
         return Button {
             withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) { store.liveTab = title }
         } label: {
-            HStack(spacing: 6) {
-                Image(systemName: systemImage).imageScale(.small)
-                Text(title).font(.system(size: 13, weight: .semibold))
-                if let count {
-                    Text("\(count)")
-                        .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
-                        .padding(.horizontal, 6).padding(.vertical, 1)
-                        .background(Capsule().fill(selected ? ink.opacity(0.14) : Palette.ai))
-                }
-            }
-            .foregroundStyle(selected ? ink : Palette.paper.opacity(0.55))
-            .padding(.horizontal, 14).frame(height: 34)
-            .background(alignment: .bottom) {
-                if selected {
-                    // The dark page is close to the bar's color, so its tab is outlined to stand out.
-                    UnevenRoundedRectangle(topLeadingRadius: 9, topTrailingRadius: 9)
-                        .fill(page)
-                        .overlay { if outlined { TabOutline(radius: 9).stroke(Self.edge, lineWidth: 1) } }
-                        .matchedGeometryEffect(id: "tab", in: tabs)
-                }
-            }
+            PageTab(
+                title: title, systemImage: systemImage, count: count, selected: selected, page: page, ink: ink,
+                outlined: outlined, namespace: tabs
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .keyboardShortcut(key, modifiers: .command)
         .help(title + "を表示（⌘" + String(key.character) + "）")
         .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+// A tab that opens into the page below it: when chosen it takes the page's color (paper for the minutes, ink
+// for the transcript) and joins it. The dark page is close to the bar's color, so its tab can be outlined.
+struct PageTab: View {
+    static let edge = Palette.paper.opacity(0.18)
+    let title: String
+    let systemImage: String
+    var count: Int?
+    var selected = true
+    let page: Color
+    let ink: Color
+    var outlined = false
+    var namespace: Namespace.ID?
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: systemImage).imageScale(.small)
+            Text(title).font(.system(size: 13, weight: .semibold))
+            if let count {
+                Text("\(count)")
+                    .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
+                    .padding(.horizontal, 6).padding(.vertical, 1)
+                    .background(Capsule().fill(selected ? ink.opacity(0.14) : Palette.ai))
+            }
+        }
+        .foregroundStyle(selected ? ink : Palette.paper.opacity(0.55))
+        .padding(.horizontal, 14).frame(height: 34)
+        .background(alignment: .bottom) {
+            if selected {
+                let shape = UnevenRoundedRectangle(topLeadingRadius: 9, topTrailingRadius: 9)
+                    .fill(page)
+                    .overlay { if outlined { TabOutline(radius: 9).stroke(Self.edge, lineWidth: 1) } }
+                if let namespace { shape.matchedGeometryEffect(id: "tab", in: namespace) } else { shape }
+            }
+        }
+    }
+}
+extension View {
+    /// The bar tabs stand on: a line along its bottom that a chosen tab covers, so its page opens below.
+    func pageTabBar() -> some View {
+        padding(.horizontal, 10)
+            .background(alignment: .bottom) { Rectangle().fill(PageTab.edge).frame(height: 1) }
+            .background(Palette.kon)
     }
 }
 // A tab's top and sides, open at the bottom where it joins its page.
