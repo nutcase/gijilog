@@ -41,6 +41,8 @@ import UniformTypeIdentifiers
     @Published var tagEditor: UUID?  // The meeting whose tag field is open.
     @Published var settingsTab = "一般"
     @Published var liveTab = "議事録"  // The compact window shows the minutes or the transcript.
+    @Published var editingAgendaItem: UUID?  // The agenda topic open for editing; the others show as text.
+    @Published var addingAgenda: UUID?  // The meeting whose "add a topic" field is open.
     @Published var searchText = ""
     @Published var focusesSearch = false  // Set by ⌘F; the sidebar moves the cursor to its search field.
     @Published private(set) var searchHits: [UUID: SearchHit] = [:]
@@ -410,23 +412,31 @@ import UniformTypeIdentifiers
         busy = true
         pendingCaptureError = nil
         defer { busy = false }
-        let untitled = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        var meeting = Meeting(title: untitled ? "会議 \(Date().formatted(date: .numeric, time: .shortened))" : title)
-        meeting.settings = settings
-        meeting.finalReviewPending = true
-        meeting.folderName =
-            MeetingRepository.uniqueFolder(
-                in: root, name: meetingFolderName(date: meeting.date, title: untitled ? "会議" : meeting.title)
-            ).lastPathComponent
-        meetings.insert(meeting, at: 0)
+        // A prepared meeting that is selected is the one recorded, with its title, tags and agenda.
+        let planned = selectedMeeting(where: { $0.capture == .planned })
+        let id: UUID
+        if let planned {
+            id = planned.id
+            change(id) { meeting in
+                meeting.capture = .recording
+                meeting.date = Date()
+                meeting.settings = settings
+                meeting.finalReviewPending = true
+                meeting.status = "録音中"
+            }
+        } else {
+            let meeting = newMeeting(capture: .recording)
+            id = meeting.id
+            meetings.insert(meeting, at: 0)
+        }
         showNewMeeting()
-        selected = meeting.id
-        activeID = meeting.id
+        selected = id
+        activeID = id
         captureInputID = microphone.isEmpty ? AVCaptureDevice.default(for: .audio)?.uniqueID : microphone
         do {
-            try await checkpoint(meeting.id)
-            pipeline.resume(meeting.id, key: key)
-            try await recorder.start(folder: folder(meeting.id), microphone: microphone.isEmpty ? nil : microphone)
+            try await checkpoint(id)
+            pipeline.resume(id, key: key)
+            try await recorder.start(folder: folder(id), microphone: microphone.isEmpty ? nil : microphone)
             recording = true
             title = ""
             status = "録音中 — Mac音声＋マイク"
@@ -441,16 +451,46 @@ import UniformTypeIdentifiers
                 if let message = pendingCaptureError { await interrupt(message) } else { await stop() }
             }
         } catch {
-            change(meeting.id) {
-                $0.capture = .interrupted
-                $0.captureError = error.localizedDescription
-                $0.status = "録音開始失敗"
+            change(id) { meeting in
+                if let planned {
+                    // Still prepared: the agenda waits for the next try.
+                    meeting.capture = .planned
+                    meeting.date = planned.date
+                    meeting.settings = nil
+                    meeting.finalReviewPending = nil
+                    meeting.status = "準備中"
+                    meeting.agenda = planned.agenda
+                } else {
+                    meeting.capture = .interrupted
+                    meeting.status = "録音開始失敗"
+                }
+                meeting.captureError = error.localizedDescription
             }
             activeID = nil
             captureInputID = nil
             self.error = error.localizedDescription
-            try? await checkpoint(meeting.id)
+            try? await checkpoint(id)
         }
+    }
+    private func selectedMeeting(where condition: (Meeting) -> Bool) -> Meeting? {
+        meetings.first { $0.id == selected && condition($0) }
+    }
+    /// A meeting titled from the title field (or the time), in a new folder.
+    private func newMeeting(capture: CaptureState) -> Meeting {
+        let untitled = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        var meeting = Meeting(title: untitled ? "会議 \(Date().formatted(date: .numeric, time: .shortened))" : title)
+        meeting.capture = capture
+        if capture == .planned {
+            meeting.status = "準備中"
+        } else {
+            meeting.settings = settings
+            meeting.finalReviewPending = true
+        }
+        meeting.folderName =
+            MeetingRepository.uniqueFolder(
+                in: root, name: meetingFolderName(date: meeting.date, title: untitled ? "会議" : meeting.title)
+            ).lastPathComponent
+        return meeting
     }
     // The new job is saved by the next coalesced checkpoint; the chunk is also listed in recording.json,
     // so recovery finds it even if the app stops before that write.
@@ -499,6 +539,7 @@ import UniformTypeIdentifiers
         change(id) {
             $0.capture = interrupted ? .interrupted : .stopped
             $0.status = "録音停止済み・残りを処理中"
+            $0.agenda = MeetingAgenda.finish($0.agenda, at: Date().timeIntervalSince($0.date))
         }
         do { try await discoverJobs(id) } catch {
             self.error = error.localizedDescription
@@ -511,9 +552,9 @@ import UniformTypeIdentifiers
         pipeline.pump()
     }
     func process(_ meetingID: UUID? = nil, rebuild: Bool = false) async {
-        guard ready, !shuttingDown, let id = meetingID ?? selected, !busy, id != activeID, !isProcessing(id) else {
-            return
-        }
+        guard ready, !shuttingDown, let id = meetingID ?? selected, !busy, id != activeID, !isProcessing(id),
+            meetings.first(where: { $0.id == id })?.capture != .planned
+        else { return }
         preparingIDs.insert(id)
         defer { preparingIDs.remove(id) }
         guard hasKey else {
@@ -806,7 +847,7 @@ import UniformTypeIdentifiers
     }
     func refreshCompletion(_ id: UUID, summaryFailed: Bool) {
         guard let meeting = meetings.first(where: { $0.id == id }), meeting.capture != .recording,
-            !meeting.jobs.contains(where: { $0.state == .pending || $0.state == .running })
+            meeting.capture != .planned, !meeting.jobs.contains(where: { $0.state == .pending || $0.state == .running })
         else { return }
         let result: String
         if meeting.hasAudio == false {
@@ -989,5 +1030,53 @@ extension Store {
     private func pruneTagFilter() {
         let used = Set(meetings.flatMap { $0.tags.map(MeetingTags.key) })
         tagFilter.removeAll { !used.contains(MeetingTags.key($0)) }
+    }
+}
+
+// MARK: - Agenda
+
+extension Store {
+    /// Prepares a meeting from the title field: it waits in the list, with its agenda, until 録音を開始.
+    func planMeeting() {
+        guard ready else { return }
+        let meeting = newMeeting(capture: .planned)
+        meetings.insert(meeting, at: 0)
+        showNewMeeting()
+        selected = meeting.id
+        addingAgenda = meeting.id  // Ready to type or paste the agenda.
+        title = ""
+        Task { try? await checkpoint(meeting.id) }
+    }
+    func renamePlannedMeeting(_ id: UUID, to title: String) {
+        guard meetings.first(where: { $0.id == id })?.capture == .planned else { return }
+        change(id) { $0.title = title }
+    }
+    /// Adds the topics in typed or pasted text, one per line.
+    func addAgenda(_ text: String, to id: UUID) {
+        let items = MeetingAgenda.parse(text)
+        guard !items.isEmpty else { return }
+        change(id) { $0.agenda += items }
+    }
+    func updateAgendaItem(_ item: UUID, in id: UUID, _ update: (inout AgendaItem) -> Void) {
+        change(id) { meeting in
+            guard let index = meeting.agenda.firstIndex(where: { $0.id == item }) else { return }
+            update(&meeting.agenda[index])
+        }
+    }
+    func removeAgendaItem(_ item: UUID, from id: UUID) {
+        change(id) { $0.agenda.removeAll { $0.id == item } }
+    }
+    func moveAgendaItem(_ item: UUID, in id: UUID, by offset: Int) {
+        change(id) { meeting in
+            guard let index = meeting.agenda.firstIndex(where: { $0.id == item }),
+                meeting.agenda.indices.contains(index + offset)
+            else { return }
+            meeting.agenda.swapAt(index, index + offset)
+        }
+    }
+    /// The minutes model's judgment of the topic being discussed, applied while the meeting is recorded.
+    func followAgenda(_ id: UUID, _ topic: AgendaTopic) {
+        guard id == activeID else { return }
+        change(id) { $0.agenda = MeetingAgenda.follow($0.agenda, topic) }
     }
 }

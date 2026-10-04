@@ -66,8 +66,13 @@ import Foundation
         try await tests.testTagsCanBeRenamedMergedAndDeleted()
         try tests.testSearchFindsEveryKeywordAnywhereInAMeeting()
         try await tests.testSearchNarrowsTheListWithTags()
+        try tests.testAgendaParsesPastedText()
+        try tests.testAgendaFollowsTheMeeting()
+        try tests.testMinutesModelJudgesTheTopic()
+        try await tests.testPreparedMeetingWaitsWithItsAgenda()
+        try await tests.testAgendaRecordsWhereTheTimeWent()
         print(
-            "PASS: 53 checks (recording, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, audio mixdown, file import, upgrade and recovery, storage cleanup, minutes quality and final review, tags, search)"
+            "PASS: 58 checks (recording, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, audio mixdown, file import, upgrade and recovery, storage cleanup, minutes quality and final review, tags, search, agenda)"
         )
     }
     func fixture(seconds: Double, amplitude: Float) throws -> (URL, URL) {

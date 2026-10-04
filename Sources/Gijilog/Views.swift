@@ -44,7 +44,7 @@ private let dayTitle: DateFormatter = {
 func statusColor(_ status: String) -> Color {
     if status.hasPrefix("録音中") { return Palette.beni }
     if status.contains("失敗") || status.contains("確認が必要") || status.contains("APIキー") { return Palette.yamabuki }
-    if status.hasPrefix("完了") || ["処理中", "更新中", "再開中", "復旧中"].contains(where: status.contains) {
+    if status.hasPrefix("完了") || ["処理中", "更新中", "再開中", "復旧中", "準備中"].contains(where: status.contains) {
         return Palette.asagi
     }
     return .secondary
@@ -183,10 +183,10 @@ struct ContentView: View {
                         Task { await store.refineMinutes(meeting.id) }
                     }.disabled(!idle || !store.hasKey || meeting.segments.isEmpty)
                     Button("未処理を再開", systemImage: "arrow.clockwise") { Task { await store.process() } }
-                        .disabled(!idle || !store.hasKey)
+                        .disabled(!idle || !store.hasKey || meeting.capture == .planned)
                     Button("全文を再処理", systemImage: "arrow.triangle.2.circlepath") {
                         Task { await store.process(rebuild: true) }
-                    }.disabled(!idle || !store.hasKey)
+                    }.disabled(!idle || !store.hasKey || meeting.capture == .planned)
                     Button("Finderで表示", systemImage: "folder") {
                         NSWorkspace.shared.open(store.folder(meeting.id))
                     }
@@ -320,14 +320,19 @@ struct MeetingRow: View {
                 .accessibilityLabel("タグ: " + meeting.tags.joined(separator: ", "))
             }
             // The title and tags already show their own matches; other matches get a short excerpt.
-            if let hit, hit.place == .minutes || hit.place == .transcript {
+            if let hit, hit.place == .minutes || hit.place == .transcript || hit.place == .agenda {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Image(systemName: hit.place == .transcript ? "text.quote" : "doc.text").imageScale(.small)
+                    Image(
+                        systemName: hit.place == .transcript
+                            ? "text.quote" : hit.place == .agenda ? "list.bullet" : "doc.text"
+                    )
+                    .imageScale(.small)
                     Text(highlighted((hit.time.map { clock($0) + " " } ?? "") + hit.snippet, terms)).lineLimit(2)
                 }
                 .font(.caption).foregroundStyle(Palette.paper.opacity(0.78))
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel((hit.place == .transcript ? "文字起こし: " : "議事録: ") + hit.snippet)
+                .accessibilityLabel(
+                    (hit.place == .transcript ? "文字起こし: " : hit.place == .agenda ? "アジェンダ: " : "議事録: ") + hit.snippet)
             }
         }
         .padding(.vertical, 4)
@@ -471,14 +476,42 @@ struct RecorderBar: View {
         .padding(.horizontal, 24).padding(.vertical, 16)
     }
     private var idle: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let planned = store.selectedMeeting.flatMap { $0.capture == .planned ? $0 : nil }
+        return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
-                TextField("会議のタイトル（空欄なら日時）", text: $store.title)
-                    .textFieldStyle(.plain).font(.system(size: 16))
+                if let planned {
+                    HStack(spacing: 10) {
+                        Text("準備中").font(.caption.weight(.semibold)).foregroundStyle(Palette.asagi)
+                            .padding(.horizontal, 7).padding(.vertical, 2)
+                            .background(Capsule().fill(Palette.asagi.opacity(0.16)))
+                        Text(planned.title).font(.system(size: 16)).lineLimit(1)
+                        if !planned.agenda.isEmpty {
+                            Text("議題 \(planned.agenda.count)件").font(.callout).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                    }
                     .padding(.horizontal, 14).frame(height: 40)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(Palette.ai))
-                    .disabled(store.busy)
-                    .onSubmit(start)
+                    .background(RoundedRectangle(cornerRadius: 10).strokeBorder(Palette.asagi.opacity(0.5)))
+                    Button("新しい会議にする") { store.selected = nil }
+                        .buttonStyle(QuietButtonStyle())
+                        .help("準備した会議ではなく、新しい会議として録音する")
+                } else {
+                    TextField("会議のタイトル（空欄なら日時）", text: $store.title)
+                        .textFieldStyle(.plain).font(.system(size: 16))
+                        .padding(.horizontal, 14).frame(height: 40)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(Palette.ai))
+                        .disabled(store.busy)
+                        .onSubmit(start)
+                    Button {
+                        store.planMeeting()
+                    } label: {
+                        Label("アジェンダを準備", systemImage: "list.bullet.rectangle")
+                    }
+                    .buttonStyle(QuietButtonStyle())
+                    .fixedSize()
+                    .disabled(!store.ready)
+                    .help("録音の前に議題を用意しておく。会議の時間になったら、この会議を選んで録音を開始します")
+                }
                 Button(action: start) { Label("録音を開始", systemImage: "record.circle") }
                     .buttonStyle(CapsuleButtonStyle(filled: true))
                     .fixedSize()
@@ -486,8 +519,12 @@ struct RecorderBar: View {
                 if store.busy || store.importing { ProgressView().controlSize(.small) }
             }
             if store.hasKey {
-                Text("Macの音声とマイクを録音し、OpenAIで文字起こしと議事録づくりをします。録音ファイルはドロップしても読み込めます。API利用料がかかります。")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text(
+                    planned != nil
+                        ? "「録音を開始」で、準備した会議の録音を始めます。アジェンダは最初の議題から進行を記録します。"
+                        : "Macの音声とマイクを録音し、OpenAIで文字起こしと議事録づくりをします。録音ファイルはドロップしても読み込めます。API利用料がかかります。"
+                )
+                .font(.caption).foregroundStyle(.secondary)
             } else {
                 HStack(spacing: 8) {
                     Image(systemName: "key.fill").foregroundStyle(Palette.yamabuki)
@@ -668,6 +705,24 @@ final class WaveformView: NSView {
         return min(1, max(0, (20 * log10(Double(level)) + 60) / 60))
     }
 }
+// A secondary action beside the record button: text only, so recording stays the obvious choice.
+struct QuietButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        QuietLabel(configuration: configuration)
+    }
+    private struct QuietLabel: View {
+        @Environment(\.isEnabled) private var isEnabled
+        let configuration: ButtonStyle.Configuration
+        var body: some View {
+            configuration.label
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Palette.paper.opacity(configuration.isPressed ? 0.45 : 0.7))
+                .padding(.horizontal, 6).frame(height: 40)
+                .opacity(isEnabled ? 1 : 0.4)
+                .contentShape(Rectangle())
+        }
+    }
+}
 // Red belongs to recording; other actions use the outline style in another tint.
 struct CapsuleButtonStyle: ButtonStyle {
     let filled: Bool
@@ -715,7 +770,13 @@ struct MinutesDesk: View {
             VStack(alignment: .leading, spacing: 0) {
                 header
                 notices
-                if let notes = meeting.notes {
+                if meeting.capture == .planned || !meeting.agenda.isEmpty {
+                    AgendaSection(meeting: meeting).padding(.top, 26)
+                }
+                if meeting.capture == .planned {
+                    Text("会議の時間になったら、この会議を選んだまま「録音を開始」を押してください。議事録はここに書き足されていきます。")
+                        .font(.callout).foregroundStyle(.secondary).padding(.top, 24)
+                } else if let notes = meeting.notes {
                     MinutesSections(notes: notes, segments: meeting.segments)
                 } else if !meeting.minutes.isEmpty {
                     Text(highlighted(meeting.minutes, terms)).font(.system(size: 14)).lineSpacing(5).padding(.top, 24)
@@ -743,7 +804,15 @@ struct MinutesDesk: View {
     }
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(highlighted(meeting.title, terms)).font(.mincho(26))
+            if meeting.capture == .planned {
+                TextField(
+                    "会議のタイトル",
+                    text: Binding(get: { meeting.title }, set: { store.renamePlannedMeeting(meeting.id, to: $0) })
+                )
+                .textFieldStyle(.plain).font(.mincho(26))
+            } else {
+                Text(highlighted(meeting.title, terms)).font(.mincho(26))
+            }
             HStack(spacing: 10) {
                 Text(longDate.string(from: meeting.date)).foregroundStyle(.secondary).fixedSize()
                 Text(meeting.status)
@@ -848,14 +917,14 @@ struct TagChip: View {
         .background(Capsule().fill(Palette.asagi.opacity(0.14)))
     }
 }
-final class TagDraft: ObservableObject {
+final class TextDraft: ObservableObject {
     @Published var text = ""
 }
 // Type a tag and press Enter, or pick one used before. Enter on an empty field closes it.
 struct TagEditor: View {
     @EnvironmentObject var store: Store
     let meetingID: UUID
-    @StateObject private var draft = TagDraft()
+    @StateObject private var draft = TextDraft()
     @FocusState private var focused: Bool
     var body: some View {
         let current = store.meetings.first { $0.id == meetingID }?.tags ?? []
@@ -1382,6 +1451,251 @@ struct TagSettings: View {
     }
 }
 
+// MARK: - Agenda
+
+// The agenda on the minutes sheet: editable while the meeting is prepared or being recorded, a record of how
+// long each topic took afterwards. A meeting without an agenda shows none of this.
+struct AgendaSection: View {
+    @EnvironmentObject var store: Store
+    @StateObject private var draft = TextDraft()
+    @FocusState private var adding: Bool
+    let meeting: Meeting
+    var compact = false
+    var body: some View {
+        let live = meeting.id == store.activeID
+        let editable = meeting.capture == .planned || live
+        let planned = meeting.agenda.compactMap(\.minutes).reduce(0, +)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("アジェンダ").font(.mincho(compact ? 15 : 17))
+                Text("\(meeting.agenda.count)").font(.callout).foregroundStyle(.secondary)
+                if planned > 0 { Text("予定 計\(planned)分").font(.caption).foregroundStyle(.secondary) }
+                Spacer(minLength: 0)
+            }
+            Rectangle().fill(Palette.rule).frame(height: 1).padding(.top, 8).padding(.bottom, 4)
+            if live && !meeting.agenda.isEmpty {
+                Label("話している議題は、文字起こしから AI が判断します（約30秒ごと）", systemImage: "sparkles")
+                    .font(.caption).foregroundStyle(.secondary).padding(.vertical, 6).padding(.horizontal, 8)
+            }
+            ForEach(Array(meeting.agenda.enumerated()), id: \.element.id) { index, item in
+                AgendaRow(
+                    meeting: meeting, item: item, number: index + 1, editable: editable, live: live,
+                    last: index == meeting.agenda.count - 1, compact: compact)
+                Rectangle().fill(Palette.rule.opacity(0.5)).frame(height: 0.5)
+            }
+            if editable && store.addingAgenda == meeting.id {
+                // Return adds the topic; pasting several lines (an invite, a chat message) adds one per line.
+                TextField("議題を入力して Enter（複数行の貼り付けもできます）", text: $draft.text, axis: .vertical)
+                    .textFieldStyle(.plain).font(.system(size: compact ? 13 : 14))
+                    .lineLimit(1...4)
+                    .focused($adding)
+                    .padding(.vertical, compact ? 8 : 10).padding(.horizontal, 8)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(Palette.asagi.opacity(0.1)))
+                    .padding(.top, 4)
+                    .onSubmit(add)
+                    .onChange(of: draft.text) { if draft.text.contains(where: \.isNewline) { add() } }
+                    .onAppear { adding = true }
+                    .onChange(of: adding) {
+                        if !adding && draft.text.isEmpty && store.addingAgenda == meeting.id {
+                            store.addingAgenda = nil
+                        }
+                    }
+            } else if editable {
+                // Not a field until asked for, so typing during the meeting cannot land here by accident.
+                Button {
+                    store.addingAgenda = meeting.id
+                } label: {
+                    Label("議題を追加", systemImage: "plus").font(.system(size: compact ? 12.5 : 13, weight: .medium))
+                }
+                .buttonStyle(.plain).foregroundStyle(Palette.asagi)
+                .padding(.vertical, compact ? 8 : 10).padding(.horizontal, 8)
+            } else if meeting.agenda.isEmpty {
+                Text("まだありません").font(.callout).foregroundStyle(.secondary).padding(.vertical, 8)
+            }
+        }
+    }
+    private func add() {
+        store.addAgenda(draft.text, to: meeting.id)
+        draft.text = ""
+    }
+}
+// A topic shows as text; clicking it (while the agenda can still change) opens it for editing, so a keystroke
+// during the meeting never lands in a topic by accident.
+struct AgendaRow: View {
+    @EnvironmentObject var store: Store
+    @Environment(\.searchTerms) private var terms
+    @FocusState private var field: Field?
+    enum Field { case title, goal, minutes }
+    let meeting: Meeting
+    let item: AgendaItem
+    let number: Int
+    let editable: Bool
+    let live: Bool
+    let last: Bool
+    var compact = false
+    var body: some View {
+        let editing = editable && store.editingAgendaItem == item.id
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            marker.frame(width: 18)
+            VStack(alignment: .leading, spacing: 3) {
+                if editing {
+                    TextField("議題", text: title)
+                        .textFieldStyle(.plain).font(.system(size: compact ? 13 : 14.5, weight: .semibold))
+                        .focused($field, equals: .title)
+                        .onSubmit { field = .goal }
+                    TextField("決めたいこと（任意）", text: goal)
+                        .textFieldStyle(.plain).font(.caption).foregroundStyle(.secondary)
+                        .focused($field, equals: .goal)
+                        .onSubmit { store.editingAgendaItem = nil }
+                } else {
+                    Text(highlighted(item.title.isEmpty ? "（無題）" : item.title, terms))
+                        .font(.system(size: compact ? 13 : 14.5, weight: .semibold))
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let goal = item.goal {
+                        Text(highlighted("決めたいこと：" + goal, terms)).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                AgendaTiming(meeting: meeting, item: item, live: live)
+            }
+            Spacer(minLength: 4)
+            if editing {
+                HStack(spacing: 2) {
+                    TextField("–", text: minutes).textFieldStyle(.plain).multilineTextAlignment(.trailing)
+                        .frame(width: 26)
+                        .focused($field, equals: .minutes)
+                        .onSubmit { store.editingAgendaItem = nil }
+                    Text("分").foregroundStyle(.secondary)
+                }
+                .font(.caption.monospacedDigit())
+                .help("予定時間（分）")
+            } else if let minutes = item.minutes {
+                Text("予定\(minutes)分").font(.caption).foregroundStyle(.secondary)
+            }
+            if editable {
+                Menu {
+                    Button("編集", systemImage: "pencil") { store.editingAgendaItem = item.id }
+                    Button("上へ", systemImage: "arrow.up") { store.moveAgendaItem(item.id, in: meeting.id, by: -1) }
+                        .disabled(number == 1)
+                    Button("下へ", systemImage: "arrow.down") { store.moveAgendaItem(item.id, in: meeting.id, by: 1) }
+                        .disabled(last)
+                    Divider()
+                    Button("削除", systemImage: "trash", role: .destructive) {
+                        store.removeAgendaItem(item.id, from: meeting.id)
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .help("編集・並べ替え・削除")
+                .accessibilityLabel("議題の操作")
+            }
+        }
+        .padding(.vertical, compact ? 6 : 9).padding(.horizontal, 8)
+        .background(RoundedRectangle(cornerRadius: 4).fill(background(editing: editing)))
+        .contentShape(Rectangle())
+        .textSelection(.disabled)
+        .onTapGesture { if editable && !editing { store.editingAgendaItem = item.id } }
+        .onChange(of: editing, initial: true) { if editing { field = .title } }
+        .onChange(of: field) {
+            // Clicking away ends editing; moving between this topic's fields does not.
+            if field == nil && store.editingAgendaItem == item.id { store.editingAgendaItem = nil }
+        }
+        .help(editable && !editing ? "クリックして編集" : "")
+    }
+    private func background(editing: Bool) -> Color {
+        if editing { return Palette.asagi.opacity(0.1) }
+        return item.progress == .current && live ? Palette.beni.opacity(0.07) : .clear
+    }
+    @ViewBuilder private var marker: some View {
+        switch item.progress {
+        case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.asagi)
+        case .current where live: Image(systemName: "play.circle.fill").foregroundStyle(Palette.beni)
+        case .current: Image(systemName: "circle.lefthalf.filled").foregroundStyle(Palette.yamabuki)
+        case .pending: Text("\(number)").font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+        }
+    }
+    private var title: Binding<String> {
+        Binding(
+            get: { item.title },
+            set: { value in store.updateAgendaItem(item.id, in: meeting.id) { $0.title = value } })
+    }
+    private var goal: Binding<String> {
+        Binding(
+            get: { item.goal ?? "" },
+            set: { value in store.updateAgendaItem(item.id, in: meeting.id) { $0.goal = value.isEmpty ? nil : value } })
+    }
+    private var minutes: Binding<String> {
+        Binding(
+            get: { item.minutes.map(String.init) ?? "" },
+            set: { value in
+                let digits = (value.applyingTransform(.fullwidthToHalfwidth, reverse: false) ?? value).filter(
+                    \.isNumber)
+                store.updateAgendaItem(item.id, in: meeting.id) { $0.minutes = Int(digits.prefix(3)) }
+            })
+    }
+}
+// How long a topic took, or has taken so far: past its planned time it turns to the attention color.
+struct AgendaTiming: View {
+    let meeting: Meeting
+    let item: AgendaItem
+    let live: Bool
+    var body: some View {
+        if item.progress == .done {
+            let spent = item.spent(now: 0)
+            label("実際 " + MeetingAgenda.duration(spent), over: over(spent))
+        } else if item.progress == .current, live {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let spent = item.spent(now: context.date.timeIntervalSince(meeting.date))
+                label("進行中 " + clock(spent) + (item.minutes.map { " / \($0)分" } ?? ""), over: over(spent))
+            }
+        } else if item.progress == .current {
+            label("途中で録音が止まりました", over: false)
+        }
+    }
+    private func over(_ spent: Double) -> Bool { item.minutes.map { spent > Double($0) * 60 } ?? false }
+    private func label(_ text: String, over: Bool) -> some View {
+        Text(text).font(.caption.monospacedDigit()).foregroundStyle(over ? Palette.yamabuki : Color.secondary)
+    }
+}
+// The compact window's line for the topic under way: number, title, and time so far against plan. The minutes
+// model follows the discussion, so nobody has to switch topics during the meeting.
+struct AgendaBanner: View {
+    @EnvironmentObject var store: Store
+    let meeting: Meeting
+    var body: some View {
+        let agenda = meeting.agenda
+        let live = meeting.id == store.activeID
+        let current = MeetingAgenda.currentIndex(agenda)
+        HStack(spacing: 10) {
+            if live, let current {
+                let item = agenda[current]
+                Text("\(current + 1)/\(agenda.count)")
+                    .font(.caption.weight(.semibold).monospacedDigit()).foregroundStyle(Palette.kon)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Capsule().fill(Palette.asagi))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(item.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                    AgendaTiming(meeting: meeting, item: item, live: true)
+                }
+            } else {
+                Image(systemName: "list.bullet").foregroundStyle(Palette.asagi)
+                let planned = agenda.compactMap(\.minutes).reduce(0, +)
+                Text(
+                    live
+                        ? "議題の話が始まると、ここに表示します"
+                        : "アジェンダ \(agenda.count)件" + (planned > 0 ? "・予定 計\(planned)分" : "")
+                )
+                .font(.callout)
+            }
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(Palette.paper)
+        .padding(.horizontal, 14).padding(.bottom, 10)
+        .background(Palette.kon)
+        .help("話している議題は、文字起こしから AI が判断します（約30秒ごと）")
+    }
+}
+
 // MARK: - Live window
 
 // The in-meeting view: small enough to sit beside Zoom or Teams, ordered for running the meeting
@@ -1393,8 +1707,16 @@ struct LiveWindow: View {
         VStack(spacing: 0) {
             LiveHeader(meeting: store.recording ? meeting : nil)
             if let meeting {
+                if !meeting.agenda.isEmpty && (meeting.id == store.activeID || meeting.capture == .planned) {
+                    AgendaBanner(meeting: meeting)
+                }
                 LiveTabBar(meeting: meeting)
-                if store.liveTab == "文字起こし" {
+                if store.liveTab == "アジェンダ" && !meeting.agenda.isEmpty {
+                    ScrollView { AgendaSection(meeting: meeting, compact: true).padding(14) }
+                        .foregroundStyle(Palette.sumi)
+                        .background(Palette.paper)
+                        .environment(\.colorScheme, .light)
+                } else if store.liveTab == "文字起こし" {
                     // The full transcript, following the newest speech like the full window's panel.
                     TranscriptPanel(meeting: meeting, showsHeader: false)
                 } else {
@@ -1450,11 +1772,21 @@ struct LiveHeader: View {
                 LiveMeters(meter: store.meter)
             } else {
                 HStack(spacing: 8) {
-                    TextField("会議のタイトル", text: $store.title)
-                        .textFieldStyle(.plain)
+                    if let planned = store.selectedMeeting, planned.capture == .planned {
+                        HStack(spacing: 6) {
+                            Text("準備中").font(.caption2.weight(.semibold)).foregroundStyle(Palette.asagi)
+                            Text(planned.title).lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
                         .padding(.horizontal, 10).frame(height: 34)
-                        .background(RoundedRectangle(cornerRadius: 8).fill(Palette.ai))
-                        .onSubmit { Task { await store.start() } }
+                        .background(RoundedRectangle(cornerRadius: 8).strokeBorder(Palette.asagi.opacity(0.5)))
+                    } else {
+                        TextField("会議のタイトル", text: $store.title)
+                            .textFieldStyle(.plain)
+                            .padding(.horizontal, 10).frame(height: 34)
+                            .background(RoundedRectangle(cornerRadius: 8).fill(Palette.ai))
+                            .onSubmit { Task { await store.start() } }
+                    }
                     pin
                     restore
                     Button {
@@ -1619,6 +1951,9 @@ struct LiveTabBar: View {
             tab(
                 "文字起こし", systemImage: "text.quote", key: "2", count: meeting.segments.count, page: Palette.deepAi,
                 ink: Palette.paper, outlined: true)
+            if !meeting.agenda.isEmpty {
+                tab("アジェンダ", systemImage: "list.bullet", key: "3", page: Palette.paper, ink: Palette.sumi)
+            }
             Spacer(minLength: 8)
             if pending > 0 {
                 Label("処理待ち \(pending)件", systemImage: "hourglass")
@@ -1784,6 +2119,13 @@ struct RecordingMenuItems: View {
         }
         .keyboardShortcut("o")
         .disabled(!store.ready || !store.hasKey)
+        Button("アジェンダを準備") {
+            NSApp.activate()
+            views.full()
+            store.planMeeting()
+        }
+        .keyboardShortcut("n")
+        .disabled(!store.ready)
         Divider()
         Button("小画面を表示") {
             NSApp.activate()

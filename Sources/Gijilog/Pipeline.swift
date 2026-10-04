@@ -194,12 +194,15 @@ import Foundation
                     guard let self, let store = self.store else { return }
                     do {
                         var result: MinutesState?
+                        // While recording, the update also judges which agenda topic is being discussed.
+                        var previous = meeting.notes ?? MinutesState()
+                        if !reviewing && meeting.capture == .recording { previous.agenda = meeting.agenda }
                         for attempt in 1...3 {
                             do {
                                 let operation = reviewing ? self.review : self.summarize
                                 result = try await operation(
-                                    meeting.notes ?? MinutesState(), meeting.segments,
-                                    meeting.settings ?? SessionSettings(), self.keys[id] ?? "")
+                                    previous, meeting.segments, meeting.settings ?? SessionSettings(),
+                                    self.keys[id] ?? "")
                                 break
                             } catch {
                                 guard Processor.isRetryable(error), attempt < 3, !self.closing else { throw error }
@@ -208,6 +211,10 @@ import Foundation
                             }
                         }
                         guard var notes = result else { throw AppError.message("議事録の更新に失敗しました。") }
+                        let topic = notes.topic
+                        notes.agenda = []
+                        notes.topic = nil
+                        if let topic { store.followAgenda(id, topic) }
                         // A failed chunk can be retried while a review request is in flight. Never publish that stale review.
                         if reviewing, let current = store.meetings.first(where: { $0.id == id }),
                             current.segments != meeting.segments

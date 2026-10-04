@@ -26,7 +26,8 @@ func stableID(_ text: String) -> String {
     for byte in text.utf8 { hash = (hash ^ UInt64(byte)) &* 1_099_511_628_211 }
     return String(hash, radix: 16)
 }
-enum CaptureState: String, Codable { case recording, stopped, interrupted }
+// A planned meeting has been prepared (title, tags, agenda) but not recorded yet.
+enum CaptureState: String, Codable { case planned, recording, stopped, interrupted }
 enum JobState: String, Codable, Sendable { case pending, running, completed, failed }
 enum ItemState: String, Codable, CaseIterable, Sendable { case open, done, cancelled }
 // Transcription and minutes always use OpenAI. Older meetings may also carry "mode"/"localModel", which are ignored.
@@ -73,6 +74,13 @@ struct MinutesState: Codable, Sendable {
     var latestSegmentIDs: Set<String>?  // Utterances behind the most recent update, to mark what just changed.
     var reviewedSegmentIDs: Set<String>?  // Checkpointed progress through the post-meeting review.
     var finalizedAt: Date?
+    // Passed through a live update and never saved: the agenda goes in, the topic being discussed comes out.
+    var agenda: [AgendaItem] = []
+    var topic: AgendaTopic?
+    enum CodingKeys: String, CodingKey {
+        case content, appliedSegmentIDs, updatedAt, extractionOnly, rejectedItems, latestSegmentIDs,
+            reviewedSegmentIDs, finalizedAt
+    }
 }
 struct Meeting: Codable, Identifiable {
     var id = UUID()
@@ -93,10 +101,11 @@ struct Meeting: Codable, Identifiable {
     // so a folder renamed in Finder keeps working. Older meetings live in a folder named by their UUID.
     var folderName: String?
     var tags: [String] = []  // In the order they were added; see MeetingTags for spelling and duplicates.
+    var agenda: [AgendaItem] = []  // Optional; a meeting without one works exactly as before.
     init(title: String) { self.title = title }
     enum CodingKeys: String, CodingKey {
         case id, title, date, segments, minutes, status, capture, settings, jobs, notes, captureError, hasAudio,
-            revision, folderName, finalReviewPending, tags
+            revision, folderName, finalReviewPending, tags, agenda
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -117,6 +126,7 @@ struct Meeting: Codable, Identifiable {
         revision = try c.decodeIfPresent(UInt64.self, forKey: .revision) ?? 0
         folderName = try c.decodeIfPresent(String.self, forKey: .folderName)
         tags = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
+        agenda = try c.decodeIfPresent([AgendaItem].self, forKey: .agenda) ?? []
     }
 }
 
@@ -147,9 +157,108 @@ enum MeetingTags {
     static func contains(_ list: [String], _ tag: String) -> Bool { list.contains { key($0) == key(tag) } }
 }
 
+// One topic of a meeting's agenda. Spans are when it was being discussed, in seconds from the start of the
+// recording, as the minutes model judges from the transcript; a topic the meeting returns to gets another span.
+struct AgendaItem: Codable, Identifiable, Equatable, Sendable {
+    var id = UUID()
+    var title: String
+    var goal: String?  // What the topic should decide.
+    var minutes: Int?  // Planned length.
+    var spans: [AgendaSpan] = []
+    enum Progress { case pending, current, done }
+    var progress: Progress { spans.isEmpty ? .pending : spans.last?.end == nil ? .current : .done }
+    /// Seconds discussed so far; an open span counts up to `now`.
+    func spent(now: Double) -> Double { spans.reduce(0) { $0 + max(0, ($1.end ?? now) - $1.start) } }
+    init(title: String, goal: String? = nil, minutes: Int? = nil) {
+        self.title = title
+        self.goal = goal
+        self.minutes = minutes
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        goal = try c.decodeIfPresent(String.self, forKey: .goal)
+        minutes = try c.decodeIfPresent(Int.self, forKey: .minutes)
+        spans = try c.decodeIfPresent([AgendaSpan].self, forKey: .spans) ?? []
+    }
+}
+struct AgendaSpan: Codable, Equatable, Sendable {
+    var start: Double
+    var end: Double?
+}
+// Which topic the newest speech is about, as the minutes model judged it, and when that talk began.
+struct AgendaTopic: Equatable, Sendable {
+    var item: UUID
+    var since: Double
+}
+enum MeetingAgenda {
+    /// One item per line of typed or pasted text (a calendar invite, a chat message). Bullets and numbering are
+    /// dropped, and a trailing length such as "（10分）" or "10 min" becomes the planned minutes.
+    static func parse(_ text: String) -> [AgendaItem] {
+        text.components(separatedBy: .newlines).compactMap { line in
+            var title = line.trimmingCharacters(in: .whitespaces)
+            if let marker = title.range(of: marker, options: .regularExpression) { title.removeSubrange(marker) }
+            var minutes: Int?
+            if let length = title.range(of: length, options: [.regularExpression, .caseInsensitive]) {
+                let digits = title[length].applyingTransform(.fullwidthToHalfwidth, reverse: false) ?? ""
+                minutes = Int(digits.filter(\.isNumber))
+                title.removeSubrange(length)
+            }
+            title = title.trimmingCharacters(in: .whitespaces)
+            guard !title.isEmpty else { return nil }
+            return AgendaItem(title: String(title.prefix(200)), minutes: minutes)
+        }
+    }
+    private static let marker = #"^(?:[-*+•・●○◯□■▪◦‣]|[0-9０-９]{1,2}[.．)）]|[(（][0-9０-９]{1,2}[)）]|[①-⑳])\s*"#
+    private static let length = #"[\s　]*[(（]?\s*[0-9０-９]{1,3}\s*(?:分|min|mins|minutes)\s*[)）]?$"#
+    /// A switch back within this many seconds undoes the switch, so a brief misjudgment leaves no trace.
+    static let undoWindow: Double = 30
+    static func currentIndex(_ items: [AgendaItem]) -> Int? { items.firstIndex { $0.progress == .current } }
+    /// The meeting moves to `index` at `time`: the topic under way stops there and the chosen one starts.
+    /// Going straight back to the topic just left reopens it.
+    static func switchTo(_ items: [AgendaItem], index: Int, at time: Double) -> [AgendaItem] {
+        guard items.indices.contains(index) else { return items }
+        var items = items
+        let current = currentIndex(items)
+        guard current != index else { return items }
+        if let current, let open = items[current].spans.last {
+            let time = max(time, open.start)
+            if time - open.start < undoWindow, items[index].spans.last?.end == open.start {
+                items[current].spans.removeLast()
+                items[index].spans[items[index].spans.count - 1].end = nil
+                return items
+            }
+            items[current].spans[items[current].spans.count - 1].end = time
+            items[index].spans.append(AgendaSpan(start: time))
+        } else {
+            items[index].spans.append(AgendaSpan(start: time))
+        }
+        return items
+    }
+    /// The minutes model judged that the newest speech is about `topic`.
+    static func follow(_ items: [AgendaItem], _ topic: AgendaTopic) -> [AgendaItem] {
+        guard let index = items.firstIndex(where: { $0.id == topic.item }) else { return items }
+        return switchTo(items, index: index, at: topic.since)
+    }
+    /// Recording has stopped: the topic being discussed ends there.
+    static func finish(_ items: [AgendaItem], at time: Double) -> [AgendaItem] {
+        var items = items
+        if let current = currentIndex(items) {
+            let start = items[current].spans[items[current].spans.count - 1].start
+            items[current].spans[items[current].spans.count - 1].end = max(time, start)
+        }
+        return items
+    }
+    /// Minutes as a person says them: "8分", "1分未満".
+    static func duration(_ seconds: Double) -> String {
+        seconds < 60 ? "1分未満" : "\(Int((seconds / 60).rounded()))分"
+    }
+}
+
 // Keyword search across a meeting: its title, tags, minutes and transcript.
 struct SearchHit: Equatable {
-    enum Place: Equatable { case title, tags, minutes, transcript }
+    enum Place: Equatable { case title, tags, agenda, minutes, transcript }
     var place: Place
     var snippet: String  // The matching passage, cut around the first keyword.
     var segmentID: String?  // The utterance, when the passage is in the transcript.
@@ -170,6 +279,7 @@ enum MeetingSearch {
         guard let first = terms.first else { return nil }
         var places: [(SearchHit.Place, String, Segment?)] = [(.title, meeting.title, nil)]
         places += meeting.tags.map { (.tags, $0, nil) }
+        places += meeting.agenda.flatMap { [$0.title, $0.goal].compactMap { $0.map { (.agenda, $0, nil) } } }
         if let content = meeting.notes?.content {
             for item in content.summary + content.decisions + content.unresolved + content.actions {
                 places += [item.text, item.reason, item.nextStep, item.changeSummary, item.owner, item.due]

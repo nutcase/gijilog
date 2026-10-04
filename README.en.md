@@ -22,6 +22,7 @@ Keep its compact window next to the call to see what has been decided, what is s
 - **From existing recordings too**: import a Voice Memo, a Zoom recording, or any audio or video file and get the same minutes afterward.
 - **Audio and minutes together**: each meeting gets a folder with `議事録.md` (minutes) and `録音.m4a` (audio).
 - **Tags**: tag meetings and narrow the list to the ones you need.
+- **Agenda**: prepare the topics before the meeting; during it, the AI follows which topic is being discussed from the transcript and the compact window shows it with its time. The minutes record how long each topic took.
 - **Keyword search**: search titles, tags, minutes, and transcripts at once, with every match marked.
 
 ## Requirements
@@ -68,6 +69,12 @@ Live updates remain on a 30-second timer. After recording and transcription fini
 Click タグを追加 (Add tag) under a meeting's title, type a tag, and press Return; separate several tags with commas. Tags you used before are offered as suggestions, and right-clicking a meeting in the list opens a タグ (Tags) submenu.
 
 Click tags at the top of the list to show only the meetings that have all of them; 解除 (Clear) shows every meeting again. To rename or delete a tag on every meeting at once, open the タグ (Tags) tab in Settings, or click 管理 (Manage) above the tags. Renaming a tag to another tag's name merges the two; deleting a tag leaves the meetings in place. Tags that differ only in letter case or in full-width and half-width characters count as one tag. Tags are also written under the title in `議事録.md`. Starting a recording or importing a file clears the filter so the new meeting stays in view.
+
+## Agenda
+
+Click アジェンダを準備 (Prepare agenda) next to the record button, or press ⌘N, to create a meeting before recording it; the list shows it as 準備中 (prepared). Type a topic and press Return, or paste a calendar invite or a bulleted list to add one topic per line. Bullets and numbering are removed, and a trailing length such as "（10分）" or "15 min" becomes the planned time. Click a topic to edit its title, its goal, or its planned minutes.
+
+When the meeting starts, keep the prepared meeting selected and click 録音を開始. With each minutes update (about every 30 seconds, no extra API calls) the AI judges which topic the newest speech is about, so nobody switches topics by hand; a topic starts at the utterance where its talk began, and returning to a topic adds to its time. The elapsed time changes color past the planned time, and stopping the recording ends the topic under way. `議事録.md` lists the agenda with the planned and actual time of each topic. An agenda is optional: recording without one works as before.
 
 ## Keyword search
 
@@ -119,7 +126,7 @@ If your Documents folder syncs with iCloud Drive, recordings are uploaded too.
 ./scripts/build.sh   # build dist/ギジログ.app after the checks pass
 ```
 
-The 53 regression tests cover chunking and the shared recording clock, incremental minutes and evidence checks, retries and recovery after restart, moving the save location and upgrading from earlier versions, mixing the audio, importing recording files, cleaning up working audio, the final review, tags, and search. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.
+The 58 regression tests cover chunking and the shared recording clock, incremental minutes and evidence checks, retries and recovery after restart, moving the save location and upgrading from earlier versions, mixing the audio, importing recording files, cleaning up working audio, the final review, tags, search, and the agenda. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.
 
 With only the Command Line Tools installed, SwiftUI's `@State` does not compile, so view state lives in `ObservableObject`s.
 
