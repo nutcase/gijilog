@@ -96,7 +96,8 @@ import Foundation
         let archive = work.appendingPathComponent("ギジログ.mcpb")
         let ditto = Process()
         ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-        ditto.arguments = ["-c", "-k", content.path, archive.path]
+        // Without these, macOS adds ._ files for extended attributes next to manifest.json in the archive.
+        ditto.arguments = ["-c", "-k", "--norsrc", "--noextattr", "--noacl", content.path, archive.path]
         try ditto.run()
         ditto.waitUntilExit()
         guard ditto.terminationStatus == 0 else { throw AppError.message("拡張機能のファイルを作れませんでした。") }
