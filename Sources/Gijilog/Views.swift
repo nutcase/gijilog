@@ -104,8 +104,12 @@ struct ContentView: View {
             MeetingList().navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 320)
         } detail: {
             VStack(spacing: 0) {
-                RecorderBar()
-                Rectangle().fill(Palette.ai).frame(height: 1)
+                // Recording is started from the toolbar; the bar appears only while recording, for a prepared
+                // meeting, or when the API key is missing.
+                if store.recording || !store.hasKey || store.selectedMeeting?.capture == .planned {
+                    RecorderBar()
+                    Rectangle().fill(Palette.ai).frame(height: 1)
+                }
                 // The transcript is a plain trailing column: SwiftUI's inspector inside this split view
                 // loops on layout and crashes the window (macOS 27 SDK).
                 HStack(spacing: 0) {
@@ -166,6 +170,7 @@ struct ContentView: View {
     }
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
+            if store.busy || store.importing { ProgressView().controlSize(.small) }
             Button {
                 store.chooseRecordingFiles()
             } label: {
@@ -214,6 +219,27 @@ struct ContentView: View {
                 Label("文字起こし", systemImage: "sidebar.right")
             }
             .help("文字起こしの表示を切り替える")
+        }
+        if !store.recording {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button {
+                    store.planMeeting()
+                } label: {
+                    Label("アジェンダを準備", systemImage: "list.bullet.rectangle")
+                }
+                .help("録音の前に議題を用意しておく。会議の時間になったら、この会議を選んで録音を開始します（⌘N）")
+                .disabled(!store.ready)
+                Button {
+                    startRecording(store, views: ViewSwitch(open: openWindow, dismiss: dismissWindow))
+                } label: {
+                    Label("録音を開始", systemImage: "record.circle").labelStyle(.titleAndIcon)
+                }
+                // The app's own red capsule: a system prominent button turns gray whenever the window is not
+                // in front, which is most of a meeting.
+                .buttonStyle(CapsuleButtonStyle(filled: true, height: 30))
+                .help("Macの音声とマイクの録音を始めて、議事録を作る（⌘⇧R）")
+                .disabled(store.busy || !store.ready || !store.hasKey)
+            }
         }
     }
 }
@@ -471,74 +497,44 @@ struct FlowLayout: Layout {
 
 struct RecorderBar: View {
     @EnvironmentObject var store: Store
-    @Environment(\.openWindow) private var openWindow
-    @Environment(\.dismissWindow) private var dismissWindow
     var body: some View {
         Group {
             if store.recording, let meeting = store.activeMeeting { live(meeting) } else { idle }
         }
         .padding(.horizontal, 24).padding(.vertical, 16)
     }
-    // A meeting starts titled by the time and is renamed by clicking its title, so there is no title to type here.
     private var idle: some View {
-        let planned = store.selectedMeeting.flatMap { $0.capture == .planned ? $0 : nil }
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 12) {
-                if let planned {
-                    HStack(spacing: 10) {
-                        Text("準備中").font(.caption.weight(.semibold)).foregroundStyle(Palette.asagi)
-                            .padding(.horizontal, 7).padding(.vertical, 2)
-                            .background(Capsule().fill(Palette.asagi.opacity(0.16)))
-                        Text(planned.title).font(.system(size: 16)).lineLimit(1)
-                        if !planned.agenda.isEmpty {
-                            Text("議題 \(planned.agenda.count)件").font(.callout).foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 0)
+        HStack(spacing: 12) {
+            if let planned = store.selectedMeeting, planned.capture == .planned {
+                HStack(spacing: 10) {
+                    Text("準備中").font(.caption.weight(.semibold)).foregroundStyle(Palette.asagi)
+                        .padding(.horizontal, 7).padding(.vertical, 2)
+                        .background(Capsule().fill(Palette.asagi.opacity(0.16)))
+                    Text(planned.title).font(.system(size: 15)).lineLimit(1)
+                    if !planned.agenda.isEmpty {
+                        Text("議題 \(planned.agenda.count)件").font(.callout).foregroundStyle(.secondary)
                     }
-                    .padding(.horizontal, 14).frame(height: 40)
-                    .background(RoundedRectangle(cornerRadius: 10).strokeBorder(Palette.asagi.opacity(0.5)))
-                    Button("新しい会議にする") { store.selected = nil }
-                        .buttonStyle(QuietButtonStyle())
-                        .help("準備した会議ではなく、新しい会議として録音する")
-                } else {
-                    hint(planned: false).frame(maxWidth: .infinity, alignment: .leading)
-                    Button {
-                        store.planMeeting()
-                    } label: {
-                        Label("アジェンダを準備", systemImage: "list.bullet.rectangle")
-                    }
-                    .buttonStyle(QuietButtonStyle())
-                    .fixedSize()
-                    .disabled(!store.ready)
-                    .help("録音の前に議題を用意しておく。会議の時間になったら、この会議を選んで録音を開始します")
+                    Text("「録音を開始」でこの会議の録音を始めます").font(.callout).foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
-                Button(action: start) { Label("録音を開始", systemImage: "record.circle") }
-                    .buttonStyle(CapsuleButtonStyle(filled: true))
-                    .fixedSize()
-                    .disabled(store.busy || !store.ready || !store.hasKey)
-                if store.busy || store.importing { ProgressView().controlSize(.small) }
+                Spacer(minLength: 12)
+                Button("新しい会議にする") { store.selected = nil }
+                    .buttonStyle(QuietButtonStyle())
+                    .help("準備した会議ではなく、新しい会議として録音する")
+            } else {
+                Spacer(minLength: 0)
             }
-            if planned != nil { hint(planned: true) }
+            if !store.hasKey {
+                HStack(spacing: 8) {
+                    Image(systemName: "key.fill").foregroundStyle(Palette.yamabuki)
+                    Text("録音するには、OpenAIのAPIキーを設定してください。")
+                    SettingsLink { Text("設定を開く") }
+                }
+                .font(.callout)
+                Spacer(minLength: 0)
+            }
         }
     }
-    @ViewBuilder private func hint(planned: Bool) -> some View {
-        if store.hasKey {
-            Text(
-                planned
-                    ? "「録音を開始」で、準備した会議の録音を始めます。アジェンダは最初の議題から進行を記録します。"
-                    : "Macの音声とマイクを録音し、OpenAIで文字起こしと議事録づくりをします。録音ファイルはドロップしても読み込めます。API利用料がかかります。"
-            )
-            .font(.caption).foregroundStyle(.secondary).lineLimit(2)
-        } else {
-            HStack(spacing: 8) {
-                Image(systemName: "key.fill").foregroundStyle(Palette.yamabuki)
-                Text("録音するには、OpenAIのAPIキーを設定してください。")
-                SettingsLink { Text("設定を開く") }
-            }
-            .font(.caption)
-        }
-    }
-    private func start() { startRecording(store, views: ViewSwitch(open: openWindow, dismiss: dismissWindow)) }
     private func live(_ meeting: Meeting) -> some View {
         HStack(spacing: 18) {
             RecordingLamp()
@@ -730,19 +726,21 @@ struct QuietButtonStyle: ButtonStyle {
 struct CapsuleButtonStyle: ButtonStyle {
     let filled: Bool
     var tint = Palette.beni
+    var height: CGFloat = 40  // 30 fits a toolbar.
     func makeBody(configuration: Configuration) -> some View {
-        CapsuleLabel(configuration: configuration, filled: filled, tint: tint)
+        CapsuleLabel(configuration: configuration, filled: filled, tint: tint, height: height)
     }
     private struct CapsuleLabel: View {
         @Environment(\.isEnabled) private var isEnabled
         let configuration: ButtonStyle.Configuration
         let filled: Bool
         let tint: Color
+        let height: CGFloat
         var body: some View {
             configuration.label
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: height < 40 ? 13 : 14, weight: .semibold))
                 .foregroundStyle(filled ? Color.white : tint)
-                .padding(.horizontal, 18).frame(height: 40)
+                .padding(.horizontal, height < 40 ? 14 : 18).frame(height: height)
                 .background(Capsule().fill(filled ? tint : Color.clear))
                 .overlay(Capsule().strokeBorder(tint.opacity(filled ? 0 : 0.8), lineWidth: 1.5))
                 .opacity(isEnabled ? (configuration.isPressed ? 0.75 : 1) : 0.4)
@@ -758,8 +756,10 @@ struct EmptyDesk: View {
         VStack(spacing: 14) {
             Image(systemName: "waveform").font(.system(size: 36, weight: .light)).foregroundStyle(.secondary)
             Text("会議が始まったら、録音を開始してください").font(.mincho(20))
-            Text("12秒ごとに文字起こしし、30秒ごとに議事録を書き足していきます。")
-                .font(.callout).foregroundStyle(.secondary)
+            Text(
+                "Macの音声とマイクを録音し、話の切れ目ごとに文字起こしして、30秒ごとに議事録を書き足していきます。\n録音ファイルはウインドウにドロップしても読み込めます。OpenAIのAPI利用料がかかります。"
+            )
+            .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
