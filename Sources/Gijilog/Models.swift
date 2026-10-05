@@ -70,7 +70,9 @@ struct MinutesState: Codable, Sendable {
     var appliedSegmentIDs: Set<String> = []
     var updatedAt: Date?
     var extractionOnly = false  // Notes from the former keyword-extraction mode.
-    var rejectedItems: Int?  // AI items dropped because their evidence could not be verified.
+    // AI items dropped because their evidence did not check out. Kept for diagnosis, not shown: the earlier
+    // version of each item stays, so nothing the reader had is lost, and a count alone reads as deleted content.
+    var rejectedItems: Int?
     var latestSegmentIDs: Set<String>?  // Utterances behind the most recent update, to mark what just changed.
     var reviewedSegmentIDs: Set<String>?  // Checkpointed progress through the post-meeting review.
     var finalizedAt: Date?

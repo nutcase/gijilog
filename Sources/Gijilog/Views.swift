@@ -890,9 +890,6 @@ struct MinutesDesk: View {
                         : "議事録の更新に失敗しました。") + (store.pipeline.summaryError(meeting.id).map { "\n" + $0 } ?? ""),
                     actionTitle: canResume ? "未処理を再開" : nil, action: resume)
             }
-            if let rejected = meeting.notes?.rejectedItems, rejected > 0 {
-                Notice(text: "発言に根拠を確認できなかったAIの提案 \(rejected)件を載せていません。")
-            }
             if meeting.notes?.extractionOnly == true {
                 Notice(text: "以前のキーワード抽出で作った議事録です。「全文を再処理」でAIの議事録に作り直せます。")
             }
