@@ -103,16 +103,23 @@ import Foundation
         guard ditto.terminationStatus == 0 else { throw AppError.message("拡張機能のファイルを作れませんでした。") }
         return archive
     }
+    /// The extension icon: the bundled full-bleed artwork with rounded corners and no margin. The icon macOS
+    /// renders has a transparent margin and a shadow, which shrink it to a dark speck in Claude's small lists.
     private static func iconPNG() -> Data? {
-        let icon = NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)
+        let artwork =
+            Bundle.main.url(forResource: "AppIcon", withExtension: "icns").flatMap(NSImage.init(contentsOf:))
+            ?? NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)
         guard
             let rep = NSBitmapImageRep(
                 bitmapDataPlanes: nil, pixelsWide: 512, pixelsHigh: 512, bitsPerSample: 8, samplesPerPixel: 4,
                 hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
         else { return nil }
+        let rect = NSRect(x: 0, y: 0, width: 512, height: 512)
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-        icon.draw(in: NSRect(x: 0, y: 0, width: 512, height: 512))
+        NSGraphicsContext.current?.imageInterpolation = .high
+        NSBezierPath(roundedRect: rect, xRadius: 512 * 0.225, yRadius: 512 * 0.225).addClip()
+        artwork.draw(in: rect)
         NSGraphicsContext.restoreGraphicsState()
         return rep.representation(using: .png, properties: [:])
     }
