@@ -66,6 +66,17 @@ extension ProcessingTests {
         try Self.check(
             document.hasPrefix("# 週次定例\n\nタグ: 定例\n\n## 文字起こし"),
             "議事録.md lists the tags under the title: \(document.prefix(60))")
+        let folder = store.folder(meetings[0].id)
+        store.renameMeeting(meetings[0].id, to: "  PRD会議\n ")
+        store.renameMeeting(meetings[1].id, to: "   ")
+        await store.flushCheckpoints()
+        let renamed = try String(
+            contentsOf: store.folder(meetings[0].id).appendingPathComponent(MeetingRepository.documentName),
+            encoding: .utf8)
+        try Self.check(
+            store.meetings[0].title == "PRD会議" && store.meetings[1].title == "A社ヒアリング"
+                && renamed.hasPrefix("# PRD会議\n") && store.folder(meetings[0].id) == folder,
+            "a recorded meeting can be renamed in place, 議事録.md follows, and a blank title is ignored")
         try Self.check(
             MinutesEngine.render(MinutesState(), segments: [], title: "会議", tags: ["定例", "顧客"])
                 .hasPrefix("# 会議\n\nタグ: 定例, 顧客\n\n## 要約"),

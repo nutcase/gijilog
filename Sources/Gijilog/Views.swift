@@ -500,7 +500,8 @@ struct RecorderBar: View {
                         .buttonStyle(QuietButtonStyle())
                         .help("準備した会議ではなく、新しい会議として録音する")
                 } else {
-                    TextField("会議のタイトル（空欄なら日時）", text: $store.title)
+                    // For the next recording, not the meeting shown below, which is renamed by clicking its title.
+                    TextField("次に録音する会議のタイトル（空欄なら日時）", text: $store.title)
                         .textFieldStyle(.plain).font(.system(size: 16))
                         .padding(.horizontal, 14).frame(height: 40)
                         .background(RoundedRectangle(cornerRadius: 10).fill(Palette.ai))
@@ -815,7 +816,7 @@ struct MinutesDesk: View {
                 )
                 .textFieldStyle(.plain).font(.mincho(26))
             } else {
-                Text(highlighted(meeting.title, terms)).font(.mincho(26))
+                MeetingTitle(meeting: meeting)
             }
             HStack(spacing: 10) {
                 Text(longDate.string(from: meeting.date)).foregroundStyle(.secondary).fixedSize()
@@ -920,6 +921,50 @@ struct TagChip: View {
 }
 final class TextDraft: ObservableObject {
     @Published var text = ""
+}
+final class TitleDraft: ObservableObject {
+    @Published var text = ""
+    var original = ""
+}
+// A recorded meeting's title: click to rename it. The title is saved as it is typed (a blank one is skipped), so
+// it holds however editing ends; Enter or clicking another field closes the field, and Esc restores the old title.
+struct MeetingTitle: View {
+    @EnvironmentObject var store: Store
+    @Environment(\.searchTerms) private var terms
+    @StateObject private var draft = TitleDraft()
+    @FocusState private var focused: Bool
+    let meeting: Meeting
+    var body: some View {
+        let editing = store.editingTitle == meeting.id
+        Group {
+            if editing {
+                TextField("会議のタイトル", text: $draft.text)
+                    .textFieldStyle(.plain)
+                    .focused($focused)
+                    .onChange(of: draft.text) { store.renameMeeting(meeting.id, to: draft.text) }
+                    .onSubmit { store.editingTitle = nil }
+                    .onExitCommand {
+                        store.renameMeeting(meeting.id, to: draft.original)
+                        store.editingTitle = nil
+                    }
+            } else {
+                Text(highlighted(meeting.title, terms))
+                    .textSelection(.disabled)
+                    .contentShape(Rectangle())
+                    .onTapGesture { store.editingTitle = meeting.id }
+                    .help("クリックしてタイトルを変更")
+            }
+        }
+        .font(.mincho(26))
+        .onChange(of: editing, initial: true) {
+            if editing {
+                draft.original = meeting.title
+                draft.text = meeting.title
+                focused = true
+            }
+        }
+        .onChange(of: focused) { if !focused && store.editingTitle == meeting.id { store.editingTitle = nil } }
+    }
 }
 // Type a tag and press Enter, or pick one used before. Enter on an empty field closes it.
 struct TagEditor: View {
@@ -1924,7 +1969,7 @@ struct LiveHeader: View {
                         .padding(.horizontal, 10).frame(height: 34)
                         .background(RoundedRectangle(cornerRadius: 8).strokeBorder(Palette.asagi.opacity(0.5)))
                     } else {
-                        TextField("会議のタイトル", text: $store.title)
+                        TextField("次に録音する会議のタイトル", text: $store.title)
                             .textFieldStyle(.plain)
                             .padding(.horizontal, 10).frame(height: 34)
                             .background(RoundedRectangle(cornerRadius: 8).fill(Palette.ai))

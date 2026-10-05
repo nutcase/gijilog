@@ -46,6 +46,7 @@ import UniformTypeIdentifiers
         didSet { if persistsSettings { UserDefaults.standard.set(vocabulary, forKey: "vocabulary") } }
     }
     @Published var compactWindowOpen = false  // Alerts go to the compact window while it is open, else the full one.
+    @Published var editingTitle: UUID?  // The meeting whose title is open for renaming.
     @Published var editingAgendaItem: UUID?  // The agenda topic open for editing; the others show as text.
     @Published var addingAgenda: UUID?  // The meeting whose "add a topic" field is open.
     @Published var searchText = ""
@@ -1077,6 +1078,16 @@ extension Store {
         addingAgenda = meeting.id  // Ready to type or paste the agenda.
         title = ""
         Task { try? await checkpoint(meeting.id) }
+    }
+    /// Renames a meeting; 議事録.md follows on the next save. A blank title keeps the old one, and the folder keeps
+    /// its name, so files open in Finder stay where they are.
+    func renameMeeting(_ id: UUID, to title: String) {
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: .newlines)
+            .joined(separator: " ")
+        guard !title.isEmpty, let meeting = meetings.first(where: { $0.id == id }), meeting.title != title else {
+            return
+        }
+        change(id) { $0.title = title }
     }
     func renamePlannedMeeting(_ id: UUID, to title: String) {
         guard meetings.first(where: { $0.id == id })?.capture == .planned else { return }
