@@ -86,12 +86,26 @@ extension ProcessingTests {
             "quality fields are in the strict API contract")
         StructuredMockProtocol.reset(
             delta: NotesDelta(decisions: [NoteItem(id: "", text: "架空の決定", evidence: ["missing"])]))
-        var rejected = false
-        do {
-            _ = try await MinutesEngine.review(notes, segments: [speech], settings: SessionSettings(), key: "TEST")
-        } catch { rejected = true }
+        let reviewed = try await MinutesEngine.review(
+            notes, segments: [speech], settings: SessionSettings(), key: "TEST")
         try Self.check(
-            rejected && notes.reviewedSegmentIDs == nil, "invalid review evidence cannot advance finalization")
+            reviewed.content.decisions.isEmpty && reviewed.rejectedItems == 1,
+            "an item with invalid evidence is dropped and counted, and the review still moves on")
+
+        // The stall seen on a 41-minute meeting: reviewing early speech, the model restates a decision that later
+        // speech changed, citing only the early utterance. The later conclusion stays and the review moves on.
+        let early = Segment(id: "early", time: 30, source: "マイク", text: "A案にしましょう")
+        let late = Segment(id: "late", time: 1800, source: "マイク", text: "やはりB案に変更します")
+        var decided = MinutesState()
+        decided.appliedSegmentIDs = ["early", "late"]
+        decided.content.decisions = [NoteItem(id: "d1", text: "B案にする", evidence: ["late"])]
+        StructuredMockProtocol.reset(
+            delta: NotesDelta(decisions: [NoteItem(id: "d1", text: "A案にする", evidence: ["early"])]))
+        let earlyPass = try await MinutesEngine.review(
+            decided, segments: [early, late], settings: SessionSettings(), key: "TEST")
+        try Self.check(
+            earlyPass.content.decisions.map(\.text) == ["B案にする"] && earlyPass.rejectedItems == 1,
+            "an early review batch cannot roll back a later decision, and it does not stall the review")
     }
     @MainActor func testFinalReviewDiscardsOutdatedResponse() async throws {
         let (root, _) = try fixture(seconds: 1, amplitude: 0)

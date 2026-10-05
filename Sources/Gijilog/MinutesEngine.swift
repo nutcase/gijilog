@@ -158,11 +158,10 @@ enum MinutesEngine {
         let text = try await cloudDelta(
             try input(previous, batch: batch, segments: segments), key: key, model: settings.model, reviewing: true)
         let delta = try JSONDecoder().decode(NotesDelta.self, from: Data(text.utf8))
-        let result = merge(previous, delta: delta, batch: batch, segments: segments, reviewing: true)
-        guard (result.rejectedItems ?? 0) == (previous.rejectedItems ?? 0) else {
-            throw AppError.message("仕上げの内容に根拠を確認できませんでした。前の議事録を保持しています。未処理を再開してやり直せます。")
-        }
-        return result
+        // Items whose evidence does not check out are dropped one by one, as in live updates, and the earlier
+        // version stays. Failing the whole batch instead stalled long meetings: reviewing early speech, the model
+        // often restates items whose evidence runs later, which the rollback guard rightly refuses every time.
+        return merge(previous, delta: delta, batch: batch, segments: segments, reviewing: true)
     }
     // Each AI item is verified on its own so one bad item cannot stall the meeting's minutes.
     // Items without valid evidence are dropped and counted; an owner or deadline that does not appear
