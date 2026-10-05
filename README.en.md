@@ -16,7 +16,7 @@ Keep its compact window next to the call to see what has been decided, what is s
 ## Features
 
 - **Records any call**: captures the Mac's audio output and your microphone as separate tracks while you stay in Zoom, Teams, Google Meet, or any other app. Your meeting app's settings are left alone, and no screen recording permission is needed.
-- **Live minutes**: transcribes about every 12 seconds with OpenAI and extends the minutes every 30 seconds.
+- **Live minutes**: transcribes with OpenAI at pauses in speech (every 10–25 seconds) and extends the minutes every 30 seconds. Audio without a voice is not sent, and the meeting title, agenda, a vocabulary list (Settings → 文字起こし), and the preceding speech are given as hints, so names and sentences hold together.
 - **Made for running the meeting**: the compact window lists decisions, open questions, and action items, highlights what the latest update changed, and flags actions that still lack an owner or a deadline. A tab switches it to the full transcript, which follows the newest speech.
 - **Grounded in what was said**: every item links to the time of the utterances behind it. Items without supporting utterances, and owners or deadlines nobody said, are left out.
 - **From existing recordings too**: import a Voice Memo, a Zoom recording, or any audio or video file and get the same minutes afterward.
@@ -104,7 +104,7 @@ Tools: `list_meetings` (by date range and tag), `search_meetings` (keyword searc
 
 ## Minutes from a recording file
 
-Click 読み込み (Import) in the toolbar (⌘O) or drop audio or video files on the window. Each file is cut into about 30-second pieces, transcribed, and then summarized into minutes. All audio tracks are mixed, and importing never blocks stopping a recording. The meeting takes the file's name and creation date, and its folder gets `議事録.md` and `録音.m4a`; the original file is left as is.
+Click 読み込み (Import) in the toolbar (⌘O) or drop audio or video files on the window. Each file is cut at pauses like a live recording, transcribed, and then summarized into minutes. All audio tracks are mixed, and importing never blocks stopping a recording. The meeting takes the file's name and creation date, and its folder gets `議事録.md` and `録音.m4a`; the original file is left as is.
 
 ## Where meetings are saved
 
@@ -124,7 +124,7 @@ While a meeting is recorded and processed, the working audio takes about 230 MB 
 
 ## Privacy and consent
 
-- **Sent to OpenAI**: about 12 seconds of audio at a time (silence is skipped), the transcript text, the minutes so far, and, while recording, the agenda (topics and goals). Meeting titles and tags are not sent. Minutes are requested with `store: false`.
+- **Sent to OpenAI**: audio cut at pauses (stretches without a voice are skipped), transcription hints (the meeting title, agenda topics, your vocabulary list, and the preceding speech), the transcript text, the minutes so far, and, while recording, the agenda (topics and goals). Tags are not sent. Minutes are requested with `store: false`.
 - **Kept on your Mac**: recordings, transcripts, minutes, agendas, and tags.
 - **Given to AI apps over MCP**: the minutes, agendas, and transcripts the app asks for (transcripts and meetings with chosen tags can be withheld), which the app sends to its provider. The API key stays in the Keychain and is never written to meeting files.
 - **Consent**: tell participants and get their consent before recording or transcribing a meeting, and follow the laws and policies that apply to you.
@@ -150,7 +150,7 @@ If your Documents folder syncs with iCloud Drive, recordings are uploaded too.
 ./scripts/build.sh   # build dist/ギジログ.app after the checks pass
 ```
 
-The 63 regression tests cover chunking and the shared recording clock, incremental minutes and evidence checks, retries and recovery after restart, moving the save location and upgrading from earlier versions, mixing the audio, importing recording files, cleaning up working audio, the final review, tags, search, the agenda, and the MCP server. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.
+The 68 regression tests cover chunking at pauses and the shared recording clock, the voice gate and transcription hints, incremental minutes and evidence checks, retries and recovery after restart, moving the save location and upgrading from earlier versions, mixing the audio, importing recording files, cleaning up working audio, the final review, tags, search, the agenda, and the MCP server. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.
 
 With only the Command Line Tools installed, SwiftUI's `@State` does not compile, so view state lives in `ObservableObject`s.
 

@@ -2,7 +2,7 @@ import Foundation
 
 // A bounded worker pool. The disk checkpoint, rather than a chain of Tasks, owns job state.
 @MainActor final class ProcessingPipeline {
-    typealias Recognize = (URL, Double, String, String) async throws -> [Segment]
+    typealias Recognize = (URL, Double, String, String, TranscriptionHints) async throws -> [Segment]
     typealias Summarize = (MinutesState, [Segment], SessionSettings, String) async throws -> MinutesState
     private weak var store: Store?
     private var keys: [UUID: String] = [:]  // Credentials are never written into a meeting.
@@ -28,7 +28,9 @@ import Foundation
     init(
         store: Store,
         review: Summarize? = nil,
-        recognize: @escaping Recognize = { try await Processor.recognizeChunk($0, offset: $1, source: $2, key: $3) },
+        recognize: @escaping Recognize = {
+            try await Processor.recognizeChunk($0, offset: $1, source: $2, key: $3, hints: $4)
+        },
         summarize: @escaping Summarize = { try await MinutesEngine.update($0, segments: $1, settings: $2, key: $3) },
         retryDelay: @escaping (Int) -> TimeInterval = { pow(2, Double($0)) }
     ) {
@@ -107,6 +109,7 @@ import Foundation
             lastScheduledID = meeting.id
             let token = meeting.id.uuidString + "/" + job.id
             let key = keys[meeting.id] ?? ""
+            let hints = TranscriptionHints(meeting: meeting, before: job.offset, vocabulary: store.vocabulary)
             // Reserve synchronously so the next pump cannot schedule this job twice.
             // Job progress is persisted by the store's coalesced checkpoints; a crash re-runs only the latest jobs.
             store.change(meeting.id) { m in
@@ -119,7 +122,7 @@ import Foundation
                 guard let self, let store = self.store else { return }
                 do {
                     let url = store.folder(meeting.id).appendingPathComponent(job.filename)
-                    let result = try await self.recognize(url, job.offset, job.source, key)
+                    let result = try await self.recognize(url, job.offset, job.source, key, hints)
                     let segments = result.enumerated().map { index, segment in
                         Segment(
                             id: job.id + ":" + String(index), time: segment.time, source: segment.source,

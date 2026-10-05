@@ -9,7 +9,7 @@ extension ProcessingTests {
         store.key = "TEST"
         store.pipeline = ProcessingPipeline(
             store: store, review: MinutesEngine.stubReview,
-            recognize: { _, offset, source, _ in [Segment(time: offset, source: source, text: "確認します")] },
+            recognize: { _, offset, source, _, _ in [Segment(time: offset, source: source, text: "確認します")] },
             summarize: MinutesEngine.stubSummary)
         var meeting = Meeting(title: "live")  // Still recording.
         meeting.settings = SessionSettings()
@@ -80,7 +80,7 @@ extension ProcessingTests {
         let store = Store(root: save, loadSettings: false)
         store.key = "TEST"
         store.pipeline = ProcessingPipeline(
-            store: store, review: MinutesEngine.stubReview, recognize: { _, _, _, _ in [] })
+            store: store, review: MinutesEngine.stubReview, recognize: { _, _, _, _, _ in [] })
         await store.recover()
         try await store.waitUntilIdle()
         await store.waitForBackgroundWork()
@@ -98,7 +98,7 @@ extension ProcessingTests {
         let store = Store(root: root.appendingPathComponent("save"), loadSettings: false)
         store.key = "TEST"
         store.pipeline = ProcessingPipeline(
-            store: store, review: MinutesEngine.stubReview, recognize: { _, _, _, _ in [] },
+            store: store, review: MinutesEngine.stubReview, recognize: { _, _, _, _, _ in [] },
             summarize: MinutesEngine.stubSummary)
         var live = Meeting(title: "live")
         live.settings = SessionSettings()

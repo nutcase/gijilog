@@ -450,8 +450,11 @@ func meetingFolderName(date: Date, title: String) -> String {
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: "en_US_POSIX")
     formatter.dateFormat = "yyyy-MM-dd HH.mm"
-    let untitled = title.range(of: #"^会議 \d{4}/\d{1,2}/\d{1,2} \d{1,2}:\d{2}$"#, options: .regularExpression) != nil
-    return formatter.string(from: date) + " " + fileSafeName(untitled ? "会議" : title, fallback: "会議")
+    return formatter.string(from: date) + " " + fileSafeName(isUntitledMeeting(title) ? "会議" : title, fallback: "会議")
+}
+/// Whether the title is the one given to a meeting started without a name ("会議 2026/10/05 13:00").
+func isUntitledMeeting(_ title: String) -> Bool {
+    title.range(of: #"^会議 \d{4}/\d{1,2}/\d{1,2} \d{1,2}:\d{2}$"#, options: .regularExpression) != nil
 }
 
 // Encoding and disk access stay off the UI actor. Every write is an atomic checkpoint.

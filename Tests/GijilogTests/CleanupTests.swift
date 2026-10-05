@@ -9,7 +9,7 @@ extension ProcessingTests {
         store.removesWorkingAudio = removesWorkingAudio
         store.pipeline = ProcessingPipeline(
             store: store, review: MinutesEngine.stubReview,
-            recognize: { _, offset, source, _ in
+            recognize: { _, offset, source, _, _ in
                 [Segment(time: offset, source: source, text: "\(Int(offset))秒の資料を確認します")]
             },
             summarize: MinutesEngine.stubSummary)
@@ -34,7 +34,8 @@ extension ProcessingTests {
         await store.waitForBackgroundWork()
         let again = try Self.require(store.meetings.first, "reprocessed meeting")
         try Self.check(
-            again.segments.count == 2 && again.jobs.allSatisfy { $0.filename.hasPrefix("chunks/import-") }
+            again.segments.count == again.jobs.count && again.jobs.count > 1
+                && again.jobs.allSatisfy { $0.filename.hasPrefix("chunks/import-") }
                 && again.status == "完了"
                 && FileManager.default.fileExists(
                     atPath: folder.appendingPathComponent("meeting.before-reprocess.json").path),

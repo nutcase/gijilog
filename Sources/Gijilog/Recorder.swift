@@ -3,7 +3,8 @@ import CoreAudio
 import CoreMedia
 import Foundation
 
-// Records the Mac's audio output and the microphone as two tracks on one clock, cut into ~12-second chunks.
+// Records the Mac's audio output and the microphone as two tracks on one clock, cut into 10–25-second chunks at
+// pauses in speech (see ChunkCutter).
 // Mac audio comes from a Core Audio process tap, which needs only the "System Audio Recording Only" permission
 // (not screen recording); the microphone comes from AVCaptureSession. Both are converted to 16 kHz mono.
 final class Recorder: NSObject, @unchecked Sendable {
@@ -22,7 +23,7 @@ final class Recorder: NSObject, @unchecked Sendable {
     private var chunkFiles: [Track: AVAudioFile] = [:]
     private var chunkURLs: [Track: URL] = [:]
     private var chunkStarts: [Track: Double] = [:]
-    private var chunkFrames: [Track: Int64] = [:]
+    private var cutters: [Track: ChunkCutter] = [:]
     private var origin: Double?
     private var expectedNextTime: [Track: Double] = [:]
     var onChunk: (@Sendable (URL, Double, String) async -> Void)?
@@ -97,7 +98,7 @@ final class Recorder: NSObject, @unchecked Sendable {
             self.lastMicrophoneInput = Date()
             self.notifiedMissingInput = false
             self.chunkStarts.removeAll()
-            self.chunkFrames.removeAll()
+            self.cutters.removeAll()
             self.chunkURLs.removeAll()
             self.expectedNextTime.removeAll()
             acceptingSamples = true
@@ -127,7 +128,7 @@ final class Recorder: NSObject, @unchecked Sendable {
                 self.chunkFiles.removeAll()
                 self.chunkURLs.removeAll()
                 self.chunkStarts.removeAll()
-                self.chunkFrames.removeAll()
+                self.cutters.removeAll()
                 self.folder = nil
                 self.origin = nil
                 self.manifest = RecordingManifest()
@@ -146,7 +147,6 @@ final class Recorder: NSObject, @unchecked Sendable {
         chunkFiles.removeValue(forKey: type)  // Close the file before handing it to recognition.
         chunkURLs.removeValue(forKey: type)
         chunkStarts.removeValue(forKey: type)
-        chunkFrames.removeValue(forKey: type)
         if let callback = onChunk {
             let source = type == .audio ? "Mac音声" : "マイク"
             let id = UUID()
@@ -227,7 +227,7 @@ final class Recorder: NSObject, @unchecked Sendable {
                 let offset = max(0, timestamp - (origin ?? timestamp))
                 chunkURLs[type] = url
                 chunkStarts[type] = offset
-                chunkFrames[type] = 0
+                cutters[type, default: ChunkCutter()].begin()
                 let source = type == .audio ? "Mac音声" : "マイク"
                 let track = type == .audio ? "system.caf" : "microphone.caf"
                 if manifest.trackStarts[track] == nil { manifest.trackStarts[track] = offset }
@@ -236,8 +236,10 @@ final class Recorder: NSObject, @unchecked Sendable {
                     to: folder.appendingPathComponent("recording.json"), options: .atomic)
             }
             try chunkFiles[type]?.write(from: buffer)
-            chunkFrames[type, default: 0] += Int64(buffer.frameLength)
-            if Double(chunkFrames[type, default: 0]) / format.sampleRate >= 12 { finishChunk(type) }
+            let seconds = Double(buffer.frameLength) / format.sampleRate
+            if cutters[type, default: ChunkCutter()].add(level: ChunkCutter.level(buffer) ?? 1, seconds: seconds) {
+                finishChunk(type)
+            }
             if let samples = buffer.floatChannelData?[0],
                 Date().timeIntervalSince(lastMeterUpdate[type] ?? .distantPast) >= 0.1
             {
@@ -249,6 +251,44 @@ final class Recorder: NSObject, @unchecked Sendable {
         } catch { onError?(error.localizedDescription) }
     }
 }
+// Where a chunk ends: at the first pause in speech once the chunk is long enough, so no word is split between two
+// transcription requests, or at the length limit when nobody pauses.
+struct ChunkCutter {
+    static let minimum = 10.0  // Seconds before a pause may end the chunk.
+    static let maximum = 25.0  // Seconds after which the chunk ends even mid-speech.
+    static let pause = 0.3  // Seconds of quiet that count as a pause.
+    private(set) var length = 0.0
+    private var quiet = 0.0
+    // The background level. It drops to any quieter moment at once and rises by 5% a second, so it follows a room
+    // that gets noisier without ever taking speech for background.
+    private var floor: Float?
+    /// Starts a new chunk; the background level carries over.
+    mutating func begin() {
+        length = 0
+        quiet = 0
+    }
+    /// Adds `seconds` of audio at RMS `level`, and tells whether the chunk should end after it.
+    mutating func add(level: Float, seconds: Double) -> Bool {
+        length += seconds
+        let background = min(level, max(floor ?? level, 0.0005) * Float(1 + 0.05 * seconds))
+        floor = background
+        quiet = level < max(0.003, background * 3) ? quiet + seconds : 0
+        return length >= Self.maximum || (length >= Self.minimum && quiet >= Self.pause)
+    }
+    /// The RMS level of a float buffer's first channel.
+    static func level(_ buffer: AVAudioPCMBuffer) -> Float? {
+        guard let samples = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return nil }
+        let stride = buffer.format.isInterleaved ? Int(buffer.format.channelCount) : 1
+        let count = Int(buffer.frameLength)
+        var sum: Float = 0
+        for i in 0..<count {
+            let value = samples[i * stride]
+            sum += value * value
+        }
+        return (sum / Float(count)).squareRoot()
+    }
+}
+
 // A converted buffer the tap allocated for this call and never touches again, moving to the recorder's queue.
 private struct Handoff: @unchecked Sendable { let buffer: AVAudioPCMBuffer }
 // One recording's capture: the Mac audio tap and the microphone, started and stopped together.

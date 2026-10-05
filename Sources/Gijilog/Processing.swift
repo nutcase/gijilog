@@ -91,32 +91,66 @@ enum Processor {
         }
         return result
     }
-    static func recognizeChunk(_ url: URL, offset: Double, source: String, key: String) async throws -> [Segment] {
+    static func recognizeChunk(
+        _ url: URL, offset: Double, source: String, key: String, hints: TranscriptionHints = TranscriptionHints()
+    ) async throws -> [Segment] {
+        var hints = hints
         let temporary = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: temporary) }
         var result: [Segment] = []
         for (wav, relative) in try chunks(url, directory: temporary) {
-            // Skip silent tracks to avoid hallucinated transcription and unnecessary API calls.
+            // Audio without a voice is not sent: the model invents speech for room noise, in any language.
             let file = try AVAudioFile(forReading: wav)
             guard
                 let buffer = AVAudioPCMBuffer(
                     pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length))
             else { continue }
             try file.read(into: buffer)
-            var peak: Float = 0
-            if let values = buffer.floatChannelData {
-                for channel in 0..<Int(buffer.format.channelCount) {
-                    for frame in 0..<Int(buffer.frameLength) { peak = max(peak, abs(values[channel][frame])) }
-                }
-            }
-            guard peak > 0.002 else { continue }
-            let text = try await cloudTranscribe(wav, key: key)
-            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard voicedSeconds(buffer) >= minimumVoice else { continue }
+            let text = hints.removingEcho(from: try await cloudTranscribe(wav, key: key, prompt: hints.prompt))
+            // Japanese is requested, so text without any Japanese is the model inventing speech for noise
+            // ("Hallo zusammen.", "grazie mille."), or naming none: a lone "OK" is lost with it.
+            if containsJapanese(text) {
                 result.append(Segment(time: offset + relative, source: source, text: text))
+                hints.preceding = TranscriptionHints.tail(hints.preceding + text)
             }
         }
         return result
+    }
+    // A chunk is sent only with this many seconds of voice. On a 41-minute meeting this skipped 135 of the
+    // microphone track's 136 lines in other languages, and none of the Mac audio track's 202 lines of speech.
+    static let minimumVoice = 0.4
+    static let voiceLevel: Float = 0.004  // RMS a quiet voice reaches on a built-in microphone.
+    /// Seconds that sound like a voice: 50 ms windows louder than a quiet voice and well above the chunk's own
+    /// background (its quietest tenth, capped so steady sound cannot hide a voice). Clicks are too short to add up.
+    static func voicedSeconds(_ buffer: AVAudioPCMBuffer) -> Double {
+        guard let samples = buffer.floatChannelData?[0] else { return 0 }
+        let rate = buffer.format.sampleRate
+        let window = max(1, Int(rate / 20))
+        let stride = buffer.format.isInterleaved ? Int(buffer.format.channelCount) : 1
+        var levels: [Float] = []
+        var start = 0
+        while start + window <= Int(buffer.frameLength) {
+            var sum: Float = 0
+            for i in start..<(start + window) {
+                let value = samples[i * stride]
+                sum += value * value
+            }
+            levels.append((sum / Float(window)).squareRoot())
+            start += window
+        }
+        guard !levels.isEmpty else { return 0 }
+        let background = levels.sorted()[levels.count / 10]
+        let threshold = max(voiceLevel, min(background * 4, 0.02))
+        return Double(levels.filter { $0 > threshold }.count) * Double(window) / rate
+    }
+    static func containsJapanese(_ text: String) -> Bool {
+        text.unicodeScalars.contains {
+            (0x3040...0x30FF).contains($0.value) || (0x31F0...0x31FF).contains($0.value)
+                || (0x3400...0x4DBF).contains($0.value) || (0x4E00...0x9FFF).contains($0.value)
+                || (0xFF66...0xFF9F).contains($0.value)
+        }
     }
     static func recordingInputs(folder: URL, allowMissing: Bool = false) throws -> [RecordedInput] {
         let manifestURL = folder.appendingPathComponent("recording.json")
@@ -195,11 +229,13 @@ enum Processor {
         formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
         return formatter.date(from: value).map { max(0, $0.timeIntervalSinceNow) }
     }
-    static func cloudTranscribe(_ url: URL, key: String) async throws -> String {
+    static func cloudTranscribe(_ url: URL, key: String, prompt: String? = nil) async throws -> String {
         let boundary = UUID().uuidString
         var body = Data()
         func append(_ text: String) { body.append(Data(text.utf8)) }
-        for (name, value) in [("model", "gpt-4o-transcribe"), ("language", "ja")] {
+        var fields = [("model", "gpt-4o-transcribe"), ("language", "ja")]
+        if let prompt, !prompt.isEmpty { fields.append(("prompt", prompt)) }
+        for (name, value) in fields {
             append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n")
         }
         append(
@@ -223,6 +259,81 @@ struct CloudFailure: LocalizedError {
     var retryAfter: TimeInterval?
     var errorDescription: String? {
         "クラウドAPIエラー (\(code))\(message.map { ": " + $0 } ?? "")。APIキー・利用上限・モデル設定を確認してください。"
+    }
+}
+// What the transcription model is told besides the audio: how this meeting spells its names and terms, and the
+// words just before the chunk, so a sentence carries on across chunks. The prompt is not speech, so text that only
+// repeats it is removed from the result.
+struct TranscriptionHints: Sendable, Equatable {
+    var title = ""
+    var agenda: [String] = []
+    var terms: [String] = []
+    var preceding = ""
+    static let precedingLength = 200
+    init(title: String = "", agenda: [String] = [], terms: [String] = [], preceding: String = "") {
+        self.title = title
+        self.agenda = agenda
+        self.terms = terms
+        self.preceding = Self.tail(preceding)
+    }
+    /// Hints for the chunk of a meeting that starts at `offset`: the title unless it is the automatic one, the
+    /// agenda, the user's terms, and the end of the transcript so far.
+    init(meeting: Meeting, before offset: Double, vocabulary: String) {
+        self.init(
+            title: isUntitledMeeting(meeting.title) ? "" : meeting.title, agenda: meeting.agenda.map(\.title),
+            terms: Self.terms(vocabulary),
+            preceding: meeting.segments.filter { $0.time < offset }.suffix(8).map(\.text).joined())
+    }
+    /// The terms in the user's vocabulary, one per line or separated by commas.
+    static func terms(_ text: String) -> [String] {
+        var seen: Set<String> = []
+        return text.components(separatedBy: CharacterSet(charactersIn: "\n,、，"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+    static func tail(_ text: String) -> String {
+        String(text.trimmingCharacters(in: .whitespacesAndNewlines).suffix(precedingLength))
+    }
+    /// Lists items up to a length, so a long vocabulary cannot crowd out the rest of the prompt.
+    private static func list(_ items: [String], limit: Int) -> String {
+        var result = ""
+        for item in items {
+            let next = result.isEmpty ? item : result + "、" + item
+            if next.count > limit { break }
+            result = next
+        }
+        return result
+    }
+    var prompt: String {
+        var lines = ["日本語の会議の文字起こしです。話したとおりに書き起こしてください。"]
+        if !title.isEmpty || !agenda.isEmpty || !terms.isEmpty {
+            lines[0] += "固有名詞・製品名・略語は、次の表記に合わせてください。"
+        }
+        if !title.isEmpty { lines.append("会議名: " + String(title.prefix(100))) }
+        if !agenda.isEmpty { lines.append("議題: " + Self.list(agenda, limit: 300)) }
+        if !terms.isEmpty { lines.append("用語: " + Self.list(terms, limit: 600)) }
+        if !preceding.isEmpty { lines.append("直前の発言: " + preceding) }
+        return lines.joined(separator: "\n")
+    }
+    /// The transcript without text that only repeats the prompt. Given a prompt, the model sometimes returns part of
+    /// it for audio with little speech, or repeats the end of the preceding speech before the new words.
+    func removingEcho(from text: String) -> String {
+        let prompt = self.prompt
+        let lines = Set(prompt.components(separatedBy: "\n"))
+        var result = text.components(separatedBy: .newlines)
+            .filter { !lines.contains($0.trimmingCharacters(in: .whitespaces)) }
+            .joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        // The end of the preceding speech repeated before new words.
+        let longest = min(preceding.count, result.count - 1)
+        if longest >= 8, let overlap = (8...longest).reversed().first(where: { preceding.hasSuffix(result.prefix($0)) })
+        {
+            result = String(result.dropFirst(overlap)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        // Nothing but a piece of the prompt. From the preceding speech only a whole sentence counts: stock phrases
+        // such as "ありがとうございます。" (11 characters) really are said again, by the next person.
+        let names = TranscriptionHints(title: title, agenda: agenda, terms: terms).prompt
+        if result.count >= 8 && names.contains(result) || result.count >= 12 && preceding.contains(result) { return "" }
+        return result
     }
 }
 // One file to listen back to: the Mac audio and microphone tracks mixed on the common recording clock.
@@ -269,11 +380,10 @@ enum AudioMixdown {
         _ = try FileManager.default.replaceItemAt(output, withItemAt: temporary)
     }
 }
-// Minutes from a recording made elsewhere: any audio or video file is decoded to 16 kHz mono and cut into
-// ~30-second chunks, so it goes through the same transcription queue, retries and recovery as a live meeting.
+// Minutes from a recording made elsewhere: any audio or video file is decoded to 16 kHz mono and cut at pauses like
+// a live recording, so it goes through the same transcription queue, retries and recovery as a live meeting.
 enum AudioImport {
     static let source = "録音ファイル"
-    static let chunkSeconds = 30.0
     static let sampleRate = 16_000.0
     static func split(_ input: URL, into folder: URL) async throws -> [RecordedChunk] {
         let asset = AVURLAsset(url: input)
@@ -297,10 +407,10 @@ enum AudioImport {
         guard reader.startReading() else { throw reader.error ?? AppError.message("録音ファイルを読み込めませんでした。") }
         let chunksFolder = folder.appendingPathComponent("chunks")
         try FileManager.default.createDirectory(at: chunksFolder, withIntermediateDirectories: true)
-        let framesPerChunk = Int(chunkSeconds * sampleRate)
+        let slice = Int(sampleRate / 20)  // 50 ms at a time, so a chunk can end inside a short pause.
+        var cutter = ChunkCutter()
         var chunks: [RecordedChunk] = []
         var file: AVAudioFile?
-        var inChunk = 0
         var total = 0
         while let sample = output.copyNextSampleBuffer() {
             let count = CMSampleBufferGetNumSamples(sample)
@@ -314,9 +424,9 @@ enum AudioImport {
                         settings: Recorder.compactSettings(format),
                         commonFormat: .pcmFormatFloat32, interleaved: false)
                     chunks.append(RecordedChunk(filename: name, offset: Double(total) / sampleRate, source: source))
-                    inChunk = 0
+                    cutter.begin()
                 }
-                let take = min(count - start, framesPerChunk - inChunk)
+                let take = min(count - start, slice)
                 guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(take)),
                     let channel = buffer.floatChannelData?[0],
                     CMBlockBufferCopyDataBytes(
@@ -326,9 +436,10 @@ enum AudioImport {
                 buffer.frameLength = AVAudioFrameCount(take)
                 try file?.write(from: buffer)
                 start += take
-                inChunk += take
                 total += take
-                if inChunk >= framesPerChunk { file = nil }  // Closes the chunk.
+                if cutter.add(level: ChunkCutter.level(buffer) ?? 1, seconds: Double(take) / sampleRate) {
+                    file = nil  // Closes the chunk.
+                }
             }
         }
         file = nil

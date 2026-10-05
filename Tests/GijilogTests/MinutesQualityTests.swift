@@ -190,7 +190,7 @@ extension ProcessingTests {
             review: { state, segments, _, _ in
                 reviewed += MinutesEngine.reviewBatch(segments, state: state).map(\.id)
                 return state
-            }, recognize: { _, _, _, _ in throw AppError.message("must not transcribe") })
+            }, recognize: { _, _, _, _, _ in throw AppError.message("must not transcribe") })
         await restarted.recover()
         try await restarted.waitUntilIdle()
         await restarted.waitForBackgroundWork()
@@ -259,7 +259,7 @@ extension ProcessingTests {
                 if attempts == 1 { throw AppError.message("synthetic failure") }
                 return state
             },
-            recognize: { _, _, _, _ in throw AppError.message("audio must not be sent") },
+            recognize: { _, _, _, _, _ in throw AppError.message("audio must not be sent") },
             summarize: MinutesEngine.stubSummary)
         await store.refineMinutes(meeting.id)
         try await store.waitUntilIdle()

@@ -1288,6 +1288,7 @@ struct SettingsView: View {
     var body: some View {
         TabView(selection: $store.settingsTab) {
             GeneralSettings().tabItem { Label("一般", systemImage: "gearshape") }.tag("一般")
+            TranscriptionSettings().tabItem { Label("文字起こし", systemImage: "text.quote") }.tag("文字起こし")
             TagSettings().tabItem { Label("タグ", systemImage: "tag") }.tag("タグ")
             MCPSettings().tabItem { Label("AI 連携", systemImage: "sparkles") }.tag("AI 連携")
         }
@@ -1384,6 +1385,36 @@ struct GeneralSettings: View {
             draft.load(from: store)
             store.refreshStorageUsage()
         }
+    }
+}
+
+// The vocabulary the transcription should follow. Saved as it is typed, like the other tabs' settings.
+struct TranscriptionSettings: View {
+    @EnvironmentObject var store: Store
+    var body: some View {
+        Form {
+            Section {
+                TextEditor(text: $store.vocabulary)
+                    .font(.body)
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 260)
+                    .overlay(alignment: .topLeading) {
+                        if store.vocabulary.isEmpty {
+                            Text("例：\nギジログ\n山田 花子\nOKR")
+                                .foregroundStyle(.tertiary).padding(.leading, 5).allowsHitTesting(false)
+                        }
+                    }
+            } header: {
+                Text("用語集")
+            } footer: {
+                Text(
+                    "会議によく出る人名・社名・製品名・略語を、1行に1つ（または読点で区切って）入力してください。文字起こしでこの表記が使われやすくなります。会議名とアジェンダの議題、直前の発言も、文字起こしのヒントとして一緒に送ります。"
+                )
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 560, height: 520)
     }
 }
 

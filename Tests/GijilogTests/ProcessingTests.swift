@@ -45,7 +45,12 @@ import Foundation
         try await tests.testSaveLocationMovesWithItsMeetings()
         try tests.testLegacyMeetingsMoveToReadableFolders()
         try await tests.testImportCutsAnyRecordingIntoChunks()
+        try await tests.testImportCutsAtPauses()
         try await tests.testImportedRecordingBecomesMinutes()
+        try tests.testChunkCutterEndsAtPauses()
+        try tests.testOnlyVoiceIsSent()
+        try tests.testTranscriptionHints()
+        try await tests.testTranscriptionRequestCarriesHints()
         try await tests.testTranscriptionFailureIsShownAndRetriedWhileRecording()
         try await tests.testEarlierSettingsAndFoldersCarryOver()
         try await tests.testInterruptedRecordingGetsAudioOnFirstRecovery()
@@ -77,10 +82,11 @@ import Foundation
         try tests.testMCPKeepsWhatTheUserWithholds()
         try await tests.testMCPAnswersOverItsSocket()
         print(
-            "PASS: 63 checks (recording, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, audio mixdown, file import, upgrade and recovery, storage cleanup, minutes quality and final review, tags, search, agenda, MCP)"
+            "PASS: 68 checks (recording, chunking at pauses, voice gate, transcription hints, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, audio mixdown, file import, upgrade and recovery, storage cleanup, minutes quality and final review, tags, search, agenda, MCP)"
         )
     }
-    func fixture(seconds: Double, amplitude: Float) throws -> (URL, URL) {
+    /// A steady tone, silent in the given ranges of seconds.
+    func fixture(seconds: Double, amplitude: Float, silent: [ClosedRange<Double>] = []) throws -> (URL, URL) {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let url = folder.appendingPathComponent("input.caf")
@@ -92,7 +98,8 @@ import Foundation
         buffer.frameLength = buffer.frameCapacity
         let samples = try Self.require(buffer.floatChannelData, "fixture audio samples")[0]
         for frame in 0..<Int(buffer.frameLength) {
-            samples[frame] = amplitude * sin(Float(frame) * 0.17)
+            let time = Double(frame) / 16000
+            samples[frame] = silent.contains { $0.contains(time) } ? 0 : amplitude * sin(Float(frame) * 0.17)
         }
         do {
             let file = try AVAudioFile(forWriting: url, settings: format.settings)
@@ -129,12 +136,14 @@ import Foundation
         try recorder.prepareFiles(in: folder)
         let format = try Self.require(
             AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1), "recording audio format")
-        for second in 0..<13 {
+        // A silent second, then 26 seconds of speech without a pause: one chunk ends at the limit, and the tail
+        // is flushed on stop.
+        for second in 0..<27 {
             let pcm = try Self.require(
                 AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 16000), "recording audio buffer")
             pcm.frameLength = 16000
             let samples = try Self.require(pcm.floatChannelData, "recording audio samples")[0]
-            for i in 0..<16000 { samples[i] = 0.25 }
+            for i in 0..<16000 { samples[i] = second == 0 ? 0 : 0.25 }
             var timing = CMSampleTimingInfo(
                 duration: CMTime(value: 1, timescale: 16000),
                 presentationTimeStamp: CMTime(value: Int64(second), timescale: 1), decodeTimeStamp: .invalid)
@@ -158,9 +167,9 @@ import Foundation
         try Self.check(chunks.count == 4, "two full chunks and two tails")
         for source in ["Mac音声", "マイク"] {
             let trackChunks = chunks.filter { $0.2 == source }.sorted { $0.1 < $1.1 }
-            try Self.check(trackChunks.map { $0.1 } == [0, 12], "common clock and tail offset")
+            try Self.check(trackChunks.map { $0.1 } == [0, 25], "common clock and tail offset")
             let files = try trackChunks.map { try AVAudioFile(forReading: $0.0) }
-            try Self.check(files.reduce(Int64(0)) { $0 + $1.length } == 208000, "no lost final second: " + source)
+            try Self.check(files.reduce(Int64(0)) { $0 + $1.length } == 432000, "no lost final second: " + source)
             try Self.check(
                 files.allSatisfy { $0.fileFormat.commonFormat == .pcmFormatInt16 }, "chunks are 16-bit PCM: " + source)
         }
@@ -354,14 +363,22 @@ import Foundation
 final class MockCloudProtocol: URLProtocol {
     private static let lock = NSLock()
     private static var calls = 0
+    private static var body = Data()
     static var count: Int {
         lock.lock()
         defer { lock.unlock() }
         return calls
     }
+    /// The last transcription request's multipart body.
+    static var lastBody: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return String(decoding: body, as: UTF8.self)
+    }
     static func reset() {
         lock.lock()
         calls = 0
+        body = Data()
         lock.unlock()
     }
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -382,6 +399,20 @@ final class MockCloudProtocol: URLProtocol {
             return
         }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        var body = request.httpBody ?? Data()
+        if body.isEmpty, let stream = request.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var buffer = [UInt8](repeating: 0, count: 65_536)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                if count <= 0 { break }
+                body.append(contentsOf: buffer.prefix(count))
+            }
+        }
+        Self.lock.lock()
+        Self.body = body
+        Self.lock.unlock()
         client?.urlProtocol(self, didLoad: Data("{\"text\":\"確認します\"}".utf8))
         client?.urlProtocolDidFinishLoading(self)
     }

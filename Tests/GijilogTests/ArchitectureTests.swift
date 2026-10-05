@@ -71,7 +71,7 @@ extension ProcessingTests {
         try FileManager.default.copyItem(at: audio, to: store.folder(meeting.id).appendingPathComponent("system.caf"))
         store.pipeline = ProcessingPipeline(
             store: store, review: MinutesEngine.stubReview,
-            recognize: { _, offset, source, _ in
+            recognize: { _, offset, source, _, _ in
                 [Segment(time: offset, source: source, text: "新しい内容を確認します")]
             }, summarize: MinutesEngine.stubSummary)
         await store.process(rebuild: true)
@@ -101,7 +101,7 @@ extension ProcessingTests {
         store.meetings = [meeting]
         store.pipeline = ProcessingPipeline(
             store: store, review: MinutesEngine.stubReview,
-            recognize: { url, _, _, _ in
+            recognize: { url, _, _, _, _ in
                 _ = await meter.begin(url.lastPathComponent)
                 await meter.end()
                 throw CloudFailure(code: url.lastPathComponent == "auth.caf" ? 401 : 503)
@@ -132,7 +132,7 @@ extension ProcessingTests {
         try JSONEncoder().encode(manifest).write(to: folder.appendingPathComponent("recording.json"))
         restored.pipeline = ProcessingPipeline(
             store: restored, review: MinutesEngine.stubReview,
-            recognize: { url, _, _, _ in
+            recognize: { url, _, _, _, _ in
                 guard FileManager.default.fileExists(atPath: url.path) else { throw CocoaError(.fileReadNoSuchFile) }
                 return []  // Silent fixture, no Apple permission or real API is involved.
             })
@@ -284,7 +284,7 @@ extension ProcessingTests {
         let meter = QueueMeter()
         store.pipeline = ProcessingPipeline(
             store: store, review: MinutesEngine.stubReview,
-            recognize: { url, offset, source, _ in
+            recognize: { url, offset, source, _, _ in
                 _ = await meter.begin(url.lastPathComponent)
                 try await Task.sleep(nanoseconds: 30_000_000)
                 await meter.end()
@@ -338,7 +338,7 @@ extension ProcessingTests {
         let meter = QueueMeter()
         restarted.pipeline = ProcessingPipeline(
             store: restarted, review: MinutesEngine.stubReview,
-            recognize: { url, offset, source, _ in
+            recognize: { url, offset, source, _, _ in
                 let count = await meter.begin(url.lastPathComponent)
                 await meter.end()
                 if count == 1 { throw CloudFailure(code: 503) }
@@ -383,7 +383,7 @@ extension ProcessingTests {
         let gate = Gate()
         store.pipeline = ProcessingPipeline(
             store: store, review: MinutesEngine.stubReview,
-            recognize: { _, offset, source, _ in
+            recognize: { _, offset, source, _, _ in
                 await gate.wait()
                 return [Segment(time: offset, source: source, text: "資料を確認します")]
             },

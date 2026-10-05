@@ -41,6 +41,10 @@ import UniformTypeIdentifiers
     @Published var tagEditor: UUID?  // The meeting whose tag field is open.
     @Published var settingsTab = "一般"
     @Published var liveTab = "議事録"  // The compact window shows the minutes or the transcript.
+    // Names and terms the transcription should spell this way, one per line or separated by commas.
+    @Published var vocabulary = "" {
+        didSet { if persistsSettings { UserDefaults.standard.set(vocabulary, forKey: "vocabulary") } }
+    }
     @Published var compactWindowOpen = false  // Alerts go to the compact window while it is open, else the full one.
     @Published var editingAgendaItem: UUID?  // The agenda topic open for editing; the others show as text.
     @Published var addingAgenda: UUID?  // The meeting whose "add a topic" field is open.
@@ -133,6 +137,7 @@ import UniformTypeIdentifiers
             mcpEnabled = defaults.object(forKey: "mcpEnabled") as? Bool ?? true
             mcpIncludesTranscript = defaults.object(forKey: "mcpIncludesTranscript") as? Bool ?? true
             mcpHiddenTags = defaults.stringArray(forKey: "mcpHiddenTags") ?? []
+            vocabulary = defaults.string(forKey: "vocabulary") ?? ""
             key = KeyStore.read()
             let savedModel = defaults.string(forKey: "summaryModel")
             model = savedModel == "gpt-4.1-mini" ? "gpt-6-sol" : (savedModel ?? model)

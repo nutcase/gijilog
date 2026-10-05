@@ -154,7 +154,7 @@ extension ProcessingTests {
         store.meetings[0].settings = SessionSettings()
         store.pipeline = ProcessingPipeline(
             store: store, review: MinutesEngine.stubReview,
-            recognize: { _, offset, source, _ in [Segment(time: offset, source: source, text: "分担を決めます")] },
+            recognize: { _, offset, source, _, _ in [Segment(time: offset, source: source, text: "分担を決めます")] },
             summarize: { previous, segments, settings, key in
                 sent = previous.agenda
                 var result = try await MinutesEngine.stubSummary(previous, segments, settings, key)
