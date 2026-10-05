@@ -46,6 +46,10 @@ import UniformTypeIdentifiers
     }
     @Published var compactWindowOpen = false  // Alerts go to the compact window while it is open, else the full one.
     @Published var editingTitle: UUID?  // The meeting whose title is open for renaming.
+    @Published var editingNoteItem: String?  // The minutes item open for editing, as "part/id".
+    @Published var addingNoteItem: String?  // The section whose "add an item" field is open, as "meeting/part".
+    @Published var correctionOffer: CorrectionOffer?  // After an edit: fix the same word elsewhere too?
+    @Published var correcting: CorrectionRequest?  // The sheet for fixing a word across a meeting.
     @Published var editingAgendaItem: UUID?  // The agenda topic open for editing; the others show as text.
     @Published var addingAgenda: UUID?  // The meeting whose "add a topic" field is open.
     @Published var searchText = ""
@@ -624,7 +628,14 @@ import UniformTypeIdentifiers
                 meeting.finalReviewPending = true
                 if rebuild || meeting.settings == nil {
                     meeting.settings = settings
-                    meeting.notes = nil
+                    // Items edited by hand, and those deleted, carry over; the AI writes the rest again.
+                    var kept = MinutesState()
+                    for part in NotePart.allCases {
+                        kept.content[part] = meeting.notes?.content[part].filter { $0.edited == true } ?? []
+                    }
+                    kept.dismissed = meeting.notes?.dismissed
+                    let edited = NotePart.allCases.contains { !kept.content[$0].isEmpty } || kept.dismissed != nil
+                    meeting.notes = edited ? kept : nil
                     meeting.segments = []
                     meeting.minutes = ""
                     for i in meeting.jobs.indices { meeting.jobs[i].state = .pending }
@@ -1062,6 +1073,108 @@ extension Store {
     private func pruneTagFilter() {
         let used = Set(meetings.flatMap { $0.tags.map(MeetingTags.key) })
         tagFilter.removeAll { !used.contains(MeetingTags.key($0)) }
+    }
+}
+
+// MARK: - Editing minutes
+
+struct CorrectionOffer: Equatable {
+    var meetingID: UUID
+    var from: String
+    var to: String
+    var count: Int
+}
+struct CorrectionRequest: Identifiable {
+    let id = UUID()
+    var meetingID: UUID
+    var from = ""
+    var to = ""
+}
+extension Store {
+    /// Minutes are edited by hand once the AI is not writing them: not while recording or processing.
+    func canEditMinutes(_ meeting: Meeting) -> Bool {
+        meeting.notes != nil && meeting.capture != .recording && meeting.capture != .planned
+            && meeting.id != activeID && !pipeline.isProcessing(meeting.id)
+    }
+    /// Changes an item and marks it edited by hand, so AI updates leave it alone. When the edit fixed a word that
+    /// appears elsewhere in the meeting, offers to fix it there too.
+    func updateNoteItem(_ meetingID: UUID, part: NotePart, id: String, _ update: (inout NoteItem) -> Void) {
+        var offer: CorrectionOffer?
+        change(meetingID) { m in
+            guard var item = m.notes?.content[part].first(where: { $0.id == id }),
+                let i = m.notes?.content[part].firstIndex(where: { $0.id == id })
+            else { return }
+            let before = item
+            update(&item)
+            guard item != before else { return }
+            item.edited = true
+            m.notes?.content[part][i] = item
+            if let notes = m.notes { m.minutes = MinutesEngine.render(notes, segments: m.segments) }
+            for field in [NoteField.text, .owner, .reason, .nextStep] {
+                guard let old = before[field], let new = item[field],
+                    let term = TermMatcher.changedTerm(from: old, to: new)
+                else { continue }
+                let count = m.occurrences(of: term.from, correctedTo: term.to).count
+                if count > 0 {
+                    offer = CorrectionOffer(meetingID: meetingID, from: term.from, to: term.to, count: count)
+                    break
+                }
+            }
+        }
+        correctionOffer = offer
+    }
+    @discardableResult func addNoteItem(_ meetingID: UUID, part: NotePart, text: String) -> String? {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, meetings.first(where: { $0.id == meetingID })?.notes != nil else { return nil }
+        let id = "user-" + UUID().uuidString
+        change(meetingID) { m in
+            m.notes?.content[part].append(NoteItem(id: id, text: text, evidence: [], edited: true))
+            if let notes = m.notes { m.minutes = MinutesEngine.render(notes, segments: m.segments) }
+        }
+        return id
+    }
+    /// Deletes an item. One the AI wrote is remembered, so a later update does not bring it back.
+    func removeNoteItem(_ meetingID: UUID, part: NotePart, id: String) {
+        change(meetingID) { m in
+            guard let item = m.notes?.content[part].first(where: { $0.id == id }) else { return }
+            m.notes?.content[part].removeAll { $0.id == id }
+            if !id.hasPrefix("user-") {
+                let dismissed = (m.notes?.dismissed ?? []) + [MinutesEngine.normalized(item.text)]
+                m.notes?.dismissed = dismissed
+            }
+            if let notes = m.notes { m.minutes = MinutesEngine.render(notes, segments: m.segments) }
+        }
+        if editingNoteItem == part.rawValue + "/" + id { editingNoteItem = nil }
+    }
+    /// Fixes the chosen occurrences of a misheard word, and optionally adds the right spelling to the vocabulary.
+    func applyCorrection(
+        _ meetingID: UUID, occurrences: [TermOccurrence], to replacement: String, addToVocabulary: Bool
+    ) {
+        let replacement = replacement.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !occurrences.isEmpty, !replacement.isEmpty else { return }
+        change(meetingID) { m in
+            m.correct(occurrences, to: replacement)
+            if let notes = m.notes { m.minutes = MinutesEngine.render(notes, segments: m.segments) }
+        }
+        if addToVocabulary && !TranscriptionHints.terms(vocabulary).contains(replacement) {
+            vocabulary += (vocabulary.isEmpty || vocabulary.hasSuffix("\n") ? "" : "\n") + replacement
+        }
+        correctionOffer = nil
+    }
+    /// The offer's "fix them all": every occurrence, same spelling or same reading.
+    func applyOfferedCorrection() {
+        guard let offer = correctionOffer, let meeting = meetings.first(where: { $0.id == offer.meetingID }) else {
+            return
+        }
+        applyCorrection(
+            offer.meetingID, occurrences: meeting.occurrences(of: offer.from, correctedTo: offer.to), to: offer.to,
+            addToVocabulary: true)
+    }
+    func undoCorrection(_ meetingID: UUID, _ id: UUID) {
+        change(meetingID) { m in
+            m.undo(id)
+            if let notes = m.notes { m.minutes = MinutesEngine.render(notes, segments: m.segments) }
+        }
     }
 }
 

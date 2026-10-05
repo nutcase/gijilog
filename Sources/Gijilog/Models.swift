@@ -44,7 +44,7 @@ struct TranscriptionJob: Codable, Identifiable, Sendable {
     var lastError: String?
     var retryAfter: Date?
 }
-struct NoteItem: Codable, Identifiable, Sendable {
+struct NoteItem: Codable, Identifiable, Sendable, Equatable {
     var id: String
     var text: String
     var owner: String?
@@ -54,6 +54,7 @@ struct NoteItem: Codable, Identifiable, Sendable {
     var reason: String?
     var nextStep: String?
     var changeSummary: String?
+    var edited: Bool?  // Written or changed by hand: AI updates leave it as it is.
 }
 struct NotesDelta: Codable, Sendable {
     var summary: [NoteItem] = []
@@ -76,12 +77,14 @@ struct MinutesState: Codable, Sendable {
     var latestSegmentIDs: Set<String>?  // Utterances behind the most recent update, to mark what just changed.
     var reviewedSegmentIDs: Set<String>?  // Checkpointed progress through the post-meeting review.
     var finalizedAt: Date?
+    var dismissed: [String]?  // Items deleted by hand, normalized, so the AI does not bring them back.
     // Passed through a live update and never saved: the agenda goes in, the topic being discussed comes out.
     var agenda: [AgendaItem] = []
     var topic: AgendaTopic?
+    var corrections: [TermCorrection] = []  // The user's spellings, for the AI to follow.
     enum CodingKeys: String, CodingKey {
         case content, appliedSegmentIDs, updatedAt, extractionOnly, rejectedItems, latestSegmentIDs,
-            reviewedSegmentIDs, finalizedAt
+            reviewedSegmentIDs, finalizedAt, dismissed
     }
 }
 struct Meeting: Codable, Identifiable {
@@ -104,10 +107,11 @@ struct Meeting: Codable, Identifiable {
     var folderName: String?
     var tags: [String] = []  // In the order they were added; see MeetingTags for spelling and duplicates.
     var agenda: [AgendaItem] = []  // Optional; a meeting without one works exactly as before.
+    var corrections: [TermCorrection] = []  // Misheard words fixed across the meeting; see Corrections.swift.
     init(title: String) { self.title = title }
     enum CodingKeys: String, CodingKey {
         case id, title, date, segments, minutes, status, capture, settings, jobs, notes, captureError, hasAudio,
-            revision, folderName, finalReviewPending, tags, agenda
+            revision, folderName, finalReviewPending, tags, agenda, corrections
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -129,6 +133,7 @@ struct Meeting: Codable, Identifiable {
         folderName = try c.decodeIfPresent(String.self, forKey: .folderName)
         tags = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
         agenda = try c.decodeIfPresent([AgendaItem].self, forKey: .agenda) ?? []
+        corrections = try c.decodeIfPresent([TermCorrection].self, forKey: .corrections) ?? []
     }
 }
 

@@ -277,11 +277,11 @@ struct TranscriptionHints: Sendable, Equatable {
         self.preceding = Self.tail(preceding)
     }
     /// Hints for the chunk of a meeting that starts at `offset`: the title unless it is the automatic one, the
-    /// agenda, the user's terms, and the end of the transcript so far.
+    /// agenda, the user's terms with the spellings corrected in this meeting, and the end of the transcript so far.
     init(meeting: Meeting, before offset: Double, vocabulary: String) {
         self.init(
             title: isUntitledMeeting(meeting.title) ? "" : meeting.title, agenda: meeting.agenda.map(\.title),
-            terms: Self.terms(vocabulary),
+            terms: Self.terms(vocabulary + "\n" + meeting.corrections.map(\.to).joined(separator: "\n")),
             preceding: meeting.segments.filter { $0.time < offset }.suffix(8).map(\.text).joined())
     }
     /// The terms in the user's vocabulary, one per line or separated by commas.

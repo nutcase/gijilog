@@ -130,7 +130,13 @@ import Foundation
                     }
                     store.change(meeting.id) { m in
                         m.segments.removeAll { $0.id.hasPrefix(job.id + ":") }
-                        m.segments.append(contentsOf: segments)
+                        // Words the user corrected earlier in the meeting are corrected in new speech too.
+                        m.segments.append(
+                            contentsOf: segments.map { segment in
+                                var segment = segment
+                                segment.text = m.corrected(segment.text)
+                                return segment
+                            })
                         m.segments.sort { $0.time < $1.time }
                         if m.finalReviewPending != nil {
                             m.finalReviewPending = true
@@ -206,6 +212,7 @@ import Foundation
                         // review organizes the minutes by the agenda's topics.
                         var previous = meeting.notes ?? MinutesState()
                         if reviewing || meeting.capture == .recording { previous.agenda = meeting.agenda }
+                        previous.corrections = meeting.corrections
                         for attempt in 1...3 {
                             do {
                                 let operation = reviewing ? self.review : self.summarize
@@ -223,6 +230,7 @@ import Foundation
                         let topic = notes.topic
                         notes.agenda = []
                         notes.topic = nil
+                        notes.corrections = []
                         if let topic { store.followAgenda(id, topic) }
                         // A failed chunk can be retried while a review request is in flight. Never publish that stale review.
                         if reviewing, let current = store.meetings.first(where: { $0.id == id }),
@@ -244,9 +252,9 @@ import Foundation
                         }
                         // Only this task updates notes for this meeting; transcription may append newer utterances meanwhile.
                         store.change(id) { m in
-                            m.notes = notes
+                            m.notes = m.corrected(notes)
                             if reviewing { m.finalReviewPending = notes.finalizedAt == nil }
-                            m.minutes = MinutesEngine.render(notes, segments: m.segments)
+                            m.minutes = MinutesEngine.render(m.notes ?? notes, segments: m.segments)
                         }
                         try await store.checkpoint(id)
                         self.summaryFailures[id] = nil

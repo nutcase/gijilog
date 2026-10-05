@@ -158,6 +158,7 @@ struct ContentView: View {
         } message: {
             Text(store.error ?? "")
         }
+        .sheet(item: $store.correcting) { request in CorrectionSheet(request: request).environmentObject(store) }
         .confirmationDialog(
             "会議をゴミ箱に移動しますか？",
             isPresented: Binding(get: { store.deletion != nil }, set: { if !$0 { store.deletion = nil } }),
@@ -199,6 +200,10 @@ struct ContentView: View {
                     Button("全文を再処理", systemImage: "arrow.triangle.2.circlepath") {
                         Task { await store.process(rebuild: true) }
                     }.disabled(!idle || !store.hasKey || meeting.capture == .planned)
+                    Button("語句をまとめて直す…", systemImage: "character.cursor.ibeam") {
+                        store.correcting = CorrectionRequest(meetingID: meeting.id)
+                    }
+                    .disabled(meeting.capture == .planned || (meeting.segments.isEmpty && meeting.notes == nil))
                     Button("Finderで表示", systemImage: "folder") {
                         NSWorkspace.shared.open(store.folder(meeting.id))
                     }
@@ -783,7 +788,9 @@ struct MinutesDesk: View {
                     Text("会議の時間になったら、この会議を選んだまま「録音を開始」を押してください。議事録はここに書き足されていきます。")
                         .font(.callout).foregroundStyle(.secondary).padding(.top, 24)
                 } else if let notes = meeting.notes {
-                    MinutesSections(notes: notes, segments: meeting.segments)
+                    MinutesSections(
+                        notes: notes, segments: meeting.segments, meetingID: meeting.id,
+                        editable: store.canEditMinutes(meeting))
                 } else if !meeting.minutes.isEmpty {
                     Text(highlighted(meeting.minutes, terms)).font(.system(size: 14)).lineSpacing(5).padding(.top, 24)
                 } else {
@@ -895,6 +902,7 @@ struct MinutesDesk: View {
             if meeting.notes?.extractionOnly == true {
                 Notice(text: "以前のキーワード抽出で作った議事録です。「全文を再処理」でAIの議事録に作り直せます。")
             }
+            if let offer = store.correctionOffer, offer.meetingID == meeting.id { CorrectionOfferView(offer: offer) }
         }
         .padding(.top, 14)
     }
@@ -1042,6 +1050,8 @@ struct Notice: View {
 struct MinutesSections: View {
     let notes: MinutesState
     let segments: [Segment]
+    var meetingID: UUID?
+    var editable = false
     var body: some View {
         let known = Dictionary(segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let latest = notes.latestSegmentIDs ?? []
@@ -1054,22 +1064,33 @@ struct MinutesSections: View {
                 }
             }
             NoteSection(
-                title: "要約", items: content.summary.filter { $0.state != .cancelled }, known: known, latest: latest)
+                title: "要約", items: content.summary.filter { $0.state != .cancelled }, known: known, latest: latest,
+                editing: edit(.summary))
             NoteSection(
                 title: "決定事項と理由", items: content.decisions.filter { $0.state != .cancelled }, known: known,
-                latest: latest)
+                latest: latest, editing: edit(.decisions))
             NoteSection(
-                title: "未決事項・次の確認", items: content.unresolved.filter { $0.state == .open }, known: known, latest: latest
-            )
+                title: "未決事項・次の確認", items: content.unresolved.filter { $0.state == .open }, known: known,
+                latest: latest,
+                editing: edit(.unresolved))
             if !content.history.isEmpty {
                 NoteSection(title: "議論の経緯", items: content.history, known: known, latest: latest)
             }
             NoteSection(
                 title: "アクションアイテム", items: content.actions.filter { $0.state != .cancelled }, known: known,
-                latest: latest, actions: true)
+                latest: latest, actions: true, editing: edit(.actions))
         }
         .padding(.top, 26)
     }
+    private func edit(_ part: NotePart) -> NoteEditing? {
+        guard editable, let meetingID else { return nil }
+        return NoteEditing(meetingID: meetingID, part: part)
+    }
+}
+/// Where an editable section's items live.
+struct NoteEditing {
+    let meetingID: UUID
+    let part: NotePart
 }
 struct NoteSection: View {
     let title: String
@@ -1077,6 +1098,7 @@ struct NoteSection: View {
     let known: [String: Segment]
     let latest: Set<String>
     var actions = false
+    var editing: NoteEditing?
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -1088,10 +1110,354 @@ struct NoteSection: View {
                 Text("まだありません").font(.callout).foregroundStyle(.secondary).padding(.vertical, 8)
             }
             ForEach(items) { item in
-                NoteRow(item: item, known: known, fresh: !Set(item.evidence).isDisjoint(with: latest), action: actions)
+                let fresh = !Set(item.evidence).isDisjoint(with: latest)
+                if let editing {
+                    EditableNoteRow(editing: editing, item: item, known: known, fresh: fresh, action: actions)
+                } else {
+                    NoteRow(item: item, known: known, fresh: fresh, action: actions)
+                }
                 if item.id != items.last?.id { Rectangle().fill(Palette.rule.opacity(0.5)).frame(height: 0.5) }
             }
+            if let editing { AddNoteItem(editing: editing) }
         }
+    }
+}
+@MainActor final class NoteDraft: ObservableObject {
+    @Published var text = ""
+    @Published var owner = ""
+    @Published var due = ""
+    @Published var reason = ""
+    @Published var nextStep = ""
+    @Published var done = false
+    var cancelled = false
+    private var original: NoteItem?  // The item as last loaded; only fields changed from it are saved.
+    func load(_ item: NoteItem) {
+        text = item.text
+        owner = item.owner ?? ""
+        due = item.due ?? ""
+        reason = item.reason ?? ""
+        nextStep = item.nextStep ?? ""
+        done = item.state == .done
+        original = item
+        cancelled = false
+    }
+    /// The item changed while open (a word fixed across the meeting): fields not typed in follow it.
+    func follow(_ item: NoteItem) {
+        guard let original else { return load(item) }
+        if text == original.text { text = item.text }
+        if owner == original.owner ?? "" { owner = item.owner ?? "" }
+        if due == original.due ?? "" { due = item.due ?? "" }
+        if reason == original.reason ?? "" { reason = item.reason ?? "" }
+        if nextStep == original.nextStep ?? "" { nextStep = item.nextStep ?? "" }
+        if done == (original.state == .done) { done = item.state == .done }
+        self.original = item
+    }
+    /// Applies the fields changed in the editor, leaving the rest of the item as it is now.
+    func apply(to item: inout NoteItem, action: Bool) {
+        func optional(_ value: String) -> String? {
+            let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? nil : value
+        }
+        guard let original else { return }
+        if text != original.text, let text = optional(text) { item.text = text }
+        if reason != original.reason ?? "" { item.reason = optional(reason) }
+        if nextStep != original.nextStep ?? "" { item.nextStep = optional(nextStep) }
+        guard action else { return }
+        if owner != original.owner ?? "" { item.owner = optional(owner) }
+        if due != original.due ?? "" { item.due = optional(due) }
+        if done != (original.state == .done) && item.state != .cancelled { item.state = done ? .done : .open }
+    }
+}
+// Click an item to edit it in place. Leaving it (完了, Return, or opening another item) saves; Esc cancels. An item
+// edited by hand is kept as it is by later AI updates.
+struct EditableNoteRow: View {
+    @EnvironmentObject var store: Store
+    @StateObject private var draft = NoteDraft()
+    @FocusState private var focused: NoteField?
+    let editing: NoteEditing
+    let item: NoteItem
+    let known: [String: Segment]
+    let fresh: Bool
+    let action: Bool
+    private var key: String { editing.part.rawValue + "/" + item.id }
+    var body: some View {
+        let open = store.editingNoteItem == key
+        Group {
+            if open {
+                editor
+            } else {
+                NoteRow(item: item, known: known, fresh: fresh, action: action, edit: { store.editingNoteItem = key })
+                    .contextMenu {
+                        Button("編集", systemImage: "pencil") { store.editingNoteItem = key }
+                        Button("削除", systemImage: "trash", role: .destructive) { remove() }
+                    }
+            }
+        }
+        .onChange(of: open, initial: true) { wasOpen, isOpen in
+            if isOpen {
+                draft.load(item)
+                focused = .text
+            } else if wasOpen && !draft.cancelled {
+                save()
+            }
+        }
+        .onChange(of: item) { if open { draft.follow(item) } }
+    }
+    private var editor: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("内容", text: $draft.text, axis: .vertical)
+                .font(.system(size: 14.5)).focused($focused, equals: .text).onSubmit(finish)
+            if action {
+                HStack(spacing: 10) {
+                    TextField("担当", text: $draft.owner).focused($focused, equals: .owner).onSubmit(finish)
+                    TextField("期限", text: $draft.due).focused($focused, equals: .due).onSubmit(finish)
+                    Toggle("完了", isOn: $draft.done).toggleStyle(.checkbox)
+                }
+                .font(.callout)
+            }
+            TextField("理由（任意）", text: $draft.reason, axis: .vertical)
+                .font(.caption).focused($focused, equals: .reason).onSubmit(finish)
+            if editing.part == .unresolved || !draft.nextStep.isEmpty {
+                TextField("次の確認（任意）", text: $draft.nextStep, axis: .vertical)
+                    .font(.caption).focused($focused, equals: .nextStep).onSubmit(finish)
+            }
+            HStack(spacing: 10) {
+                Button("削除", role: .destructive, action: remove).buttonStyle(.borderless)
+                Spacer()
+                Text("Return で確定・Esc で取り消し").font(.caption).foregroundStyle(.secondary)
+                Button("完了", action: finish)
+            }
+            .controlSize(.small)
+        }
+        .textFieldStyle(.plain)
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Palette.asagi.opacity(0.1)))
+        .onExitCommand {
+            draft.cancelled = true
+            store.editingNoteItem = nil
+        }
+    }
+    private func finish() { store.editingNoteItem = nil }
+    private func save() {
+        let draft = draft
+        let action = action
+        store.updateNoteItem(editing.meetingID, part: editing.part, id: item.id) {
+            draft.apply(to: &$0, action: action)
+        }
+    }
+    private func remove() {
+        draft.cancelled = true
+        store.removeNoteItem(editing.meetingID, part: editing.part, id: item.id)
+    }
+}
+// "＋ 追加" at the end of an editable section opens a field; Return adds the item, an empty Return closes it.
+struct AddNoteItem: View {
+    @EnvironmentObject var store: Store
+    @StateObject private var draft = TextDraft()
+    @FocusState private var focused: Bool
+    let editing: NoteEditing
+    private var key: String { editing.meetingID.uuidString + "/" + editing.part.rawValue }
+    var body: some View {
+        Group {
+            if store.addingNoteItem == key {
+                HStack(spacing: 8) {
+                    Image(systemName: "plus").foregroundStyle(.secondary)
+                    TextField(placeholder, text: $draft.text, axis: .vertical)
+                        .textFieldStyle(.plain).focused($focused)
+                        .onSubmit(add)
+                        .onExitCommand { close() }
+                }
+                .font(.system(size: 14.5))
+                .padding(.vertical, 9).padding(.horizontal, 8)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Palette.asagi.opacity(0.1)))
+                .onAppear { focused = true }
+            } else {
+                Button {
+                    store.addingNoteItem = key
+                } label: {
+                    Label("追加", systemImage: "plus").font(.callout)
+                }
+                .buttonStyle(.borderless).foregroundStyle(.secondary)
+                .padding(.top, 6).padding(.horizontal, 8)
+            }
+        }
+    }
+    private var placeholder: String {
+        switch editing.part {
+        case .summary: "要約を追加（話題：結論や現状）"
+        case .decisions: "決定事項を追加"
+        case .unresolved: "未決事項を追加"
+        case .actions: "アクションを追加"
+        }
+    }
+    private func add() {
+        if store.addNoteItem(editing.meetingID, part: editing.part, text: draft.text) != nil {
+            draft.text = ""
+        } else {
+            close()
+        }
+    }
+    private func close() {
+        draft.text = ""
+        store.addingNoteItem = nil
+    }
+}
+@MainActor final class CorrectionDraft: ObservableObject {
+    @Published var from = ""
+    @Published var to = ""
+    @Published var excluded: Set<String> = []  // Occurrences the user unchecked.
+    @Published var addsToVocabulary = true
+}
+// Fix a misheard word across the meeting: every occurrence, and other spellings that read the same, each with its
+// context and a checkbox. Corrections made earlier can be undone here.
+struct CorrectionSheet: View {
+    @EnvironmentObject var store: Store
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var draft = CorrectionDraft()
+    let request: CorrectionRequest
+    var body: some View {
+        let meeting = store.meetings.first { $0.id == request.meetingID }
+        let found = meeting?.occurrences(of: draft.from, correctedTo: draft.to) ?? []
+        let chosen = found.filter { !draft.excluded.contains($0.id) }
+        let to = draft.to.trimmingCharacters(in: .whitespacesAndNewlines)
+        VStack(alignment: .leading, spacing: 14) {
+            Text("語句をまとめて直す").font(.title3.weight(.semibold))
+            HStack(spacing: 10) {
+                TextField("誤った語（例：森バス）", text: $draft.from)
+                Image(systemName: "arrow.right").foregroundStyle(.secondary)
+                TextField("正しい語（例：モリバス）", text: $draft.to)
+            }
+            .textFieldStyle(.roundedBorder)
+            if let meeting, !draft.from.trimmingCharacters(in: .whitespaces).isEmpty {
+                if found.isEmpty {
+                    Text("この会議に「\(draft.from)」は見つかりません。").font(.callout).foregroundStyle(.secondary)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 12) {
+                            group("同じ表記", found.filter(\.exact), in: meeting)
+                            group("読みが同じ別の表記", found.filter { !$0.exact }, in: meeting)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 280)
+                }
+            }
+            Toggle(isOn: $draft.addsToVocabulary) {
+                Text(to.isEmpty ? "正しい語を用語集にも追加" : "「\(to)」を用語集にも追加（ほかの会議の文字起こしでも使います）")
+            }
+            .toggleStyle(.checkbox)
+            if let corrections = meeting?.corrections, !corrections.isEmpty {
+                Divider()
+                Text("この会議で直した語句").font(.callout.weight(.semibold))
+                ForEach(corrections) { correction in
+                    HStack {
+                        Text(correction.variants.joined(separator: "・") + " → " + correction.to)
+                        Text("\(correction.changes.count)か所").foregroundStyle(.secondary)
+                        Spacer()
+                        Button("取り消す") { store.undoCorrection(request.meetingID, correction.id) }
+                            .controlSize(.small)
+                    }
+                    .font(.callout)
+                }
+            }
+            HStack {
+                Spacer()
+                Button("キャンセル") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(chosen.isEmpty ? "直す" : "\(chosen.count)か所を直す") {
+                    store.applyCorrection(
+                        request.meetingID, occurrences: chosen, to: to, addToVocabulary: draft.addsToVocabulary)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(chosen.isEmpty || to.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 580)
+        .onAppear {
+            draft.from = request.from
+            draft.to = request.to
+        }
+        .onChange(of: draft.from) { draft.excluded = [] }
+    }
+    @ViewBuilder private func group(_ title: String, _ occurrences: [TermOccurrence], in meeting: Meeting) -> some View
+    {
+        if !occurrences.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("\(title)（\(occurrences.count)か所）").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                ForEach(occurrences) { occurrence in
+                    Toggle(isOn: chosen(occurrence)) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(label(occurrence.place, in: meeting)).font(.caption).foregroundStyle(.secondary)
+                            Text(snippet(occurrence, in: meeting)).font(.callout).lineLimit(2)
+                        }
+                    }
+                    .toggleStyle(.checkbox)
+                }
+            }
+        }
+    }
+    private func chosen(_ occurrence: TermOccurrence) -> Binding<Bool> {
+        Binding(
+            get: { !draft.excluded.contains(occurrence.id) },
+            set: { checked in
+                if checked { draft.excluded.remove(occurrence.id) } else { draft.excluded.insert(occurrence.id) }
+            })
+    }
+    private func label(_ place: TextPlace, in meeting: Meeting) -> String {
+        switch place {
+        case .title: return "タイトル"
+        case .agendaTitle, .agendaGoal: return "アジェンダ"
+        case .item(let part, _, let field):
+            let sections: [NotePart: String] = [
+                .summary: "要約", .decisions: "決定事項", .unresolved: "未決事項", .actions: "アクション",
+            ]
+            let fields: [NoteField: String] = [.owner: "の担当", .due: "の期限", .reason: "の理由", .nextStep: "の次の確認"]
+            return (sections[part] ?? "") + (fields[field] ?? "")
+        case .segment(let id):
+            let segment = meeting.segments.first { $0.id == id }
+            return "文字起こし " + (segment.map { clock($0.time) + " " + $0.source } ?? "")
+        }
+    }
+    /// The occurrence with some text around it, the occurrence marked.
+    private func snippet(_ occurrence: TermOccurrence, in meeting: Meeting) -> AttributedString {
+        let text = (meeting.text(at: occurrence.place) ?? "") as NSString
+        let range = occurrence.range
+        guard NSMaxRange(range) <= text.length else { return AttributedString(occurrence.found) }
+        let start = max(0, range.location - 24)
+        let end = min(text.length, NSMaxRange(range) + 24)
+        var result = AttributedString(
+            (start > 0 ? "…" : "") + text.substring(with: NSRange(location: start, length: range.location - start)))
+        var found = AttributedString(occurrence.found)
+        found.backgroundColor = Palette.yamabuki.opacity(0.35)
+        result.append(found)
+        result.append(
+            AttributedString(
+                text.substring(with: NSRange(location: NSMaxRange(range), length: end - NSMaxRange(range)))
+                    + (end < text.length ? "…" : "")))
+        return result
+    }
+}
+// After an edit that fixed a word, offers to fix the same word, or another spelling that reads the same, elsewhere.
+struct CorrectionOfferView: View {
+    @EnvironmentObject var store: Store
+    let offer: CorrectionOffer
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: "character.cursor.ibeam").foregroundStyle(Palette.asagi)
+            Text("「\(offer.from)」を「\(offer.to)」に直しました。ほかの\(offer.count)か所も直しますか？")
+                .font(.callout).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Button("すべて直す") { store.applyOfferedCorrection() }
+            Button("確認して直す") {
+                store.correcting = CorrectionRequest(meetingID: offer.meetingID, from: offer.from, to: offer.to)
+                store.correctionOffer = nil
+            }
+            Button("直さない") { store.correctionOffer = nil }
+        }
+        .controlSize(.small)
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Palette.asagi.opacity(0.12)))
     }
 }
 struct NoteRow: View {
@@ -1101,6 +1467,7 @@ struct NoteRow: View {
     let fresh: Bool
     let action: Bool
     var compact = false
+    var edit: (() -> Void)?  // Set where the minutes can be edited: clicking the text opens the item.
     var body: some View {
         let evidence = item.evidence.compactMap { known[$0] }.sorted { $0.time < $1.time }
         HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -1122,6 +1489,10 @@ struct NoteRow: View {
                 .strikethrough(item.state == .cancelled)
                 .foregroundStyle(item.state == .cancelled ? Color.secondary : Palette.sumi)
                 .fixedSize(horizontal: false, vertical: true)
+                .modifier(Selectable(enabled: edit == nil))  // A selectable text would take the click.
+                .contentShape(Rectangle())
+                .onTapGesture { edit?() }
+                .help(edit == nil ? "" : "クリックして編集")
                 if let reason = item.reason {
                     Text(highlighted("理由：" + reason, terms)).font(.caption).foregroundStyle(.secondary)
                 }
@@ -1137,6 +1508,10 @@ struct NoteRow: View {
                         Tag(label: "期限", value: item.due, open: item.state == .open)
                     } else if item.state != .open {
                         Text(item.state == .done ? "解決済み" : "撤回・統合").foregroundStyle(Palette.asagi)
+                    }
+                    if item.edited == true {
+                        Label("手直し", systemImage: "pencil").labelStyle(.titleAndIcon).foregroundStyle(.secondary)
+                            .help("手で直した項目です。AI の更新では書き換わりません")
                     }
                 }
                 .font(.caption)
@@ -1159,6 +1534,12 @@ struct NoteRow: View {
         .padding(.vertical, compact ? 6 : 9).padding(.horizontal, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 4).fill(fresh ? Palette.asagi.opacity(0.1) : .clear))
+    }
+}
+struct Selectable: ViewModifier {
+    let enabled: Bool
+    func body(content: Content) -> some View {
+        if enabled { content.textSelection(.enabled) } else { content.textSelection(.disabled) }
     }
 }
 // An owner or deadline still missing on an open action is flagged, so the facilitator can ask for it.

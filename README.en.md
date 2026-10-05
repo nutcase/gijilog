@@ -24,6 +24,7 @@ Keep its compact window next to the call to see what has been decided, what is s
 - **Tags**: tag meetings and narrow the list to the ones you need.
 - **Agenda**: prepare the topics before the meeting; during it, the AI follows which topic is being discussed from the transcript and the compact window shows it with its time. The minutes record how long each topic took.
 - **Keyword search**: search titles, tags, minutes, and transcripts at once, with every match marked.
+- **Edit the minutes**: click an item to change it. Fixing a misheard name offers to fix it across the meeting, including other spellings that read the same (森バス and もりばす for モリバス).
 - **Use from AI apps (MCP)**: ask Claude Code, Claude Desktop, or another MCP client "What did we decide in last week's sync?" or "Which actions are still open?" Everything stays on your Mac.
 
 ## Requirements
@@ -73,6 +74,12 @@ You can also start and stop from the menu bar icon (a waveform, or a record mark
 Minutes include decision reasons, the next checks needed for unresolved issues, and the history of changed or withdrawn plans. Action items come last; unsupported owners and deadlines remain unassigned. Expand an item's evidence to read its timestamped source utterances.
 
 Live updates remain on a 30-second timer. After recording and transcription finish, the whole transcript and the live draft go to the model at once, and the minutes are rewritten from start to finish: one summary item per topic, conclusions first, no reported speech or notes about what was not said (meetings over about four hours are rewritten in checkpointed parts). `議事録.md` lists the summary, decisions, action items, open issues, and then the transcript, with times such as 40:24. This uses additional API calls. Failed reviews keep the draft and can resume. The meeting menu also offers “議事録を仕上げる” to refine a saved transcript without transcribing or uploading the audio again. Completed older meetings are not automatically reprocessed. Semantic quality still needs evaluation on real meetings; source-ID and timestamp checks alone do not prove that a conclusion or rationale is correct.
+
+## Editing the minutes
+
+Once a meeting is finished, click an item in the full window to edit it (Return to finish, Esc to cancel); actions also take an owner, a deadline, and a done mark. Right-click an item to delete it, or use ＋ 追加 (Add) under a section. Items edited by hand are marked 手直し and are kept as they are by 議事録を仕上げる and a full reprocess; deleted items are not brought back.
+
+When an edit changes a word that appears elsewhere in the meeting, the app offers to fix the others too, or use この会議 → 語句をまとめて直す… (Fix a word across the meeting). Occurrences are found by spelling and by reading, looked up on the Mac, each shown in context with a checkbox. The fix is remembered for the meeting and applied to speech transcribed later and minutes the AI writes later; the right spelling becomes a transcription hint and, if you choose, joins the vocabulary list. Fixes can be undone from the same sheet.
 
 ## Tags
 
@@ -151,7 +158,7 @@ If your Documents folder syncs with iCloud Drive, recordings are uploaded too.
 ./scripts/build.sh   # build dist/ギジログ.app after the checks pass
 ```
 
-The 68 regression tests cover chunking at pauses and the shared recording clock, the voice gate and transcription hints, incremental minutes and evidence checks, retries and recovery after restart, moving the save location and upgrading from earlier versions, mixing the audio, importing recording files, cleaning up working audio, the final review, tags, search, the agenda, and the MCP server. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.
+The 71 regression tests cover chunking at pauses and the shared recording clock, the voice gate and transcription hints, hand edits and word corrections, incremental minutes and evidence checks, retries and recovery after restart, moving the save location and upgrading from earlier versions, mixing the audio, importing recording files, cleaning up working audio, the final review, tags, search, the agenda, and the MCP server. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.
 
 With only the Command Line Tools installed, SwiftUI's `@State` does not compile, so view state lives in `ObservableObject`s.
 

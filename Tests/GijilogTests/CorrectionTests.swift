@@ -1,0 +1,149 @@
+import Foundation
+
+extension ProcessingTests {
+    func testMisheardWordsAreFoundBySpellingAndReading() throws {
+        try Self.check(
+            TermMatcher.reading("森バス") == "moribasu" && TermMatcher.reading("もりばす") == TermMatcher.reading("モリバス")
+                && TermMatcher.reading("高松") != TermMatcher.reading("高山"),
+            "spellings that read the same match, different names do not")
+        let product = TermMatcher.changedTerm(from: "森バスのコストを整理中", to: "モリバスのコストを整理中")
+        let name = TermMatcher.changedTerm(from: "高山さんに確認する", to: "高松さんに確認する")
+        try Self.check(
+            product?.from == "森バス" && product?.to == "モリバス" && name?.from == "高山" && name?.to == "高松",
+            "an edit is read as whole words: \(String(describing: product)), \(String(describing: name))")
+        try Self.check(
+            TermMatcher.changedTerm(from: "A案にする", to: "A案にする") == nil
+                && TermMatcher.changedTerm(from: "短い", to: "まったく別の、ずっと長い文章へと書き換えてしまった結果") == nil,
+            "no change, or a rewrite, offers no correction")
+
+        var meeting = Meeting(title: "森バス定例")
+        meeting.segments = [
+            Segment(id: "a", time: 0, source: "マイク", text: "森バスの件です"),
+            Segment(id: "b", time: 10, source: "Mac音声", text: "もりばすのコストは"),
+            Segment(id: "c", time: 20, source: "Mac音声", text: "モリバスは好調です"),
+        ]
+        var notes = MinutesState()
+        notes.content.summary = [NoteItem(id: "s1", text: "森バス：整理中", evidence: ["a"])]
+        notes.content.actions = [NoteItem(id: "x1", text: "資料を作る", owner: "森バス担当", evidence: ["b"])]
+        meeting.notes = notes
+        let found = meeting.occurrences(of: "森バス", correctedTo: "モリバス")
+        try Self.check(
+            found.map(\.found) == ["森バス", "森バス", "森バス", "森バス", "もりばす"]
+                && found.filter(\.exact).count == 4 && !found.contains { $0.place == .segment("c") },
+            "the title, minutes, owner and transcript are searched, and the right spelling is left out: \(found)")
+
+        let correction = meeting.correct(found, to: "モリバス")
+        try Self.check(
+            meeting.title == "モリバス定例" && meeting.segments.map(\.text) == ["モリバスの件です", "モリバスのコストは", "モリバスは好調です"]
+                && meeting.notes?.content.summary[0].text == "モリバス：整理中"
+                && meeting.notes?.content.actions[0].owner == "モリバス担当"
+                && correction.variants == ["森バス", "もりばす"] && meeting.corrections.count == 1,
+            "every chosen occurrence is fixed, and the correction is kept")
+        try Self.check(
+            meeting.corrected("もりばすと森バス") == "モリバスとモリバス", "text written later gets the same correction")
+        meeting.undo(correction.id)
+        try Self.check(
+            meeting.title == "森バス定例" && meeting.segments[1].text == "もりばすのコストは" && meeting.corrections.isEmpty,
+            "a correction can be undone")
+        try Self.check(
+            TermMatcher.replacing(["郡"], with: "郡司", in: "郡司さんと郡さん") == "郡司さんと郡司さん",
+            "the right spelling is never corrected inside itself")
+    }
+    func testHandEditsSurviveAIUpdates() throws {
+        let first = Segment(id: "s1", time: 0, source: "マイク", text: "B案にします")
+        let second = Segment(id: "s2", time: 30, source: "マイク", text: "資料は田中さんが金曜までに作ります")
+        var state = MinutesState()
+        state.appliedSegmentIDs = ["s1"]
+        state.content.decisions = [NoteItem(id: "d1", text: "B案にする（手直し）", evidence: ["s1"], edited: true)]
+        state.dismissed = [MinutesEngine.normalized("不要な項目")]
+        let delta = NotesDelta(
+            decisions: [
+                NoteItem(id: "d1", text: "A案にする", evidence: ["s2"]),
+                NoteItem(id: "", text: "不要な項目", evidence: ["s2"]),
+            ],
+            actions: [NoteItem(id: "", text: "資料を作る", owner: "田中", due: "金曜", evidence: ["s2"])])
+        let merged = MinutesEngine.merge(state, delta: delta, batch: [second], segments: [first, second])
+        try Self.check(
+            merged.content.decisions.map(\.text) == ["B案にする（手直し）"] && merged.content.actions.count == 1,
+            "a live update leaves an edited item and a deleted one alone")
+        let rewritten = try MinutesEngine.rewrite(
+            state,
+            delta: NotesDelta(decisions: [
+                NoteItem(id: "", text: "B案にする（手直し）", evidence: ["s1"]),
+                NoteItem(id: "", text: "不要な項目", evidence: ["s1"]),
+                NoteItem(id: "", text: "C案も検討する", evidence: ["s2"]),
+            ]), transcript: [first, second])
+        try Self.check(
+            rewritten.content.decisions.map(\.text) == ["B案にする（手直し）", "C案も検討する"]
+                && rewritten.content.decisions[0].edited == true,
+            "the final review keeps edited items, without duplicates or deleted ones")
+        var spelled = state
+        spelled.corrections = [TermCorrection(variants: ["森バス"], to: "モリバス")]
+        let input = try MinutesEngine.reviewInput(spelled, transcript: [first, second])
+        let payload = try Self.require(
+            JSONSerialization.jsonObject(with: Data(input.utf8)) as? [String: Any], "review payload")
+        let draft = payload["draft"] as? [String: Any]
+        try Self.check(
+            (draft?["decisions"] as? [Any])?.isEmpty == true && payload["fixed"] != nil && payload["dismissed"] != nil
+                && input.contains("モリバス"),
+            "the review is told what was fixed, deleted, and how words are spelled")
+        let hints = TranscriptionHints(
+            meeting: {
+                var meeting = Meeting(title: "定例")
+                meeting.corrections = spelled.corrections
+                return meeting
+            }(), before: 0, vocabulary: "ギジログ")
+        try Self.check(hints.terms == ["ギジログ", "モリバス"], "transcription is told the corrected spellings")
+    }
+    @MainActor func testEditingMinutesByHand() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = Store(root: root, loadSettings: false)
+        var meeting = Meeting(title: "定例")
+        meeting.capture = .stopped
+        meeting.status = "完了"
+        meeting.segments = [
+            Segment(id: "a", time: 0, source: "マイク", text: "森バスの価格を決めます"),
+            Segment(id: "b", time: 10, source: "Mac音声", text: "森バスは来月リリースです"),
+        ]
+        var notes = MinutesState()
+        notes.content.summary = [NoteItem(id: "s1", text: "森バス：価格を決める", evidence: ["a"])]
+        notes.content.decisions = [NoteItem(id: "d1", text: "来月リリースする", evidence: ["b"])]
+        meeting.notes = notes
+        store.meetings = [meeting]
+        try Self.check(store.canEditMinutes(store.meetings[0]), "a finished meeting can be edited")
+
+        store.updateNoteItem(meeting.id, part: .summary, id: "s1") { $0.text = "モリバス：価格を決める" }
+        let offer = try Self.require(store.correctionOffer, "an offer to fix the word elsewhere")
+        try Self.check(
+            store.meetings[0].notes?.content.summary[0].edited == true && offer.from == "森バス" && offer.to == "モリバス"
+                && offer.count == 2,
+            "an edit marks the item and offers to fix the same word in both utterances")
+        store.applyOfferedCorrection()
+        try Self.check(
+            store.meetings[0].segments.allSatisfy { $0.text.hasPrefix("モリバス") } && store.correctionOffer == nil
+                && store.vocabulary == "モリバス",
+            "the word is fixed in the transcript, and the right spelling joins the vocabulary")
+
+        let added = try Self.require(store.addNoteItem(meeting.id, part: .actions, text: " 議事録を共有する "), "added")
+        store.removeNoteItem(meeting.id, part: .decisions, id: "d1")
+        let edited = try Self.require(store.meetings[0].notes, "edited notes")
+        try Self.check(
+            edited.content.actions.map(\.text) == ["議事録を共有する"] && edited.content.actions[0].id == added
+                && edited.content.decisions.isEmpty && edited.dismissed == [MinutesEngine.normalized("来月リリースする")],
+            "items can be added and deleted, and a deleted AI item is remembered")
+
+        let correction = try Self.require(store.meetings[0].corrections.first, "the correction")
+        store.undoCorrection(meeting.id, correction.id)
+        try Self.check(
+            store.meetings[0].segments[0].text == "森バスの価格を決めます" && store.meetings[0].corrections.isEmpty,
+            "the correction is undone")
+        await store.flushCheckpoints()
+        let saved = try store.savedMeeting(meeting.id)
+        try Self.check(
+            saved.notes?.content.summary[0].edited == true && saved.notes?.dismissed?.count == 1,
+            "edits are saved with the meeting")
+        store.change(meeting.id) { $0.capture = .recording }
+        try Self.check(!store.canEditMinutes(store.meetings[0]), "minutes are not edited while the AI writes them")
+    }
+}
