@@ -936,13 +936,24 @@ import UniformTypeIdentifiers
         status = "設定を保存しました"
         return true
     }
+    /// Saves the minutes where the user chooses, with the transcript only when asked for: the minutes are what
+    /// gets shared, and the transcript is long.
     func export(_ meeting: Meeting) {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = Self.exportFilename(meeting.title)
+        let transcript = NSButton(checkboxWithTitle: "文字起こしを含める", target: nil, action: nil)
+        transcript.state = .off
+        transcript.sizeToFit()
+        // The panel shows the accessory at its frame size, so it needs one; a stack view's is zero.
+        let options = NSView(
+            frame: NSRect(x: 0, y: 0, width: transcript.frame.width + 40, height: transcript.frame.height + 20))
+        transcript.setFrameOrigin(NSPoint(x: 20, y: 10))
+        options.addSubview(transcript)
+        panel.accessoryView = options
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            try (MinutesEngine.document(meeting) ?? "# \(meeting.title)\n").write(
-                to: url, atomically: true, encoding: .utf8)
+            let text = MinutesEngine.document(meeting, includesTranscript: transcript.state == .on)
+            try (text ?? "# \(meeting.title)\n").write(to: url, atomically: true, encoding: .utf8)
         } catch {
             self.error = error.localizedDescription
         }

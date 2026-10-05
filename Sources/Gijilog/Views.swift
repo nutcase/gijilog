@@ -185,7 +185,7 @@ struct ContentView: View {
                 } label: {
                     Label("書き出し", systemImage: "square.and.arrow.up")
                 }
-                .help("議事録と文字起こしをMarkdownで書き出す")
+                .help("議事録をMarkdownで書き出す（文字起こしを含めるかは保存するときに選べます）")
                 .disabled(meeting.segments.isEmpty && meeting.notes == nil)
                 Menu {
                     Button("議事録を仕上げる", systemImage: "text.badge.checkmark") {

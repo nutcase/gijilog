@@ -383,7 +383,8 @@ enum MinutesEngine {
     }
     /// The readable minutes: one top-level heading (the meeting title), the minutes, then the transcript.
     /// Nil when the meeting has nothing to show yet.
-    static func document(_ meeting: Meeting) -> String? {
+    /// An export can leave the transcript out; the meeting folder's 議事録.md always has it.
+    static func document(_ meeting: Meeting, includesTranscript: Bool = true) -> String? {
         guard meeting.notes != nil || !meeting.segments.isEmpty || !meeting.minutes.isEmpty else {
             // A prepared meeting's file holds its agenda, ready to share before the meeting.
             guard !meeting.agenda.isEmpty else { return nil }
@@ -392,16 +393,19 @@ enum MinutesEngine {
         }
         let transcript = meeting.segments.map { "[\(clock($0.time)) / \($0.source)] \($0.text)" }.joined(
             separator: "\n\n")
+        let title = meeting.title.components(separatedBy: .newlines).joined(separator: " ")
         if let notes = meeting.notes {
             return render(
-                notes, segments: meeting.segments, title: meeting.title, transcript: transcript, tags: meeting.tags,
-                agenda: meeting.agenda)
+                notes, segments: meeting.segments, title: meeting.title,
+                transcript: includesTranscript ? transcript : nil, tags: meeting.tags, agenda: meeting.agenda)
         }
-        let title = meeting.title.components(separatedBy: .newlines).joined(separator: " ")
         let minutes = meeting.minutes.components(separatedBy: "\n").map { $0.hasPrefix("#") ? "#" + $0 : $0 }
             .joined(separator: "\n")
-        return "# \(title)\n\(tagLine(meeting.tags))\(agendaSection(meeting.agenda))\n## 文字起こし\n\n\(transcript)"
-            + (minutes.isEmpty ? "" : "\n\n\(minutes)")
+        var body: [String] = []
+        if includesTranscript { body.append("## 文字起こし\n\n" + transcript) }
+        if !minutes.isEmpty { body.append(minutes) }
+        return "# \(title)\n\(tagLine(meeting.tags))\(agendaSection(meeting.agenda))"
+            + (body.isEmpty ? "" : "\n" + body.joined(separator: "\n\n"))
     }
     /// The agenda with each topic's planned and actual time, or nothing when the meeting has no agenda.
     static func agendaSection(_ agenda: [AgendaItem]) -> String {

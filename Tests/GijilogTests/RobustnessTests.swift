@@ -129,10 +129,19 @@ extension ProcessingTests {
             $0.hasPrefix("# ")
         }
         try Self.check(headings == ["# 週次定例 10/3"], "export has a single top-level heading: the title")
+        let full = MinutesEngine.document(meeting) ?? ""
+        let shared = MinutesEngine.document(meeting, includesTranscript: false) ?? ""
+        try Self.check(
+            full.contains("## 文字起こし") && !shared.contains("## 文字起こし") && !shared.contains("資料を確認します")
+                && shared.contains("## アクションアイテム"),
+            "an export can leave the transcript out and keep the minutes")
         meeting.notes = nil
         meeting.minutes = "# 議事録\n- 旧形式"
         let legacy = (MinutesEngine.document(meeting) ?? "").components(separatedBy: "\n").filter { $0.hasPrefix("# ") }
         try Self.check(legacy.count == 1, "legacy minutes are demoted below the title")
+        try Self.check(
+            MinutesEngine.document(meeting, includesTranscript: false) == "# 週次定例 10/3\n\n## 議事録\n- 旧形式",
+            "legacy minutes export without their transcript too")
         try Self.check(
             Store.exportFilename("週次: 定例/10月") == "週次- 定例-10月.md" && Store.exportFilename("  ") == "議事録.md",
             "the export filename comes from the title")
