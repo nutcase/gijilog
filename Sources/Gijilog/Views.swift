@@ -180,12 +180,15 @@ struct ContentView: View {
             .disabled(!store.ready || !store.hasKey)
             if let meeting = store.selectedMeeting {
                 let idle = meeting.id != store.activeID && !store.busy && !store.isProcessing(meeting.id)
-                Button {
-                    store.export(meeting)
+                // A click exports the minutes alone; the arrow offers them with the transcript.
+                Menu {
+                    Button("文字起こしも含めて書き出す…") { store.export(meeting, includesTranscript: true) }
                 } label: {
                     Label("書き出し", systemImage: "square.and.arrow.up")
+                } primaryAction: {
+                    store.export(meeting)
                 }
-                .help("議事録をMarkdownで書き出す（文字起こしを含めるかは保存するときに選べます）")
+                .help("議事録をMarkdownで書き出す。文字起こしも含めるときは横の矢印から")
                 .disabled(meeting.segments.isEmpty && meeting.notes == nil)
                 Menu {
                     Button("議事録を仕上げる", systemImage: "text.badge.checkmark") {
