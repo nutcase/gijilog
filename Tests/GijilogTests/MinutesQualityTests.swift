@@ -16,17 +16,18 @@ extension ProcessingTests {
         notes.content.actions = [NoteItem(id: "task", text: "納期を確認する", evidence: ["after"])]
         let markdown = MinutesEngine.render(notes, segments: [before, after], transcript: "原文")
         let decisionSection = markdown.components(separatedBy: "## 決定事項と理由\n")[1]
-            .components(separatedBy: "\n## 未決事項")[0]
+            .components(separatedBy: "\n## ")[0]
         try Self.check(
             !decisionSection.contains("A案") && decisionSection.contains("費用が低いため"),
             "obsolete choices leave the current decisions")
         try Self.check(
             markdown.contains("次の確認: 納期を確認する") && markdown.contains("## 議論の経緯"),
             "reason, next check and history are exported")
-        let lastSection = markdown.components(separatedBy: "\n## ").last ?? ""
+        let actions = markdown.components(separatedBy: "\n## アクションアイテム\n")[1].components(separatedBy: "\n## ")[0]
         try Self.check(
-            lastSection.hasPrefix("アクションアイテム") && lastSection.contains("担当者: 未定 / 期限: 未定"),
-            "actions come last, without invented assignments")
+            actions.contains("担当者: 未定 / 期限: 未定") && !markdown.contains("変更の経緯")
+                && markdown.components(separatedBy: "\n## ").last == "文字起こし\n原文",
+            "actions carry no invented assignments, the change history stays in the app, the transcript comes last")
         let old = Data(#"{"id":"legacy","text":"旧項目","evidence":["before"],"state":"open"}"#.utf8)
         let decoded = try JSONDecoder().decode(NoteItem.self, from: old)
         try Self.check(
@@ -42,14 +43,10 @@ extension ProcessingTests {
         let delta = NotesDelta(
             decisions: [NoteItem(id: "decision", text: "A案", evidence: ["before"])],
             actions: [NoteItem(id: "action", text: "納期を確認", evidence: ["after"])])
-        let result = MinutesEngine.merge(
-            notes, delta: delta, batch: [before], segments: [before, after], reviewing: true)
+        let result = MinutesEngine.merge(notes, delta: delta, batch: [before], segments: [before, after])
         try Self.check(
-            result.content.decisions[0].text == "B案" && result.rejectedItems == 1,
-            "earlier evidence cannot overwrite a later decision")
-        try Self.check(
-            result.content.actions[0].owner == nil && result.content.actions[0].due == nil,
-            "review can explicitly clear withdrawn assignments")
+            result.content.decisions[0].text == "B案" && result.rejectedItems == 2,
+            "earlier evidence cannot overwrite a later decision, and an update needs new speech")
         let latest = Segment(id: "latest", time: 60, source: "マイク", text: "やはりC案に変更します")
         let changed = MinutesEngine.merge(
             notes, delta: NotesDelta(decisions: [NoteItem(id: "decision", text: "C案", evidence: ["latest"])]),
@@ -68,13 +65,17 @@ extension ProcessingTests {
         let speech = Segment(id: "s", time: 0, source: "マイク", text: "納期を確認します")
         var notes = MinutesState()
         notes.appliedSegmentIDs = ["s"]
+        notes.content.summary = [NoteItem(id: "draft", text: "会議中の下書き", evidence: ["s"])]
         let result = try await MinutesEngine.review(notes, segments: [speech], settings: SessionSettings(), key: "TEST")
-        try Self.check(result.content.actions.count == 1, "review rereads already summarized speech")
+        try Self.check(
+            result.content.actions.count == 1 && result.content.summary.isEmpty,
+            "the review rewrites the minutes from the whole transcript, replacing the live draft")
         let body = StructuredMockProtocol.body
         let instructions = body["instructions"] as? String ?? ""
         try Self.check(
-            instructions.contains("巻き戻さない") && instructions.contains("仕上げ"),
-            "review-specific instructions reach the API")
+            instructions.contains("書き直す") && instructions.contains("全項目を返す")
+                && instructions.contains("発言の報告にせず") && (body["input"] as? String ?? "").contains("会議中の下書き"),
+            "review-specific instructions and the draft reach the API")
         let format = (body["text"] as? [String: Any])?["format"] as? [String: Any]
         let schema = format?["schema"] as? [String: Any]
         let properties = schema?["properties"] as? [String: Any]
@@ -82,30 +83,29 @@ extension ProcessingTests {
         let item = decisions?["items"] as? [String: Any]
         let required = item?["required"] as? [String] ?? []
         try Self.check(
-            ["reason", "nextStep", "changeSummary"].allSatisfy(required.contains),
-            "quality fields are in the strict API contract")
+            ["reason", "nextStep", "changeSummary"].allSatisfy(required.contains) && properties?["agendaTopic"] == nil,
+            "quality fields are in the strict API contract, without the live agenda fields")
         StructuredMockProtocol.reset(
             delta: NotesDelta(decisions: [NoteItem(id: "", text: "架空の決定", evidence: ["missing"])]))
-        let reviewed = try await MinutesEngine.review(
-            notes, segments: [speech], settings: SessionSettings(), key: "TEST")
-        try Self.check(
-            reviewed.content.decisions.isEmpty && reviewed.rejectedItems == 1,
-            "an item with invalid evidence is dropped and counted, and the review still moves on")
-
-        // The stall seen on a 41-minute meeting: reviewing early speech, the model restates a decision that later
-        // speech changed, citing only the early utterance. The later conclusion stays and the review moves on.
-        let early = Segment(id: "early", time: 30, source: "マイク", text: "A案にしましょう")
-        let late = Segment(id: "late", time: 1800, source: "マイク", text: "やはりB案に変更します")
-        var decided = MinutesState()
-        decided.appliedSegmentIDs = ["early", "late"]
-        decided.content.decisions = [NoteItem(id: "d1", text: "B案にする", evidence: ["late"])]
+        // Its only item cites speech that does not exist.
+        var emptied = true
+        do {
+            _ = try await MinutesEngine.review(notes, segments: [speech], settings: SessionSettings(), key: "TEST")
+        } catch { emptied = false }
+        try Self.check(!emptied, "a review that keeps nothing fails and leaves the live draft in place")
         StructuredMockProtocol.reset(
-            delta: NotesDelta(decisions: [NoteItem(id: "d1", text: "A案にする", evidence: ["early"])]))
-        let earlyPass = try await MinutesEngine.review(
-            decided, segments: [early, late], settings: SessionSettings(), key: "TEST")
+            delta: NotesDelta(
+                summary: [NoteItem(id: "", text: "納期：確認する", evidence: ["s"])],
+                actions: [
+                    NoteItem(id: "x", text: "納期を確認", owner: "田中", due: "金曜", evidence: ["s"], changeSummary: "経緯")
+                ]))
+        let written = try await MinutesEngine.review(
+            notes, segments: [speech], settings: SessionSettings(), key: "TEST")
+        let action = try Self.require(written.content.actions.first, "rewritten action")
         try Self.check(
-            earlyPass.content.decisions.map(\.text) == ["B案にする"] && earlyPass.rejectedItems == 1,
-            "an early review batch cannot roll back a later decision, and it does not stall the review")
+            written.content.summary.map(\.text) == ["納期：確認する"] && action.owner == nil && action.due == nil
+                && action.changeSummary == nil && action.id.hasPrefix("action-") && written.rejectedItems == nil,
+            "rewritten items are checked like live ones: no unspoken owner or deadline, no change history")
     }
     @MainActor func testFinalReviewDiscardsOutdatedResponse() async throws {
         let (root, _) = try fixture(seconds: 1, amplitude: 0)
@@ -158,7 +158,9 @@ extension ProcessingTests {
         meeting.hasAudio = true
         meeting.settings = SessionSettings()
         meeting.finalReviewPending = true
-        meeting.segments = (0..<25).map { Segment(id: "s\($0)", time: Double($0), source: "マイク", text: "発言\($0)") }
+        // 25 long utterances: more than one request holds, so the review goes in two parts (20, then 5).
+        let long = String(repeating: "あ", count: MinutesEngine.maxReviewCharacters / 20)
+        meeting.segments = (0..<25).map { Segment(id: "s\($0)", time: Double($0), source: "マイク", text: long) }
         var notes = MinutesState()
         notes.appliedSegmentIDs = Set(meeting.segments.map(\.id))
         notes.content.summary = [NoteItem(id: "summary", text: "途中の議事録", evidence: ["s0"])]

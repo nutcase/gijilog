@@ -202,9 +202,10 @@ import Foundation
                     guard let self, let store = self.store else { return }
                     do {
                         var result: MinutesState?
-                        // While recording, the update also judges which agenda topic is being discussed.
+                        // While recording, the update also judges which agenda topic is being discussed; the final
+                        // review organizes the minutes by the agenda's topics.
                         var previous = meeting.notes ?? MinutesState()
-                        if !reviewing && meeting.capture == .recording { previous.agenda = meeting.agenda }
+                        if reviewing || meeting.capture == .recording { previous.agenda = meeting.agenda }
                         for attempt in 1...3 {
                             do {
                                 let operation = reviewing ? self.review : self.summarize

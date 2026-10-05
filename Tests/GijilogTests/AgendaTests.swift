@@ -175,7 +175,7 @@ extension ProcessingTests {
         var plain = Meeting(title: "定例")
         plain.segments = meeting.segments
         try Self.check(
-            MinutesEngine.document(plain) == "# 定例\n\n## 文字起こし\n\n[3秒 / マイク] 始めます",
+            MinutesEngine.document(plain) == "# 定例\n\n## 文字起こし\n\n[00:03 / マイク] 始めます",
             "a meeting without an agenda is written exactly as before")
     }
 }

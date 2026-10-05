@@ -184,13 +184,11 @@ extension ProcessingTests {
                 && partial.content.actions[0].state == .open && partial.appliedSegmentIDs.contains(new.id),
             "ungrounded items (unknown or only old evidence) are dropped without discarding valid ones")
         let rendered = MinutesEngine.render(merged, segments: [old, new])
-        try Self.check(
-            rendered.components(separatedBy: "\n## ").last?.hasPrefix("アクションアイテム\n- [x]") == true,
-            "actions remain the last section")
+        try Self.check(rendered.contains("\n## アクションアイテム\n- [x]"), "a completed action is checked")
         let exported = MinutesEngine.render(merged, segments: [old, new], transcript: "原文")
         try Self.check(
-            exported.components(separatedBy: "\n## ").last?.hasPrefix("アクションアイテム\n- [x]") == true,
-            "export also keeps actions after the transcript")
+            exported.components(separatedBy: "\n## ").last == "文字起こし\n原文",
+            "the transcript, the longest part, comes last")
         let long = (0..<100).map {
             Segment(id: String($0), time: Double($0), source: "マイク", text: String(repeating: "あ", count: 1000))
         }
@@ -539,8 +537,9 @@ final class StructuredMockProtocol: URLProtocol {
             let inputText = try ProcessingTests.require(body["input"] as? String, "summary input text")
             let input = try ProcessingTests.require(
                 JSONSerialization.jsonObject(with: Data(inputText.utf8)) as? [String: Any], "summary input JSON")
+            // Live updates send the new utterances; the final review sends the whole transcript.
             let utterances = try ProcessingTests.require(
-                input["newUtterances"] as? [[String: Any]], "summary utterances")
+                (input["newUtterances"] ?? input["transcript"]) as? [[String: Any]], "summary utterances")
             let utterance = try ProcessingTests.require(utterances.first, "summary first utterance")
             let text = try ProcessingTests.require(utterance["text"] as? String, "summary utterance text")
             let evidence = try ProcessingTests.require(utterance["ids"] as? [String], "summary utterance evidence")

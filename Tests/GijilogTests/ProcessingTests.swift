@@ -348,13 +348,16 @@ import Foundation
             MinutesState(), delta: MinutesEngine.extract(segments), batch: segments, segments: segments)
         state.extractionOnly = true
         let text = MinutesEngine.render(state, segments: segments)
-        try Self.check(text.contains("[24秒] この案に決定します"), "decision evidence")
-        try Self.check(text.contains("[12秒] 次回までに検討します"), "pending evidence")
+        try Self.check(text.contains("[00:24] この案に決定します"), "decision evidence")
+        try Self.check(text.contains("[00:12] 次回までに検討します"), "pending evidence")
         try Self.check(text.contains("候補"), "unconfirmed candidate label")
-        let lastSection = text.components(separatedBy: "\n## ").last ?? ""
-        try Self.check(lastSection.hasPrefix("アクションアイテム\n"), "actions must be the final section")
-        try Self.check(lastSection.contains("- [ ] 次回までに検討します"), "action checklist")
-        try Self.check(lastSection.contains("担当者: 未定 / 期限: 未定"), "no invented owner or deadline")
+        let sections = text.components(separatedBy: "\n## ").map { $0.components(separatedBy: "\n")[0] }
+        try Self.check(
+            sections.dropFirst() == ["要約", "決定事項と理由の候補", "アクションアイテム", "未決事項・次の確認の候補"],
+            "what a reader acts on comes before the open issues: \(sections)")
+        let actions = text.components(separatedBy: "\n## アクションアイテム\n")[1]
+        try Self.check(actions.contains("- [ ] 次回までに検討します"), "action checklist")
+        try Self.check(actions.contains("担当者: 未定 / 期限: 未定"), "no invented owner or deadline")
         try Self.check(state.latestSegmentIDs == ["a", "b"], "the latest update remembers its utterances")
     }
 }
