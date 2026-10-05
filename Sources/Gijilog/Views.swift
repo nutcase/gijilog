@@ -145,7 +145,11 @@ struct ContentView: View {
             .toolbar { toolbar }
         }
         .preferredColorScheme(.dark)
-        .alert("確認が必要です", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
+        .alert(
+            "確認が必要です",
+            isPresented: Binding(
+                get: { store.error != nil && !store.compactWindowOpen }, set: { if !$0 { store.error = nil } })
+        ) {
             Button("閉じる") { store.error = nil }
         } message: {
             Text(store.error ?? "")
@@ -881,9 +885,9 @@ struct MinutesDesk: View {
             }
             if store.pipeline.summaryFailed(meeting.id) {
                 Notice(
-                    text: meeting.id == store.activeID
+                    text: (meeting.id == store.activeID
                         ? "議事録の更新に失敗しました。録音中は間隔を空けて自動で再試行します。"
-                        : "議事録の更新に失敗しました。",
+                        : "議事録の更新に失敗しました。") + (store.pipeline.summaryError(meeting.id).map { "\n" + $0 } ?? ""),
                     actionTitle: canResume ? "未処理を再開" : nil, action: resume)
             }
             if let rejected = meeting.notes?.rejectedItems, rejected > 0 {
@@ -1837,7 +1841,14 @@ struct LiveWindow: View {
         .frame(minWidth: 340, minHeight: 460)
         .preferredColorScheme(.dark)
         .background(FloatingWindow(floating: store.pinsLiveWindow))
-        .alert("確認が必要です", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
+        .onAppear { store.compactWindowOpen = true }
+        .onDisappear { store.compactWindowOpen = false }
+        // Only one window shows an alert, so an error does not pull both windows forward.
+        .alert(
+            "確認が必要です",
+            isPresented: Binding(
+                get: { store.error != nil && store.compactWindowOpen }, set: { if !$0 { store.error = nil } })
+        ) {
             Button("閉じる") { store.error = nil }
         } message: {
             Text(store.error ?? "")
@@ -1986,7 +1997,9 @@ struct LiveMinutes: View {
                         action: { store.retryFailedJobs(meeting.id) })
                 }
                 if store.pipeline.summaryFailed(meeting.id) {
-                    Notice(text: "議事録の更新に失敗しました。間隔を空けて自動で再試行します。")
+                    Notice(
+                        text: "議事録の更新に失敗しました。間隔を空けて自動で再試行します。"
+                            + (store.pipeline.summaryError(meeting.id).map { "\n" + $0 } ?? ""))
                 }
                 LiveSection(
                     title: "要約", items: content.summary.filter { $0.state != .cancelled }, known: known, latest: latest)

@@ -18,6 +18,7 @@ import Foundation
     // stop and resume retry at once. Automatic re-requests stay off until a summary succeeds.
     private var summaryFailures: [UUID: Int] = [:]
     private var summaryRetryAt: [UUID: Date] = [:]
+    private var summaryErrors: [UUID: String] = [:]
     private var lastScheduledID: UUID?
     private var lastSummaryID: UUID?
     private let recognize: Recognize
@@ -44,6 +45,7 @@ import Foundation
         keys[id] = key
         summaryFailures[id] = nil
         summaryRetryAt[id] = nil
+        summaryErrors[id] = nil
         pump()
     }
     func requestSummary(_ id: UUID, force: Bool = false) {
@@ -54,12 +56,15 @@ import Foundation
         pump()
     }
     func summaryFailed(_ id: UUID) -> Bool { summaryFailures[id] != nil }
+    /// Why the last minutes update for the meeting failed, while it keeps failing.
+    func summaryError(_ id: UUID) -> String? { summaryErrors[id] }
     func isSummarizing(_ id: UUID) -> Bool { summarizingID == id }
     func forget(_ id: UUID) {
         allowed.remove(id)
         keys[id] = nil
         summaryFailures[id] = nil
         summaryRetryAt[id] = nil
+        summaryErrors[id] = nil
         requestedSummaries.remove(id)
     }
     func pause(terminal: Bool = false) {
@@ -241,13 +246,16 @@ import Foundation
                         }
                         try await store.checkpoint(id)
                         self.summaryFailures[id] = nil
+                        self.summaryErrors[id] = nil
                     } catch {
                         let failures = (self.summaryFailures[id] ?? 0) + 1
                         self.summaryFailures[id] = failures
                         self.summaryRetryAt[id] = Date().addingTimeInterval(min(300, 30 * pow(2, Double(failures - 1))))
                         requestedSummaries.remove(id)
-                        // Alert once per failure streak; the meeting view keeps showing the failure.
-                        if failures == 1 { store.error = error.localizedDescription }
+                        // Shown in the meeting's own notice, not an alert: this is background work, and an alert
+                        // would pull windows forward, possibly during another meeting.
+                        self.summaryErrors[id] = error.localizedDescription
+                        store.objectWillChange.send()
                     }
                     self.summaryTask = nil
                     self.summarizingID = nil

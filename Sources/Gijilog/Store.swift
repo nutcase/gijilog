@@ -41,6 +41,7 @@ import UniformTypeIdentifiers
     @Published var tagEditor: UUID?  // The meeting whose tag field is open.
     @Published var settingsTab = "一般"
     @Published var liveTab = "議事録"  // The compact window shows the minutes or the transcript.
+    @Published var compactWindowOpen = false  // Alerts go to the compact window while it is open, else the full one.
     @Published var editingAgendaItem: UUID?  // The agenda topic open for editing; the others show as text.
     @Published var addingAgenda: UUID?  // The meeting whose "add a topic" field is open.
     @Published var searchText = ""

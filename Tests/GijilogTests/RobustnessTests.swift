@@ -32,7 +32,9 @@ extension ProcessingTests {
         store.pipeline.requestSummary(meeting.id)
         try await store.waitUntilIdle()
         try Self.check(
-            store.pipeline.summaryFailed(meeting.id) && store.error != nil, "a failed live summary is reported")
+            store.pipeline.summaryFailed(meeting.id) && store.pipeline.summaryError(meeting.id) != nil
+                && store.error == nil,
+            "a failed live summary is shown with its reason on the meeting, without an alert pulling windows forward")
         store.error = nil
         store.pipeline.requestSummary(meeting.id)
         try await store.waitUntilIdle()
@@ -41,7 +43,8 @@ extension ProcessingTests {
         store.pipeline.requestSummary(meeting.id, force: true)
         try await store.waitUntilIdle()
         try Self.check(
-            !store.pipeline.summaryFailed(meeting.id) && store.meetings[0].notes?.appliedSegmentIDs == ["first"],
+            !store.pipeline.summaryFailed(meeting.id) && store.pipeline.summaryError(meeting.id) == nil
+                && store.meetings[0].notes?.appliedSegmentIDs == ["first"],
             "a later request recovers live minutes without restarting the recording")
     }
     func testCloudErrorDetailAndRetryAfter() throws {
