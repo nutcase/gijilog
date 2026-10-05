@@ -263,6 +263,7 @@ struct SearchHit: Equatable {
     var snippet: String  // The matching passage, cut around the first keyword.
     var segmentID: String?  // The utterance, when the passage is in the transcript.
     var time: Double?
+    var source: String?  // マイク or Mac音声, when the passage is in the transcript.
 }
 enum MeetingSearch {
     static let options: String.CompareOptions = [.caseInsensitive, .widthInsensitive]
@@ -277,6 +278,31 @@ enum MeetingSearch {
     /// The passage shown is the first place, in reading order, that has the first keyword.
     static func search(_ meeting: Meeting, terms: [String]) -> SearchHit? {
         guard let first = terms.first else { return nil }
+        let places = places(meeting)
+        for term in terms.dropFirst() where !places.contains(where: { $0.1.range(of: term, options: options) != nil }) {
+            return nil
+        }
+        for (place, text, segment) in places {
+            guard let range = text.range(of: first, options: options) else { continue }
+            return hit(place, text, segment, around: range)
+        }
+        return nil
+    }
+    /// Every place in the meeting that has a keyword: those with the most keywords first, then in reading order.
+    /// Nil unless the meeting has every keyword somewhere.
+    static func passages(_ meeting: Meeting, terms: [String], limit: Int) -> [SearchHit]? {
+        guard search(meeting, terms: terms) != nil else { return nil }
+        var found: [(hit: SearchHit, matched: Int, order: Int)] = []
+        for (order, (place, text, segment)) in places(meeting).enumerated() {
+            let matched = terms.filter { text.range(of: $0, options: options) != nil }
+            guard let term = matched.first, let range = text.range(of: term, options: options) else { continue }
+            found.append((hit(place, text, segment, around: range), matched.count, order))
+        }
+        return found.sorted { $0.matched != $1.matched ? $0.matched > $1.matched : $0.order < $1.order }
+            .prefix(limit).map(\.hit)
+    }
+    /// The searchable text of a meeting, in reading order.
+    private static func places(_ meeting: Meeting) -> [(SearchHit.Place, String, Segment?)] {
         var places: [(SearchHit.Place, String, Segment?)] = [(.title, meeting.title, nil)]
         places += meeting.tags.map { (.tags, $0, nil) }
         places += meeting.agenda.flatMap { [$0.title, $0.goal].compactMap { $0.map { (.agenda, $0, nil) } } }
@@ -289,15 +315,16 @@ enum MeetingSearch {
             places.append((.minutes, meeting.minutes, nil))
         }
         places += meeting.segments.map { (.transcript, $0.text, $0) }
-        for term in terms.dropFirst() where !places.contains(where: { $0.1.range(of: term, options: options) != nil }) {
-            return nil
-        }
-        for (place, text, segment) in places {
-            guard let range = text.range(of: first, options: options) else { continue }
-            return SearchHit(
-                place: place, snippet: snippet(text, around: range), segmentID: segment?.id, time: segment?.time)
-        }
-        return nil
+        return places
+    }
+    private static func hit(
+        _ place: SearchHit.Place, _ text: String, _ segment: Segment?, around range: Range<String.Index>
+    )
+        -> SearchHit
+    {
+        SearchHit(
+            place: place, snippet: snippet(text, around: range), segmentID: segment?.id, time: segment?.time,
+            source: segment?.source)
     }
     /// Every occurrence of every keyword in the text, for marking them.
     static func ranges(of terms: [String], in text: String) -> [Range<String.Index>] {

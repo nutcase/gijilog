@@ -89,8 +89,8 @@ extension ProcessingTests {
                 as? [[String: Any]], "tools")
         try Self.check(
             tools.compactMap { $0["name"] as? String } == [
-                "list_meetings", "get_meeting", "get_transcript", "list_action_items", "get_current_meeting",
-                "list_tags",
+                "list_meetings", "search_meetings", "get_meeting", "get_transcript", "list_action_items",
+                "get_current_meeting", "list_tags",
             ]
                 && tools.allSatisfy { ($0["annotations"] as? [String: Any])?["readOnlyHint"] as? Bool == true },
             "the tools are listed in a fixed order and all only read")
@@ -163,6 +163,38 @@ extension ProcessingTests {
         try Self.check(
             store.mcpAccesses.first?.tool == "get_current_meeting" && store.mcpAccesses.first?.client == "test-client",
             "each tool call is recorded for Settings")
+    }
+    @MainActor func testMCPSearchReturnsEveryMatchingPassage() throws {
+        let (store, root, meetings) = try mcpStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let handler = MCPHandler(store: store)
+        let found = try callTool(handler, "search_meetings", ["query": "ＦＡＱ　佐藤", "passages_per_meeting": 3])
+        let results = found.structured["results"] as? [[String: Any]] ?? []
+        let passages = results.first?["passages"] as? [[String: Any]] ?? []
+        try Self.check(
+            results.count == 1 && results.first?["meeting_id"] as? String == meetings[0].id.uuidString
+                && passages.map { $0["text"] as? String ?? "" } == ["FAQを更新する", "佐藤さん"],
+            "every keyword is required, width and case are ignored, and matching items are returned: \(found.text)")
+        let spoken = try callTool(handler, "search_meetings", ["query": "予算 範囲", "passages_per_meeting": 2])
+        let utterances =
+            (spoken.structured["results"] as? [[String: Any]])?.first?["passages"] as? [[String: Any]] ?? []
+        try Self.check(
+            utterances.count == 2 && utterances.allSatisfy { $0["source"] as? String == "マイク" }
+                && utterances.first?["time_seconds"] as? Double == 0
+                && spoken.text.contains("[文字起こし 00:00 マイク]"),
+            "transcript passages carry their time and source, most keywords first: \(spoken.text)")
+        let none = try callTool(handler, "search_meetings", ["query": "FAQ 存在しない"])
+        try Self.check(
+            (none.structured["results"] as? [Any])?.isEmpty == true && none.text.contains("すべて含む会議はありません"),
+            "a keyword missing from every meeting finds nothing")
+        let empty = try callTool(handler, "search_meetings", ["query": "  "])
+        try Self.check(empty.isError, "a search without keywords asks for them")
+        store.mcpIncludesTranscript = false
+        store.toggleMCPHiddenTag("定例")
+        let withheld = try callTool(handler, "search_meetings", ["query": "予算"])
+        try Self.check(
+            (withheld.structured["results"] as? [Any])?.isEmpty == true,
+            "search honors the withheld transcript and tags")
     }
     @MainActor func testMCPKeepsWhatTheUserWithholds() throws {
         let (store, root, meetings) = try mcpStore()

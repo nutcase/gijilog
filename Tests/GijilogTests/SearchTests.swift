@@ -47,6 +47,15 @@ extension ProcessingTests {
             MeetingSearch.search(meeting, terms: ["FAQ", "存在しない"]) == nil
                 && MeetingSearch.search(meeting, terms: []) == nil,
             "every keyword must appear somewhere in the meeting")
+        let passages = try Self.require(
+            MeetingSearch.passages(meeting, terms: ["佐藤", "お願い"], limit: 5), "passages for two keywords")
+        try Self.check(
+            passages.first?.segmentID == "s2" && passages.first?.source == "マイク"
+                && passages.map(\.place) == [.transcript, .minutes],
+            "the passage with more keywords comes before an earlier one with fewer: \(passages)")
+        try Self.check(
+            MeetingSearch.passages(meeting, terms: ["佐藤", "存在しない"], limit: 5) == nil,
+            "no passages unless the meeting has every keyword")
         let marked = MeetingSearch.ranges(of: ["faq", "と"], in: "FAQとfaqとＦＡＱ").count
         try Self.check(marked == 5, "every occurrence of every keyword is marked: \(marked)")
     }
