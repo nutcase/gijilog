@@ -91,12 +91,12 @@ extension ProcessingTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let store = Store(root: root, loadSettings: false)
         store.key = "TEST"
-        store.title = "週次定例"
         store.planMeeting()
         let id = try Self.require(store.selected, "the prepared meeting is selected")
+        store.renamePlannedMeeting(id, to: "週次定例")
         try Self.check(
-            store.meetings[0].capture == .planned && store.meetings[0].status == "準備中" && store.title.isEmpty
-                && store.addingAgenda == id,
+            store.meetings[0].capture == .planned && store.meetings[0].status == "準備中"
+                && store.meetings[0].title == "週次定例" && store.addingAgenda == id,
             "preparing a meeting lists it as 準備中 with the agenda field open")
         store.addAgenda("1. 確認（5分）\n2. 範囲", to: id)
         store.renamePlannedMeeting(id, to: "週次プロダクト定例")

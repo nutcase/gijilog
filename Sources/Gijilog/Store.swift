@@ -32,7 +32,6 @@ import UniformTypeIdentifiers
     @Published var status = "準備完了"
     @Published var error: String?
     @Published var tab = "議事録"
-    @Published var title = ""
     @Published var deletion: Meeting?  // Awaiting confirmation in the UI.
     @Published var showsTranscript = true  // The live transcript panel beside the minutes.
     @Published var pinsLiveWindow = true  // Keep the compact live window above the video call.
@@ -469,7 +468,6 @@ import UniformTypeIdentifiers
             pipeline.resume(id, key: key)
             try await recorder.start(folder: folder(id), microphone: microphone.isEmpty ? nil : microphone)
             recording = true
-            title = ""
             status = "録音中 — Mac音声＋マイク"
             activity = ProcessInfo.processInfo.beginActivity(options: .userInitiated, reason: "会議音声を録音中")
             let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
@@ -506,10 +504,9 @@ import UniformTypeIdentifiers
     private func selectedMeeting(where condition: (Meeting) -> Bool) -> Meeting? {
         meetings.first { $0.id == selected && condition($0) }
     }
-    /// A meeting titled from the title field (or the time), in a new folder.
+    /// A meeting titled by the time, in a new folder. Its title is changed by clicking it.
     private func newMeeting(capture: CaptureState) -> Meeting {
-        let untitled = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        var meeting = Meeting(title: untitled ? "会議 \(Date().formatted(date: .numeric, time: .shortened))" : title)
+        var meeting = Meeting(title: "会議 \(Date().formatted(date: .numeric, time: .shortened))")
         meeting.capture = capture
         if capture == .planned {
             meeting.status = "準備中"
@@ -519,7 +516,7 @@ import UniformTypeIdentifiers
         }
         meeting.folderName =
             MeetingRepository.uniqueFolder(
-                in: root, name: meetingFolderName(date: meeting.date, title: untitled ? "会議" : meeting.title)
+                in: root, name: meetingFolderName(date: meeting.date, title: "会議")
             ).lastPathComponent
         return meeting
     }
@@ -1068,7 +1065,7 @@ extension Store {
 // MARK: - Agenda
 
 extension Store {
-    /// Prepares a meeting from the title field: it waits in the list, with its agenda, until 録音を開始.
+    /// Prepares a meeting: it waits in the list, with its agenda, until 録音を開始. Its title is edited in place.
     func planMeeting() {
         guard ready else { return }
         let meeting = newMeeting(capture: .planned)
@@ -1076,7 +1073,6 @@ extension Store {
         showNewMeeting()
         selected = meeting.id
         addingAgenda = meeting.id  // Ready to type or paste the agenda.
-        title = ""
         Task { try? await checkpoint(meeting.id) }
     }
     /// Renames a meeting; 議事録.md follows on the next save. A blank title keeps the old one, and the folder keeps

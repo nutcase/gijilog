@@ -44,6 +44,7 @@ open dist/ギジログ.app
 
 1. Open Settings (⌘,) and save your OpenAI API key.
 2. Click 録音を開始 (Start recording) to start recording and writing the minutes. The first time, macOS asks to let the app record the microphone and system audio (the sound your Mac plays); allow both. No screen recording permission is needed.
+3. A meeting is titled by its start time. Click the title above its minutes to rename it (Return to finish, Esc to undo).
 
 You can also start and stop from the menu bar icon (a waveform, or a record mark while recording) or the app's 録音 menu (⌘⇧R), even with every window closed.
 

@@ -479,6 +479,7 @@ struct RecorderBar: View {
         }
         .padding(.horizontal, 24).padding(.vertical, 16)
     }
+    // A meeting starts titled by the time and is renamed by clicking its title, so there is no title to type here.
     private var idle: some View {
         let planned = store.selectedMeeting.flatMap { $0.capture == .planned ? $0 : nil }
         return VStack(alignment: .leading, spacing: 10) {
@@ -500,13 +501,7 @@ struct RecorderBar: View {
                         .buttonStyle(QuietButtonStyle())
                         .help("準備した会議ではなく、新しい会議として録音する")
                 } else {
-                    // For the next recording, not the meeting shown below, which is renamed by clicking its title.
-                    TextField("次に録音する会議のタイトル（空欄なら日時）", text: $store.title)
-                        .textFieldStyle(.plain).font(.system(size: 16))
-                        .padding(.horizontal, 14).frame(height: 40)
-                        .background(RoundedRectangle(cornerRadius: 10).fill(Palette.ai))
-                        .disabled(store.busy)
-                        .onSubmit(start)
+                    hint(planned: false).frame(maxWidth: .infinity, alignment: .leading)
                     Button {
                         store.planMeeting()
                     } label: {
@@ -523,21 +518,24 @@ struct RecorderBar: View {
                     .disabled(store.busy || !store.ready || !store.hasKey)
                 if store.busy || store.importing { ProgressView().controlSize(.small) }
             }
-            if store.hasKey {
-                Text(
-                    planned != nil
-                        ? "「録音を開始」で、準備した会議の録音を始めます。アジェンダは最初の議題から進行を記録します。"
-                        : "Macの音声とマイクを録音し、OpenAIで文字起こしと議事録づくりをします。録音ファイルはドロップしても読み込めます。API利用料がかかります。"
-                )
-                .font(.caption).foregroundStyle(.secondary)
-            } else {
-                HStack(spacing: 8) {
-                    Image(systemName: "key.fill").foregroundStyle(Palette.yamabuki)
-                    Text("録音するには、OpenAIのAPIキーを設定してください。")
-                    SettingsLink { Text("設定を開く") }
-                }
-                .font(.caption)
+            if planned != nil { hint(planned: true) }
+        }
+    }
+    @ViewBuilder private func hint(planned: Bool) -> some View {
+        if store.hasKey {
+            Text(
+                planned
+                    ? "「録音を開始」で、準備した会議の録音を始めます。アジェンダは最初の議題から進行を記録します。"
+                    : "Macの音声とマイクを録音し、OpenAIで文字起こしと議事録づくりをします。録音ファイルはドロップしても読み込めます。API利用料がかかります。"
+            )
+            .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+        } else {
+            HStack(spacing: 8) {
+                Image(systemName: "key.fill").foregroundStyle(Palette.yamabuki)
+                Text("録音するには、OpenAIのAPIキーを設定してください。")
+                SettingsLink { Text("設定を開く") }
             }
+            .font(.caption)
         }
     }
     private func start() { startRecording(store, views: ViewSwitch(open: openWindow, dismiss: dismissWindow)) }
@@ -1969,11 +1967,7 @@ struct LiveHeader: View {
                         .padding(.horizontal, 10).frame(height: 34)
                         .background(RoundedRectangle(cornerRadius: 8).strokeBorder(Palette.asagi.opacity(0.5)))
                     } else {
-                        TextField("次に録音する会議のタイトル", text: $store.title)
-                            .textFieldStyle(.plain)
-                            .padding(.horizontal, 10).frame(height: 34)
-                            .background(RoundedRectangle(cornerRadius: 8).fill(Palette.ai))
-                            .onSubmit { Task { await store.start() } }
+                        Spacer(minLength: 0)
                     }
                     pin
                     restore
