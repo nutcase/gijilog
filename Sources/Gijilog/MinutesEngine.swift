@@ -389,7 +389,7 @@ enum MinutesEngine {
         func plain(_ text: String) -> String {
             text.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\r", with: " ")
         }
-        func lines(_ items: [NoteItem], actions: Bool = false) -> String {
+        func lines(_ items: [NoteItem], actions: Bool = false, topics: Bool = false) -> String {
             if items.isEmpty { return "- なし" }
             return items.map { item in
                 let evidence = item.evidence.compactMap { known[$0] }.sorted { $0.time < $1.time }
@@ -405,7 +405,9 @@ enum MinutesEngine {
                         + detail
                 }
                 let time = evidence.first.map { "[\(clock($0.time))] " } ?? ""
-                return "- \(time)\(plain(item.text))\(mark.isEmpty ? "" : "（" + mark + "）")" + detail
+                var text = plain(item.text)
+                if topics, let topic = summaryTopic(text) { text = "**\(topic)**" + text.dropFirst(topic.count) }
+                return "- \(time)\(text)\(mark.isEmpty ? "" : "（" + mark + "）")" + detail
             }.joined(separator: "\n")
         }
         let candidate = state.extractionOnly ? "の候補" : ""
@@ -414,7 +416,14 @@ enum MinutesEngine {
         let original = transcript.map { "\n\n## 文字起こし\n" + $0 } ?? ""
         // What a reader acts on comes first; the transcript, the longest part, comes last.
         return
-            "# \(plain(title ?? "議事録"))\n\(tagLine(tags))\(agendaSection(agenda))\(notice)\n## 要約\n\(lines(state.content.summary.filter { $0.state != .cancelled }))\n\n## 決定事項と理由\(candidate)\n\(lines(state.content.decisions.filter { $0.state != .cancelled }))\n\n## アクションアイテム\n\(lines(state.content.actions.filter { $0.state != .cancelled }, actions: true))\n\n## 未決事項・次の確認\(candidate)\n\(lines(state.content.unresolved.filter { $0.state == .open }))\(history)\(original)"
+            "# \(plain(title ?? "議事録"))\n\(tagLine(tags))\(agendaSection(agenda))\(notice)\n## 要約\n\(lines(state.content.summary.filter { $0.state != .cancelled }, topics: true))\n\n## 決定事項と理由\(candidate)\n\(lines(state.content.decisions.filter { $0.state != .cancelled }))\n\n## アクションアイテム\n\(lines(state.content.actions.filter { $0.state != .cancelled }, actions: true))\n\n## 未決事項・次の確認\(candidate)\n\(lines(state.content.unresolved.filter { $0.state == .open }))\(history)\(original)"
+    }
+    /// The topic of a summary item written "話題：結論", to set in bold; nil when the item has no such topic.
+    static func summaryTopic(_ text: String) -> String? {
+        guard let colon = text.firstIndex(of: "："), (1...30).contains(text.distance(from: text.startIndex, to: colon)),
+            text.index(after: colon) != text.endIndex
+        else { return nil }
+        return String(text[..<colon])
     }
     /// The readable minutes: one top-level heading (the meeting title), the minutes, then the transcript.
     /// Nil when the meeting has nothing to show yet.

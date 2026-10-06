@@ -65,6 +65,14 @@ extension EnvironmentValues {
     }
 }
 /// The text with every keyword marked like a highlighter pen.
+/// A summary item's topic, the words before "：", in bold.
+func boldingTopic(_ text: AttributedString, of plain: String) -> AttributedString {
+    guard let topic = MinutesEngine.summaryTopic(plain) else { return text }
+    var result = text
+    let end = result.index(result.startIndex, offsetByCharacters: topic.count + 1)
+    result[result.startIndex..<end].inlinePresentationIntent = .stronglyEmphasized
+    return result
+}
 func highlighted(_ text: String, _ terms: [String]) -> AttributedString {
     var result = AttributedString(text)
     for range in MeetingSearch.ranges(of: terms, in: text) {
@@ -1136,7 +1144,7 @@ struct MinutesSections: View {
             }
             NoteSection(
                 title: "要約", items: content.summary.filter { $0.state != .cancelled }, known: known, latest: latest,
-                editing: edit(.summary), current: current)
+                editing: edit(.summary), current: current, topics: true)
             NoteSection(
                 title: "決定事項と理由", items: content.decisions.filter { $0.state != .cancelled }, known: known,
                 latest: latest, editing: edit(.decisions), current: current)
@@ -1171,6 +1179,7 @@ struct NoteSection: View {
     var actions = false
     var editing: NoteEditing?
     var current: String?
+    var topics = false  // Summary items: their topics in bold.
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -1187,9 +1196,11 @@ struct NoteSection: View {
                     if let editing {
                         EditableNoteRow(
                             editing: editing, item: item, known: known, fresh: fresh, action: actions,
-                            current: item.id == current)
+                            current: item.id == current, topics: topics)
                     } else {
-                        NoteRow(item: item, known: known, fresh: fresh, action: actions, current: item.id == current)
+                        NoteRow(
+                            item: item, known: known, fresh: fresh, action: actions, current: item.id == current,
+                            topics: topics)
                     }
                 }
                 .id("note-" + item.id)
@@ -1257,6 +1268,7 @@ struct EditableNoteRow: View {
     let fresh: Bool
     let action: Bool
     var current = false
+    var topics = false
     private var key: String { editing.part.rawValue + "/" + item.id }
     var body: some View {
         let open = store.editingNoteItem == key
@@ -1265,7 +1277,7 @@ struct EditableNoteRow: View {
                 editor
             } else {
                 NoteRow(
-                    item: item, known: known, fresh: fresh, action: action, current: current,
+                    item: item, known: known, fresh: fresh, action: action, current: current, topics: topics,
                     edit: { store.editingNoteItem = key }
                 )
                 .contextMenu {
@@ -1564,6 +1576,7 @@ struct NoteRow: View {
     let action: Bool
     var compact = false
     var current = false  // The find bar's current match.
+    var topics = false  // A summary item: its topic in bold.
     var edit: (() -> Void)?  // Set where the minutes can be edited: clicking the text opens the item.
     var body: some View {
         let evidence = item.evidence.compactMap { known[$0] }.sorted { $0.time < $1.time }
@@ -1580,7 +1593,10 @@ struct NoteRow: View {
                 ) { $0[.bottom] + 2 }
             }
             VStack(alignment: .leading, spacing: 5) {
-                Text(highlighted(item.text, terms)).font(.system(size: compact ? 13 : 14.5)).lineSpacing(
+                Text(
+                    topics ? boldingTopic(highlighted(item.text, terms), of: item.text) : highlighted(item.text, terms)
+                )
+                .font(.system(size: compact ? 13 : 14.5)).lineSpacing(
                     compact ? 2 : 4
                 )
                 .strikethrough(item.state == .cancelled)
@@ -2695,7 +2711,8 @@ struct LiveMinutes: View {
                             + (store.pipeline.summaryError(meeting.id).map { "\n" + $0 } ?? ""))
                 }
                 LiveSection(
-                    title: "要約", items: content.summary.filter { $0.state != .cancelled }, known: known, latest: latest)
+                    title: "要約", items: content.summary.filter { $0.state != .cancelled }, known: known, latest: latest,
+                    topics: true)
                 LiveSection(
                     title: "決定事項と理由", items: content.decisions.filter { $0.state != .cancelled }, known: known,
                     latest: latest)
@@ -2723,6 +2740,7 @@ struct LiveSection: View {
     let known: [String: Segment]
     let latest: Set<String>
     var actions = false
+    var topics = false  // Summary items: their topics in bold.
     var body: some View {
         let unassigned = actions ? items.filter { $0.state == .open && ($0.owner == nil || $0.due == nil) }.count : 0
         VStack(alignment: .leading, spacing: 2) {
@@ -2741,7 +2759,7 @@ struct LiveSection: View {
             ForEach(items) { item in
                 NoteRow(
                     item: item, known: known, fresh: !Set(item.evidence).isDisjoint(with: latest), action: actions,
-                    compact: true)
+                    compact: true, topics: topics)
             }
         }
     }

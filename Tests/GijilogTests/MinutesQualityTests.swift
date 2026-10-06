@@ -14,7 +14,16 @@ extension ProcessingTests {
             NoteItem(id: "u", text: "実施日程", evidence: ["after"], nextStep: "納期を確認する")
         ]
         notes.content.actions = [NoteItem(id: "task", text: "納期を確認する", evidence: ["after"])]
+        notes.content.summary = [
+            NoteItem(id: "s1", text: "案の比較：費用が低いB案に決まった", evidence: ["after"]),
+            NoteItem(id: "s2", text: "日程は納期の確認後に決める", evidence: ["after"]),
+        ]
         let markdown = MinutesEngine.render(notes, segments: [before, after], transcript: "原文")
+        try Self.check(
+            markdown.contains("- [00:30] **案の比較**：費用が低いB案に決まった\n- [00:30] 日程は納期の確認後に決める\n")
+                && MinutesEngine.summaryTopic("比較：") == nil
+                && MinutesEngine.summaryTopic(String(repeating: "長", count: 31) + "：結論") == nil,
+            "a summary item's topic is set in bold, and text without a short topic is left as it is")
         let decisionSection = markdown.components(separatedBy: "## 決定事項と理由\n")[1]
             .components(separatedBy: "\n## ")[0]
         try Self.check(
