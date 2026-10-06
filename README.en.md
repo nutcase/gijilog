@@ -47,7 +47,7 @@ open dist/ギジログ.app
 2. Click 新規録音 (New recording) in the toolbar to start recording a new meeting and writing its minutes. The first time, macOS asks to let the app record the microphone and system audio (the sound your Mac plays); allow both. No screen recording permission is needed.
 3. A meeting is titled by its start time. Click the title above its minutes to rename it (Return to finish, Esc to undo).
 
-The record button says what a click does: with a prepared meeting selected it reads この会議を録音 (Record this meeting) and records that one. The arrow beside it offers 新しい会議として録音 (Record as a new meeting), recording more of the selected finished meeting (also in the meeting menu), and preparing an agenda. A continued meeting's clock runs on from its earlier part, the transcript and minutes grow, and stopping joins both parts into one `録音.m4a` and reviews the whole meeting again.
+Where you click decides what is recorded: 新規録音 (New recording) in the toolbar, or ⌘⇧R, always records a new meeting; a prepared meeting's page has この会議を録音 (Record this meeting); a finished meeting's page has 続けて録音 (Continue recording, also in the meeting menu); and アジェンダを準備 (Prepare agenda) above the list, or ⌘N, creates a meeting before recording it. A continued meeting's clock runs on from its earlier part, the transcript and minutes grow, and stopping joins both parts into one `録音.m4a` and reviews the whole meeting again.
 
 You can also start and stop from the menu bar icon (a waveform, or a record mark while recording) or the app's 録音 menu (⌘⇧R), even with every window closed.
 
@@ -94,9 +94,9 @@ Click tags at the top of the list to show only the meetings that have all of the
 
 ## Agenda
 
-Choose アジェンダを準備… (Prepare agenda) from the arrow beside the record button, or press ⌘N, to create a meeting before recording it; the list shows it as 準備中 (prepared). Type a topic and press Return, or paste a calendar invite or a bulleted list to add one topic per line. Bullets and numbering are removed, and a trailing length such as "（10分）" or "15 min" becomes the planned time. Click a topic to edit its title, its goal, or its planned minutes.
+Click アジェンダを準備 (Prepare agenda) above the list, or press ⌘N, to create a meeting before recording it; the list shows it as 準備中 (prepared). Type a topic and press Return, or paste a calendar invite or a bulleted list to add one topic per line. Bullets and numbering are removed, and a trailing length such as "（10分）" or "15 min" becomes the planned time. Click a topic to edit its title, its goal, or its planned minutes.
 
-When the meeting starts, keep the prepared meeting selected and click この会議を録音 (Record this meeting). With each minutes update (about every 30 seconds, no extra API calls) the AI judges which topic the newest speech is about, so nobody switches topics by hand; a topic starts at the utterance where its talk began, and returning to a topic adds to its time. The elapsed time changes color past the planned time, and stopping the recording ends the topic under way. `議事録.md` lists the agenda with the planned and actual time of each topic. An agenda is optional: recording without one works as before.
+When the meeting starts, click この会議を録音 (Record this meeting) on the prepared meeting's page. With each minutes update (about every 30 seconds, no extra API calls) the AI judges which topic the newest speech is about, so nobody switches topics by hand; a topic starts at the utterance where its talk began, and returning to a topic adds to its time. The elapsed time changes color past the planned time, and stopping the recording ends the topic under way. `議事録.md` lists the agenda with the planned and actual time of each topic. An agenda is optional: recording without one works as before.
 
 ## Keyword search
 

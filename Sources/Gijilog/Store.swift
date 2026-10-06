@@ -436,8 +436,6 @@ import UniformTypeIdentifiers
         let hasAudio = try await Task.detached { try Processor.hasRecordedAudio(folder: path) }.value
         change(id) { $0.hasAudio = hasAudio }
     }
-    /// What 録音を開始 does with the current selection: record the selected prepared meeting, or a new one.
-    var startsPreparedMeeting: Bool { selectedMeeting(where: { $0.capture == .planned }) != nil }
     /// Records the selected prepared meeting, or a new one. `newMeeting` always starts a new one.
     func start(newMeeting forcesNew: Bool = false) async {
         guard canStartRecording() else { return }
