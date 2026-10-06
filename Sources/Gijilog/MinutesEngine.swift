@@ -389,6 +389,8 @@ enum MinutesEngine {
         func plain(_ text: String) -> String {
             text.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\r", with: " ")
         }
+        // A known owner or deadline stands out; 未定 does not.
+        func strong(_ value: String?) -> String { value.map { "**\(plain($0))**" } ?? "未定" }
         func lines(_ items: [NoteItem], actions: Bool = false, topics: Bool = false) -> String {
             if items.isEmpty { return "- なし" }
             return items.map { item in
@@ -398,10 +400,10 @@ enum MinutesEngine {
                 let mark = item.state == .done ? "完了・解決" : (item.state == .cancelled ? "撤回・統合" : "")
                 // How an item changed during the meeting stays in the app; the document holds the result.
                 let detail = [("理由", item.reason), ("次の確認", item.nextStep)]
-                    .compactMap { label, value in value.map { "\n  - \(label): \(plain($0))" } }.joined()
+                    .compactMap { label, value in value.map { "\n  - **\(label)**: \(plain($0))" } }.joined()
                 if actions {
                     return
-                        "- [\(item.state == .done ? "x" : " ")] \(plain(item.text))（担当者: \(plain(item.owner ?? "未定")) / 期限: \(plain(item.due ?? "未定")) / 根拠: \(times.joined(separator: ", "))\(mark.isEmpty ? "" : " / " + mark)）"
+                        "- [\(item.state == .done ? "x" : " ")] \(plain(item.text))（担当者: \(strong(item.owner)) / 期限: \(strong(item.due)) / 根拠: \(times.joined(separator: ", "))\(mark.isEmpty ? "" : " / " + mark)）"
                         + detail
                 }
                 let time = evidence.first.map { "[\(clock($0.time))] " } ?? ""

@@ -122,7 +122,7 @@ extension ProcessingTests {
         let meeting = try callTool(handler, "get_meeting", ["meeting_id": id])
         try Self.check(
             meeting.text.contains("## アジェンダ") && meeting.text.contains("書き出しまでを範囲にする")
-                && meeting.text.contains("理由: 精度の検証が済んでいない")
+                && meeting.text.contains("**理由**: 精度の検証が済んでいない")
                 && (meeting.structured["actions"] as? [[String: Any]])?.count == 2,
             "get_meeting returns the minutes with reasons and the agenda: \(meeting.text)")
         let missing = try callTool(handler, "get_meeting", ["meeting_id": UUID().uuidString])

@@ -22,6 +22,33 @@ enum Palette {
     static let beni = Color(hex: 0xE0394E)  // Recording.
     static let asagi = Color(hex: 0x2BA6A6)  // Working, done, and the latest update.
     static let yamabuki = Color(hex: 0xD9A13B)  // Needs attention.
+    // Inks for text on the paper sheet, dark enough to read at small sizes.
+    static let tokiwa = Color(hex: 0x1F7A4D)  // Decided.
+    static let ruri = Color(hex: 0x1E50A2)  // Someone will do it.
+    static let yamabukiInk = Color(hex: 0x93620A)  // Still open.
+}
+// Each part of the minutes has its own ink and mark, so a reader finds what was decided, what is still open, and
+// who does what at a glance. The text itself stays sumi; color marks only headings, bullets and labels.
+enum NoteTone {
+    case summary, decisions, unresolved, history, actions
+    var color: Color {
+        switch self {
+        case .summary: Palette.ai
+        case .decisions: Palette.tokiwa
+        case .unresolved: Palette.yamabukiInk
+        case .history: Color(hex: 0x6B7280)
+        case .actions: Palette.ruri
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .summary: "text.alignleft"
+        case .decisions: "checkmark.seal.fill"
+        case .unresolved: "questionmark.circle.fill"
+        case .history: "clock.arrow.circlepath"
+        case .actions: "checklist"
+        }
+    }
 }
 extension Font {
     // Minutes are a formal document, so their headings are set in Mincho.
@@ -64,7 +91,6 @@ extension EnvironmentValues {
         set { self[SearchTermsKey.self] = newValue }
     }
 }
-/// The text with every keyword marked like a highlighter pen.
 /// A summary item's topic, the words before "：", in bold.
 func boldingTopic(_ text: AttributedString, of plain: String) -> AttributedString {
     guard let topic = MinutesEngine.summaryTopic(plain) else { return text }
@@ -73,6 +99,7 @@ func boldingTopic(_ text: AttributedString, of plain: String) -> AttributedStrin
     result[result.startIndex..<end].inlinePresentationIntent = .stronglyEmphasized
     return result
 }
+/// The text with every keyword marked like a highlighter pen.
 func highlighted(_ text: String, _ terms: [String]) -> AttributedString {
     var result = AttributedString(text)
     for range in MeetingSearch.ranges(of: terms, in: text) {
@@ -1138,26 +1165,27 @@ struct MinutesSections: View {
         VStack(alignment: .leading, spacing: 30) {
             if content.summary.contains(where: { !Set($0.evidence).isDisjoint(with: latest) }) {
                 HStack(spacing: 6) {
-                    Circle().fill(Palette.asagi).frame(width: 7, height: 7)
+                    FreshSwatch()
                     Text("直近の更新で加わった・変わった項目").font(.caption).foregroundStyle(.secondary)
                 }
             }
             NoteSection(
-                title: "要約", items: content.summary.filter { $0.state != .cancelled }, known: known, latest: latest,
-                editing: edit(.summary), current: current, topics: true)
+                title: "要約", tone: .summary, items: content.summary.filter { $0.state != .cancelled }, known: known,
+                latest: latest, editing: edit(.summary), current: current)
             NoteSection(
-                title: "決定事項と理由", items: content.decisions.filter { $0.state != .cancelled }, known: known,
-                latest: latest, editing: edit(.decisions), current: current)
+                title: "決定事項と理由", tone: .decisions, items: content.decisions.filter { $0.state != .cancelled },
+                known: known, latest: latest, editing: edit(.decisions), current: current)
             NoteSection(
-                title: "未決事項・次の確認", items: content.unresolved.filter { $0.state == .open }, known: known,
-                latest: latest,
-                editing: edit(.unresolved), current: current)
+                title: "未決事項・次の確認", tone: .unresolved, items: content.unresolved.filter { $0.state == .open },
+                known: known, latest: latest, editing: edit(.unresolved), current: current)
             if !content.history.isEmpty {
-                NoteSection(title: "議論の経緯", items: content.history, known: known, latest: latest, current: current)
+                NoteSection(
+                    title: "議論の経緯", tone: .history, items: content.history, known: known, latest: latest,
+                    current: current)
             }
             NoteSection(
-                title: "アクションアイテム", items: content.actions.filter { $0.state != .cancelled }, known: known,
-                latest: latest, actions: true, editing: edit(.actions), current: current)
+                title: "アクションアイテム", tone: .actions, items: content.actions.filter { $0.state != .cancelled },
+                known: known, latest: latest, editing: edit(.actions), current: current)
         }
         .padding(.top, 26)
     }
@@ -1173,20 +1201,16 @@ struct NoteEditing {
 }
 struct NoteSection: View {
     let title: String
+    let tone: NoteTone
     let items: [NoteItem]
     let known: [String: Segment]
     let latest: Set<String>
-    var actions = false
     var editing: NoteEditing?
     var current: String?
-    var topics = false  // Summary items: their topics in bold.
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(title).font(.mincho(17))
-                Text("\(items.count)").font(.callout).foregroundStyle(.secondary)
-            }
-            Rectangle().fill(Palette.rule).frame(height: 1).padding(.top, 8).padding(.bottom, 4)
+            SectionHeading(title: title, tone: tone, count: items.count)
+            SectionRule(tone: tone).padding(.top, 8).padding(.bottom, 4)
             if items.isEmpty {
                 Text("まだありません").font(.callout).foregroundStyle(.secondary).padding(.vertical, 8)
             }
@@ -1195,12 +1219,10 @@ struct NoteSection: View {
                 Group {
                     if let editing {
                         EditableNoteRow(
-                            editing: editing, item: item, known: known, fresh: fresh, action: actions,
-                            current: item.id == current, topics: topics)
+                            editing: editing, item: item, known: known, fresh: fresh, tone: tone,
+                            current: item.id == current)
                     } else {
-                        NoteRow(
-                            item: item, known: known, fresh: fresh, action: actions, current: item.id == current,
-                            topics: topics)
+                        NoteRow(item: item, known: known, fresh: fresh, tone: tone, current: item.id == current)
                     }
                 }
                 .id("note-" + item.id)
@@ -1208,6 +1230,42 @@ struct NoteSection: View {
             }
             if let editing { AddNoteItem(editing: editing) }
         }
+    }
+}
+// A section heading: its mark and count in the section's ink, the title in Mincho.
+struct SectionHeading: View {
+    let title: String
+    let tone: NoteTone
+    let count: Int
+    var compact = false
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: compact ? 6 : 8) {
+            Image(systemName: tone.symbol).font(.system(size: compact ? 12 : 14, weight: .semibold))
+                .foregroundStyle(tone.color)
+            Text(title).font(.mincho(compact ? 14 : 17))
+            Text("\(count)").font(.system(size: compact ? 10.5 : 11.5, weight: .bold)).monospacedDigit()
+                .foregroundStyle(tone.color)
+                .padding(.horizontal, 6).padding(.vertical, 1)
+                .background(Capsule().fill(tone.color.opacity(0.1)))
+        }
+    }
+}
+// The rule under a heading begins in the section's ink.
+struct SectionRule: View {
+    let tone: NoteTone
+    var body: some View {
+        ZStack(alignment: .leading) {
+            Rectangle().fill(Palette.rule).frame(height: 1)
+            Rectangle().fill(tone.color).frame(width: 40, height: 2)
+        }
+        .frame(height: 2)
+    }
+}
+// The tint of items the latest update added or changed.
+struct FreshSwatch: View {
+    var body: some View {
+        RoundedRectangle(cornerRadius: 2).fill(Palette.asagi.opacity(0.22)).frame(width: 14, height: 9)
+            .overlay(RoundedRectangle(cornerRadius: 2).strokeBorder(Palette.asagi.opacity(0.6), lineWidth: 0.5))
     }
 }
 @MainActor final class NoteDraft: ObservableObject {
@@ -1266,9 +1324,9 @@ struct EditableNoteRow: View {
     let item: NoteItem
     let known: [String: Segment]
     let fresh: Bool
-    let action: Bool
+    let tone: NoteTone
     var current = false
-    var topics = false
+    private var action: Bool { tone == .actions }
     private var key: String { editing.part.rawValue + "/" + item.id }
     var body: some View {
         let open = store.editingNoteItem == key
@@ -1277,7 +1335,7 @@ struct EditableNoteRow: View {
                 editor
             } else {
                 NoteRow(
-                    item: item, known: known, fresh: fresh, action: action, current: current, topics: topics,
+                    item: item, known: known, fresh: fresh, tone: tone, current: current,
                     edit: { store.editingNoteItem = key }
                 )
                 .contextMenu {
@@ -1573,61 +1631,56 @@ struct NoteRow: View {
     let item: NoteItem
     let known: [String: Segment]
     let fresh: Bool
-    let action: Bool
+    let tone: NoteTone
     var compact = false
     var current = false  // The find bar's current match.
-    var topics = false  // A summary item: its topic in bold.
     var edit: (() -> Void)?  // Set where the minutes can be edited: clicking the text opens the item.
+    private var action: Bool { tone == .actions }
+    private var closed: Bool { item.state != .open }
     var body: some View {
         let evidence = item.evidence.compactMap { known[$0] }.sorted { $0.time < $1.time }
+        let text = highlighted(item.text, terms)
         HStack(alignment: .firstTextBaseline, spacing: 10) {
-            if action {
-                Image(
-                    systemName: item.state == .done
-                        ? "checkmark.square.fill" : item.state == .cancelled ? "xmark.square" : "square"
-                )
-                .foregroundStyle(item.state == .done ? Palette.asagi : Color.secondary)
-            } else {
-                Circle().fill(fresh ? Palette.asagi : Palette.rule).frame(width: 6, height: 6).alignmentGuide(
-                    .firstTextBaseline
-                ) { $0[.bottom] + 2 }
-            }
-            VStack(alignment: .leading, spacing: 5) {
-                Text(
-                    topics ? boldingTopic(highlighted(item.text, terms), of: item.text) : highlighted(item.text, terms)
-                )
-                .font(.system(size: compact ? 13 : 14.5)).lineSpacing(
-                    compact ? 2 : 4
-                )
-                .strikethrough(item.state == .cancelled)
-                .foregroundStyle(item.state == .cancelled ? Color.secondary : Palette.sumi)
-                .fixedSize(horizontal: false, vertical: true)
-                .modifier(Selectable(enabled: edit == nil))  // A selectable text would take the click.
-                .contentShape(Rectangle())
-                .onTapGesture { edit?() }
-                .help(edit == nil ? "" : "クリックして編集")
+            bullet
+            VStack(alignment: .leading, spacing: compact ? 4 : 6) {
+                // Summary topics and decisions carry the weight a reader scans for.
+                Text(tone == .summary ? boldingTopic(text, of: item.text) : text)
+                    .font(
+                        .system(
+                            size: compact ? 13 : 14.5, weight: tone == .decisions && !closed ? .semibold : .regular)
+                    )
+                    .lineSpacing(compact ? 2 : 4)
+                    .strikethrough(item.state == .cancelled)
+                    .foregroundStyle(closed ? Color.secondary : Palette.sumi)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .modifier(Selectable(enabled: edit == nil))  // A selectable text would take the click.
+                    .contentShape(Rectangle())
+                    .onTapGesture { edit?() }
+                    .help(edit == nil ? "" : "クリックして編集")
                 if let reason = item.reason {
-                    Text(highlighted("理由：" + reason, terms)).font(.caption).foregroundStyle(.secondary)
+                    NoteDetail(label: "理由", text: reason, color: tone.color, compact: compact)
                 }
                 if let next = item.nextStep {
-                    Text(highlighted("次の確認：" + next, terms)).font(.caption).foregroundStyle(Palette.yamabuki)
+                    NoteDetail(label: "次の確認", text: next, color: Palette.yamabukiInk, compact: compact)
                 }
                 if let change = item.changeSummary {
-                    Text(highlighted("経緯：" + change, terms)).font(.caption).foregroundStyle(.secondary)
+                    NoteDetail(label: "経緯", text: change, color: NoteTone.history.color, compact: compact)
                 }
-                HStack(spacing: 8) {
-                    if action {
-                        Tag(label: "担当", value: item.owner, open: item.state == .open)
-                        Tag(label: "期限", value: item.due, open: item.state == .open)
-                    } else if item.state != .open {
-                        Text(item.state == .done ? "解決済み" : "撤回・統合").foregroundStyle(Palette.asagi)
+                if action || closed || item.edited == true {
+                    HStack(spacing: 6) {
+                        if action {
+                            Tag(label: "担当", symbol: "person.fill", value: item.owner, open: !closed)
+                            Tag(label: "期限", symbol: "calendar", value: item.due, open: !closed)
+                        } else if closed {
+                            Text(item.state == .done ? "解決済み" : "撤回・統合").foregroundStyle(Palette.asagi)
+                        }
+                        if item.edited == true {
+                            Label("手直し", systemImage: "pencil").labelStyle(.titleAndIcon).foregroundStyle(.secondary)
+                                .help("手で直した項目です。AI の更新では書き換わりません")
+                        }
                     }
-                    if item.edited == true {
-                        Label("手直し", systemImage: "pencil").labelStyle(.titleAndIcon).foregroundStyle(.secondary)
-                            .help("手で直した項目です。AI の更新では書き換わりません")
-                    }
+                    .font(.system(size: compact ? 11 : 11.5))
                 }
-                .font(.caption)
                 if let first = evidence.first {
                     DisclosureGroup {
                         ForEach(evidence) { segment in
@@ -1644,10 +1697,51 @@ struct NoteRow: View {
                 }
             }
         }
-        .padding(.vertical, compact ? 6 : 9).padding(.horizontal, 8)
+        .padding(.vertical, compact ? 6 : 10).padding(.horizontal, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 4).fill(fresh ? Palette.asagi.opacity(0.1) : .clear))
         .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(current ? Palette.yamabuki : .clear, lineWidth: 1.5))
+    }
+    // The bullet says what kind of item it is: a check for a decision, an open ring for an open question, a box to
+    // tick for a task.
+    @ViewBuilder private var bullet: some View {
+        let size: CGFloat = compact ? 12 : 13
+        switch tone {
+        case .actions:
+            Image(
+                systemName: item.state == .done
+                    ? "checkmark.square.fill" : item.state == .cancelled ? "xmark.square" : "square"
+            )
+            .font(.system(size: size, weight: .medium))
+            .foregroundStyle(closed ? Color.secondary : tone.color)
+        case .decisions:
+            Image(systemName: "checkmark").font(.system(size: size - 2, weight: .heavy))
+                .foregroundStyle(closed ? Color.secondary : tone.color)
+        case .unresolved:
+            Circle().strokeBorder(Palette.yamabuki, lineWidth: 1.8).frame(width: 9, height: 9)
+                .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 1 }
+        case .summary, .history:
+            Circle().fill(tone.color.opacity(tone == .summary ? 0.55 : 0.35)).frame(width: 6, height: 6)
+                .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 2 }
+        }
+    }
+}
+// A reason or next step under an item: a small label in the section's ink, then the text a little smaller than the
+// item, still dark enough to read.
+struct NoteDetail: View {
+    @Environment(\.searchTerms) private var terms
+    let label: String
+    let text: String
+    let color: Color
+    var compact = false
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(label).font(.system(size: compact ? 10 : 10.5, weight: .bold)).foregroundStyle(color)
+                .padding(.horizontal, 5).padding(.vertical, 1.5)
+                .background(RoundedRectangle(cornerRadius: 3).fill(color.opacity(0.1)))
+            Text(highlighted(text, terms)).font(.system(size: compact ? 11.5 : 12.5)).lineSpacing(2)
+                .foregroundStyle(Palette.sumi.opacity(0.78)).fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 struct Selectable: ViewModifier {
@@ -1656,18 +1750,24 @@ struct Selectable: ViewModifier {
         if enabled { content.textSelection(.enabled) } else { content.textSelection(.disabled) }
     }
 }
-// An owner or deadline still missing on an open action is flagged, so the facilitator can ask for it.
+// An action's owner or deadline. One still missing on an open action is flagged in yamabuki, so the facilitator can
+// ask for it.
 struct Tag: View {
     let label: String
+    let symbol: String
     let value: String?
     var open = false
     var body: some View {
+        let missing = value == nil && open
+        let ink = missing ? Palette.yamabukiInk : Palette.ruri
         HStack(spacing: 4) {
+            Image(systemName: symbol).font(.system(size: 9, weight: .semibold)).foregroundStyle(ink.opacity(0.8))
             Text(label).foregroundStyle(.secondary)
-            Text(value ?? "未定").foregroundStyle(value != nil ? Palette.sumi : open ? Palette.yamabuki : Color.secondary)
+            Text(value ?? "未定").fontWeight(value != nil ? .semibold : .medium)
+                .foregroundStyle(value != nil ? Palette.sumi : missing ? Palette.yamabukiInk : Color.secondary)
         }
-        .padding(.horizontal, 7).padding(.vertical, 2)
-        .background(RoundedRectangle(cornerRadius: 4).strokeBorder(Palette.rule))
+        .padding(.horizontal, 7).padding(.vertical, 2.5)
+        .background(RoundedRectangle(cornerRadius: 4).fill(open ? ink.opacity(0.08) : Palette.rule.opacity(0.3)))
     }
 }
 
@@ -2689,7 +2789,7 @@ struct LiveMinutes: View {
                         Text("\(finalized.formatted(date: .omitted, time: .standard)) に全体の確認完了").foregroundStyle(
                             .secondary)
                     } else if let updated = notes.updatedAt {
-                        Circle().fill(Palette.asagi).frame(width: 6, height: 6)
+                        FreshSwatch()
                         Text("\(updated.formatted(date: .omitted, time: .standard)) の更新で加わった・変わった項目")
                             .foregroundStyle(.secondary)
                     } else if meeting.transcriptionFailure != nil && meeting.segments.isEmpty {
@@ -2711,20 +2811,20 @@ struct LiveMinutes: View {
                             + (store.pipeline.summaryError(meeting.id).map { "\n" + $0 } ?? ""))
                 }
                 LiveSection(
-                    title: "要約", items: content.summary.filter { $0.state != .cancelled }, known: known, latest: latest,
-                    topics: true)
-                LiveSection(
-                    title: "決定事項と理由", items: content.decisions.filter { $0.state != .cancelled }, known: known,
+                    title: "要約", tone: .summary, items: content.summary.filter { $0.state != .cancelled }, known: known,
                     latest: latest)
                 LiveSection(
-                    title: "未決事項・次の確認", items: content.unresolved.filter { $0.state == .open }, known: known,
-                    latest: latest)
+                    title: "決定事項と理由", tone: .decisions, items: content.decisions.filter { $0.state != .cancelled },
+                    known: known, latest: latest)
+                LiveSection(
+                    title: "未決事項・次の確認", tone: .unresolved, items: content.unresolved.filter { $0.state == .open },
+                    known: known, latest: latest)
                 if !content.history.isEmpty {
-                    LiveSection(title: "議論の経緯", items: content.history, known: known, latest: latest)
+                    LiveSection(title: "議論の経緯", tone: .history, items: content.history, known: known, latest: latest)
                 }
                 LiveSection(
-                    title: "アクションアイテム", items: content.actions.filter { $0.state != .cancelled }, known: known,
-                    latest: latest, actions: true)
+                    title: "アクションアイテム", tone: .actions, items: content.actions.filter { $0.state != .cancelled },
+                    known: known, latest: latest)
             }
             .padding(16)
             .textSelection(.enabled)
@@ -2736,30 +2836,30 @@ struct LiveMinutes: View {
 }
 struct LiveSection: View {
     let title: String
+    let tone: NoteTone
     let items: [NoteItem]
     let known: [String: Segment]
     let latest: Set<String>
-    var actions = false
-    var topics = false  // Summary items: their topics in bold.
     var body: some View {
-        let unassigned = actions ? items.filter { $0.state == .open && ($0.owner == nil || $0.due == nil) }.count : 0
+        let unassigned =
+            tone == .actions ? items.filter { $0.state == .open && ($0.owner == nil || $0.due == nil) }.count : 0
         VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(title).font(.mincho(14))
-                Text("\(items.count)").font(.caption).foregroundStyle(.secondary)
+                SectionHeading(title: title, tone: tone, count: items.count, compact: true)
                 Spacer()
                 if unassigned > 0 {
-                    Text("担当・期限が未定 \(unassigned)件").font(.caption).foregroundStyle(Palette.yamabuki)
+                    Text("担当・期限が未定 \(unassigned)件").font(.caption.weight(.semibold))
+                        .foregroundStyle(Palette.yamabukiInk)
                 }
             }
-            Rectangle().fill(Palette.rule).frame(height: 1).padding(.top, 4).padding(.bottom, 2)
+            SectionRule(tone: tone).padding(.top, 5).padding(.bottom, 2)
             if items.isEmpty {
                 Text("まだありません").font(.caption).foregroundStyle(.secondary).padding(.vertical, 4)
             }
             ForEach(items) { item in
                 NoteRow(
-                    item: item, known: known, fresh: !Set(item.evidence).isDisjoint(with: latest), action: actions,
-                    compact: true, topics: topics)
+                    item: item, known: known, fresh: !Set(item.evidence).isDisjoint(with: latest), tone: tone,
+                    compact: true)
             }
         }
     }

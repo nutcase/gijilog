@@ -13,7 +13,10 @@ extension ProcessingTests {
         notes.content.unresolved = [
             NoteItem(id: "u", text: "実施日程", evidence: ["after"], nextStep: "納期を確認する")
         ]
-        notes.content.actions = [NoteItem(id: "task", text: "納期を確認する", evidence: ["after"])]
+        notes.content.actions = [
+            NoteItem(id: "task", text: "納期を確認する", evidence: ["after"]),
+            NoteItem(id: "quote", text: "見積もりを送る", owner: "田中", due: "金曜", evidence: ["after"]),
+        ]
         notes.content.summary = [
             NoteItem(id: "s1", text: "案の比較：費用が低いB案に決まった", evidence: ["after"]),
             NoteItem(id: "s2", text: "日程は納期の確認後に決める", evidence: ["after"]),
@@ -30,11 +33,12 @@ extension ProcessingTests {
             !decisionSection.contains("A案") && decisionSection.contains("費用が低いため"),
             "obsolete choices leave the current decisions")
         try Self.check(
-            markdown.contains("次の確認: 納期を確認する") && markdown.contains("## 議論の経緯"),
+            markdown.contains("**次の確認**: 納期を確認する") && markdown.contains("## 議論の経緯"),
             "reason, next check and history are exported")
         let actions = markdown.components(separatedBy: "\n## アクションアイテム\n")[1].components(separatedBy: "\n## ")[0]
         try Self.check(
-            actions.contains("担当者: 未定 / 期限: 未定") && !markdown.contains("変更の経緯")
+            actions.contains("担当者: 未定 / 期限: 未定") && actions.contains("担当者: **田中** / 期限: **金曜**")
+                && !markdown.contains("変更の経緯")
                 && markdown.components(separatedBy: "\n## ").last == "文字起こし\n原文",
             "actions carry no invented assignments, the change history stays in the app, the transcript comes last")
         let old = Data(#"{"id":"legacy","text":"旧項目","evidence":["before"],"state":"open"}"#.utf8)
