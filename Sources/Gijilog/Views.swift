@@ -777,6 +777,27 @@ struct MinutesDesk: View {
     @Environment(\.searchTerms) private var terms
     let meeting: Meeting
     var body: some View {
+        // The find bar takes over the highlighting from the meeting search while it has words.
+        let find = store.minutesFind.open ? store.minutesFind : FindState()
+        let found = MeetingSearch.items(meeting, terms: find.terms)
+        let current = find.current(in: found)
+        VStack(spacing: 0) {
+            if store.minutesFind.open {
+                FindBar(state: $store.minutesFind, placeholder: "議事録を検索", count: found.count, dark: true)
+                    .frame(maxWidth: 520).padding(.top, 12)
+            }
+            ScrollViewReader { proxy in
+                document(current: current)
+                    .environment(\.searchTerms, find.terms.isEmpty ? terms : find.terms)
+                    .task(id: current) {
+                        guard let current else { return }
+                        try? await Task.sleep(nanoseconds: 50_000_000)  // After the items are laid out.
+                        withAnimation(.easeInOut(duration: 0.2)) { proxy.scrollTo("note-" + current, anchor: .center) }
+                    }
+            }
+        }
+    }
+    private func document(current: String?) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 header
@@ -790,7 +811,7 @@ struct MinutesDesk: View {
                 } else if let notes = meeting.notes {
                     MinutesSections(
                         notes: notes, segments: meeting.segments, meetingID: meeting.id,
-                        editable: store.canEditMinutes(meeting))
+                        editable: store.canEditMinutes(meeting), current: current)
                 } else if !meeting.minutes.isEmpty {
                     Text(highlighted(meeting.minutes, terms)).font(.system(size: 14)).lineSpacing(5).padding(.top, 24)
                 } else {
@@ -834,6 +855,17 @@ struct MinutesDesk: View {
                     .background(Capsule().fill(statusColor(meeting.status).opacity(0.12)))
                     .fixedSize()
                 Spacer(minLength: 0)
+                if meeting.notes != nil {
+                    Button {
+                        store.minutesFind.open = true
+                        store.minutesFind.focus += 1
+                    } label: {
+                        Image(systemName: "magnifyingglass")
+                    }
+                    .buttonStyle(.borderless).foregroundStyle(.secondary)
+                    .help("議事録の中を検索（⌥⌘F）")
+                    .accessibilityLabel("議事録の中を検索")
+                }
             }
             .font(.callout)
             tags
@@ -1054,6 +1086,7 @@ struct MinutesSections: View {
     let segments: [Segment]
     var meetingID: UUID?
     var editable = false
+    var current: String?  // The find bar's current match.
     var body: some View {
         let known = Dictionary(segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let latest = notes.latestSegmentIDs ?? []
@@ -1067,20 +1100,20 @@ struct MinutesSections: View {
             }
             NoteSection(
                 title: "要約", items: content.summary.filter { $0.state != .cancelled }, known: known, latest: latest,
-                editing: edit(.summary))
+                editing: edit(.summary), current: current)
             NoteSection(
                 title: "決定事項と理由", items: content.decisions.filter { $0.state != .cancelled }, known: known,
-                latest: latest, editing: edit(.decisions))
+                latest: latest, editing: edit(.decisions), current: current)
             NoteSection(
                 title: "未決事項・次の確認", items: content.unresolved.filter { $0.state == .open }, known: known,
                 latest: latest,
-                editing: edit(.unresolved))
+                editing: edit(.unresolved), current: current)
             if !content.history.isEmpty {
-                NoteSection(title: "議論の経緯", items: content.history, known: known, latest: latest)
+                NoteSection(title: "議論の経緯", items: content.history, known: known, latest: latest, current: current)
             }
             NoteSection(
                 title: "アクションアイテム", items: content.actions.filter { $0.state != .cancelled }, known: known,
-                latest: latest, actions: true, editing: edit(.actions))
+                latest: latest, actions: true, editing: edit(.actions), current: current)
         }
         .padding(.top, 26)
     }
@@ -1101,6 +1134,7 @@ struct NoteSection: View {
     let latest: Set<String>
     var actions = false
     var editing: NoteEditing?
+    var current: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -1113,11 +1147,16 @@ struct NoteSection: View {
             }
             ForEach(items) { item in
                 let fresh = !Set(item.evidence).isDisjoint(with: latest)
-                if let editing {
-                    EditableNoteRow(editing: editing, item: item, known: known, fresh: fresh, action: actions)
-                } else {
-                    NoteRow(item: item, known: known, fresh: fresh, action: actions)
+                Group {
+                    if let editing {
+                        EditableNoteRow(
+                            editing: editing, item: item, known: known, fresh: fresh, action: actions,
+                            current: item.id == current)
+                    } else {
+                        NoteRow(item: item, known: known, fresh: fresh, action: actions, current: item.id == current)
+                    }
                 }
+                .id("note-" + item.id)
                 if item.id != items.last?.id { Rectangle().fill(Palette.rule.opacity(0.5)).frame(height: 0.5) }
             }
             if let editing { AddNoteItem(editing: editing) }
@@ -1181,6 +1220,7 @@ struct EditableNoteRow: View {
     let known: [String: Segment]
     let fresh: Bool
     let action: Bool
+    var current = false
     private var key: String { editing.part.rawValue + "/" + item.id }
     var body: some View {
         let open = store.editingNoteItem == key
@@ -1188,11 +1228,14 @@ struct EditableNoteRow: View {
             if open {
                 editor
             } else {
-                NoteRow(item: item, known: known, fresh: fresh, action: action, edit: { store.editingNoteItem = key })
-                    .contextMenu {
-                        Button("編集", systemImage: "pencil") { store.editingNoteItem = key }
-                        Button("削除", systemImage: "trash", role: .destructive) { remove() }
-                    }
+                NoteRow(
+                    item: item, known: known, fresh: fresh, action: action, current: current,
+                    edit: { store.editingNoteItem = key }
+                )
+                .contextMenu {
+                    Button("編集", systemImage: "pencil") { store.editingNoteItem = key }
+                    Button("削除", systemImage: "trash", role: .destructive) { remove() }
+                }
             }
         }
         .onChange(of: open, initial: true) { wasOpen, isOpen in
@@ -1484,6 +1527,7 @@ struct NoteRow: View {
     let fresh: Bool
     let action: Bool
     var compact = false
+    var current = false  // The find bar's current match.
     var edit: (() -> Void)?  // Set where the minutes can be edited: clicking the text opens the item.
     var body: some View {
         let evidence = item.evidence.compactMap { known[$0] }.sorted { $0.time < $1.time }
@@ -1551,6 +1595,7 @@ struct NoteRow: View {
         .padding(.vertical, compact ? 6 : 9).padding(.horizontal, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 4).fill(fresh ? Palette.asagi.opacity(0.1) : .clear))
+        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(current ? Palette.yamabuki : .clear, lineWidth: 1.5))
     }
 }
 struct Selectable: ViewModifier {
@@ -1580,6 +1625,54 @@ struct Tag: View {
 @MainActor final class TranscriptFollow: ObservableObject {
     @Published var atEnd = true
 }
+// A find bar for one meeting's transcript or minutes: Return or ↓ goes to the next match, ↑ to the previous one,
+// Esc closes it.
+struct FindBar: View {
+    @Binding var state: FindState
+    let placeholder: String
+    let count: Int
+    var dark = false
+    @FocusState private var focused: Bool
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField(placeholder, text: $state.query)
+                .textFieldStyle(.plain).focused($focused)
+                .onSubmit { state.step(1, count: count) }
+                .onExitCommand { state = FindState() }
+            if !state.terms.isEmpty {
+                Text(count == 0 ? "なし" : "\(min(state.index, count - 1) + 1)/\(count)")
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary).fixedSize()
+            }
+            Button {
+                state.step(-1, count: count)
+            } label: {
+                Image(systemName: "chevron.up")
+            }
+            .help("前の一致").disabled(count == 0)
+            Button {
+                state.step(1, count: count)
+            } label: {
+                Image(systemName: "chevron.down")
+            }
+            .help("次の一致（Return）").disabled(count == 0)
+            Button {
+                state = FindState()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+            }
+            .help("閉じる（Esc）")
+        }
+        .buttonStyle(.borderless)
+        .font(.callout)
+        .padding(.horizontal, 10).frame(height: 30)
+        .background(RoundedRectangle(cornerRadius: 7).fill(dark ? Palette.ai : Color.white.opacity(0.9)))
+        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Palette.asagi.opacity(0.5)))
+        .onAppear { focused = true }
+        .onChange(of: state.focus) { focused = true }
+        .onChange(of: state.query) { state.index = 0 }
+    }
+}
 struct TranscriptPanel: View {
     @EnvironmentObject var store: Store
     @Environment(\.searchTerms) private var terms
@@ -1595,6 +1688,11 @@ struct TranscriptPanel: View {
             : meeting.segments.filter { segment in
                 terms.contains { segment.text.range(of: $0, options: MeetingSearch.options) != nil }
             }
+        // The find bar (full window only) takes over the highlighting from the meeting search while it has words.
+        let find = showsHeader && store.transcriptFind.open ? store.transcriptFind : FindState()
+        let found = MeetingSearch.lines(meeting, terms: find.terms)
+        let current = find.current(in: found)
+        let shownTerms = find.terms.isEmpty ? terms : find.terms
         VStack(alignment: .leading, spacing: 0) {
             if showsHeader {
                 // The same tab as the compact window's, so the panel reads as the transcript's page.
@@ -1613,11 +1711,24 @@ struct TranscriptPanel: View {
                             Label("処理待ち \(pending)件", systemImage: "hourglass").font(.caption).foregroundStyle(
                                 .secondary)
                         }
+                        Button {
+                            store.transcriptFind.open = true
+                            store.transcriptFind.focus += 1
+                        } label: {
+                            Image(systemName: "magnifyingglass")
+                        }
+                        .buttonStyle(.borderless).foregroundStyle(.secondary)
+                        .help("文字起こしの中を検索（⇧⌘F）")
+                        .accessibilityLabel("文字起こしの中を検索")
                     }
                     .padding(.bottom, 9)
                 }
                 .padding(.top, 10)
                 .pageTabBar()
+            }
+            if showsHeader && store.transcriptFind.open {
+                FindBar(state: $store.transcriptFind, placeholder: "文字起こしを検索", count: found.count, dark: true)
+                    .padding(.horizontal, 12).padding(.top, 10)
             }
             if let offer = store.correctionOffer, offer.meetingID == meeting.id, offer.inTranscript, editable {
                 CorrectionOfferView(offer: offer, stacked: true).padding(.horizontal, 12).padding(.top, 10)
@@ -1631,12 +1742,15 @@ struct TranscriptPanel: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 16) {
                             ForEach(meeting.segments) { segment in
-                                TranscriptRow(segment: segment, meetingID: meeting.id, editable: editable).id(
-                                    segment.id)
+                                TranscriptRow(
+                                    segment: segment, meetingID: meeting.id, editable: editable,
+                                    current: segment.id == current
+                                ).id(segment.id)
                             }
                         }
                         .padding(16)
                         .textSelection(.enabled)
+                        .environment(\.searchTerms, shownTerms)
                     }
                     // While recording, open at the latest speech and keep following it unless the user scrolled back.
                     // A finished meeting opens at its beginning.
@@ -1657,8 +1771,15 @@ struct TranscriptPanel: View {
                         }
                     }
                     .onChange(of: meeting.segments.last?.id) {
-                        // Not while a line is being corrected: following would scroll it away.
-                        if live && follow.atEnd && terms.isEmpty && store.editingSegment == nil { scrollToEnd(proxy) }
+                        // Not while a line is being corrected or found: following would scroll it away.
+                        if live && follow.atEnd && shownTerms.isEmpty && store.editingSegment == nil {
+                            scrollToEnd(proxy)
+                        }
+                    }
+                    .task(id: current) {
+                        guard let current else { return }
+                        try? await Task.sleep(nanoseconds: 50_000_000)  // After the rows are laid out.
+                        proxy.scrollTo(current, anchor: .center)
                     }
                     // A new search, or another meeting while searching, opens at the first matching utterance.
                     .task(id: "\(meeting.id) \(terms.joined(separator: " "))") {
@@ -1714,6 +1835,7 @@ struct TranscriptRow: View {
     let segment: Segment
     var meetingID: UUID?
     var editable = false
+    var current = false  // The find bar's current match.
     var body: some View {
         let open = editable && store.editingSegment == segment.id
         VStack(alignment: .leading, spacing: 4) {
@@ -1747,6 +1869,8 @@ struct TranscriptRow: View {
                     .help(editable ? "クリックして編集" : "")
             }
         }
+        .padding(current ? 6 : 0)
+        .background(RoundedRectangle(cornerRadius: 6).strokeBorder(current ? Palette.yamabuki : .clear, lineWidth: 1.5))
         .contextMenu {
             if editable, let meetingID {
                 Button("編集", systemImage: "pencil") { store.editingSegment = segment.id }
@@ -2743,6 +2867,21 @@ struct FindMenuItem: View {
             store.focusesSearch = true
         }
         .keyboardShortcut("f")
+        Button("議事録の中を検索") {
+            ViewSwitch(open: openWindow, dismiss: dismissWindow).full()
+            store.minutesFind.open = true
+            store.minutesFind.focus += 1
+        }
+        .keyboardShortcut("f", modifiers: [.command, .option])
+        .disabled(store.selectedMeeting?.notes == nil)
+        Button("文字起こしの中を検索") {
+            ViewSwitch(open: openWindow, dismiss: dismissWindow).full()
+            store.showsTranscript = true
+            store.transcriptFind.open = true
+            store.transcriptFind.focus += 1
+        }
+        .keyboardShortcut("f", modifiers: [.command, .shift])
+        .disabled(store.selectedMeeting?.segments.isEmpty != false)
     }
 }
 struct RecordingMenuItems: View {

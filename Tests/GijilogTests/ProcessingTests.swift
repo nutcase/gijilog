@@ -75,6 +75,7 @@ import Foundation
         try await tests.testTagsCanBeRenamedMergedAndDeleted()
         try tests.testSearchFindsEveryKeywordAnywhereInAMeeting()
         try await tests.testSearchNarrowsTheListWithTags()
+        try tests.testFindingWordsInsideAMeeting()
         try tests.testAgendaParsesPastedText()
         try tests.testAgendaFollowsTheMeeting()
         try tests.testMinutesModelJudgesTheTopic()
@@ -86,7 +87,7 @@ import Foundation
         try tests.testMCPKeepsWhatTheUserWithholds()
         try await tests.testMCPAnswersOverItsSocket()
         print(
-            "PASS: 72 checks (recording, chunking at pauses, voice gate, transcription hints, editing and corrections, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, audio mixdown, file import, upgrade and recovery, storage cleanup, minutes quality and final review, tags, search, agenda, MCP)"
+            "PASS: 73 checks (recording, chunking at pauses, voice gate, transcription hints, editing and corrections, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, audio mixdown, file import, upgrade and recovery, storage cleanup, minutes quality and final review, tags, search, agenda, MCP)"
         )
     }
     /// A steady tone, silent in the given ranges of seconds.

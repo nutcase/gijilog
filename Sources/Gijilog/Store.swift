@@ -49,6 +49,8 @@ import UniformTypeIdentifiers
     @Published var editingNoteItem: String?  // The minutes item open for editing, as "part/id".
     @Published var addingNoteItem: String?  // The section whose "add an item" field is open, as "meeting/part".
     @Published var editingSegment: String?  // The transcript line open for editing.
+    @Published var minutesFind = FindState()  // Finding words in the open meeting's minutes.
+    @Published var transcriptFind = FindState()  // Finding words in the open meeting's transcript.
     @Published var correctionOffer: CorrectionOffer?  // After an edit: fix the same word elsewhere too?
     @Published var correcting: CorrectionRequest?  // The sheet for fixing a word across a meeting.
     @Published var editingAgendaItem: UUID?  // The agenda topic open for editing; the others show as text.

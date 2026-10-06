@@ -55,6 +55,7 @@ You can also start and stop from the menu bar icon (a waveform, or a record mark
 | ⌘N | Prepare an agenda (create a meeting before recording it) |
 | ⌘O | Import a recording file |
 | ⌘F | Search meetings |
+| ⌥⌘F / ⇧⌘F | Find in the open meeting's minutes / transcript |
 | ⌘1 / ⌘2 / ⌘3 | Compact window tabs: minutes, transcript, agenda |
 | ⌘, | Settings |
 
@@ -98,6 +99,8 @@ When the meeting starts, keep the prepared meeting selected and click 録音を�
 ## Keyword search
 
 Type in the search field above the list (⌘F) to show only the meetings whose title, tags, minutes, or transcript contain your keywords; each meeting shows an excerpt of the match. Separate keywords with spaces to find meetings that contain all of them. Letter case and full-width or half-width characters are ignored, and search combines with the tag filter. Opening a meeting marks the matches in its minutes and transcript and scrolls the transcript to the first one.
+
+Inside the open meeting, the minutes (the magnifier on the date line, or ⌥⌘F) and the transcript (the magnifier in its header, or ⇧⌘F) each have their own find bar. It shows how many items or utterances match and which one you are on (such as 3/12); Return or ↓ goes to the next match, ↑ to the previous one, and Esc closes it.
 
 ## Use from AI apps (MCP)
 
@@ -160,7 +163,7 @@ If your Documents folder syncs with iCloud Drive, recordings are uploaded too.
 ./scripts/build.sh   # build dist/ギジログ.app after the checks pass
 ```
 
-The 72 regression tests cover chunking at pauses and the shared recording clock, the voice gate and transcription hints, hand edits and word corrections, incremental minutes and evidence checks, retries and recovery after restart, moving the save location and upgrading from earlier versions, mixing the audio, importing recording files, cleaning up working audio, the final review, tags, search, the agenda, and the MCP server. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.
+The 73 regression tests cover chunking at pauses and the shared recording clock, the voice gate and transcription hints, hand edits and word corrections, incremental minutes and evidence checks, retries and recovery after restart, moving the save location and upgrading from earlier versions, mixing the audio, importing recording files, cleaning up working audio, the final review, tags, search, the agenda, and the MCP server. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.
 
 With only the Command Line Tools installed, SwiftUI's `@State` does not compile, so view state lives in `ObservableObject`s.
 

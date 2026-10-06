@@ -91,4 +91,38 @@ extension ProcessingTests {
             store.searchHits.isEmpty && store.searchedTerms.isEmpty && store.visibleMeetings.count == 3,
             "clearing the search shows every meeting")
     }
+    func testFindingWordsInsideAMeeting() throws {
+        var meeting = Meeting(title: "定例")
+        meeting.segments = [
+            Segment(id: "a", time: 0, source: "マイク", text: "リリースはＡＰＩの公開までです"),
+            Segment(id: "b", time: 10, source: "Mac音声", text: "料金ページは未定です"),
+            Segment(id: "c", time: 20, source: "マイク", text: "api の料金は来月決めます"),
+        ]
+        var notes = MinutesState()
+        notes.content.summary = [NoteItem(id: "s1", text: "リリース：API公開まで", evidence: ["a"])]
+        notes.content.decisions = [
+            NoteItem(id: "d0", text: "旧案", evidence: ["a"], state: .cancelled),
+            NoteItem(id: "d1", text: "料金は来月決める", evidence: ["c"], reason: "API の原価を見てから"),
+        ]
+        notes.content.actions = [NoteItem(id: "x1", text: "見積もりを作る", owner: "API担当", evidence: ["c"])]
+        meeting.notes = notes
+        try Self.check(
+            MeetingSearch.lines(meeting, terms: ["api"]) == ["a", "c"]
+                && MeetingSearch.lines(meeting, terms: ["api", "料金"]) == ["c"],
+            "transcript lines with every word, ignoring case and width")
+        try Self.check(
+            MeetingSearch.items(meeting, terms: ["API"]) == ["s1", "d1", "x1"]
+                && MeetingSearch.items(meeting, terms: ["旧案"]) == ["d0"],
+            "minutes items match in any field, in the order shown, withdrawn ones under their history")
+        var find = FindState(query: "api", open: true)
+        let matches = ["a", "c"]
+        try Self.check(find.current(in: matches) == "a", "the first match is current")
+        find.step(1, count: matches.count)
+        try Self.check(find.current(in: matches) == "c", "Return moves to the next match")
+        find.step(1, count: matches.count)
+        try Self.check(find.current(in: matches) == "a", "and wraps around")
+        find.step(-1, count: matches.count)
+        try Self.check(find.current(in: matches) == "c", "↑ moves back, wrapping too")
+        try Self.check(FindState(query: " ", open: true).current(in: matches) == nil, "no words, no match")
+    }
 }

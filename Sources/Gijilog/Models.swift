@@ -274,8 +274,45 @@ struct SearchHit: Equatable {
     var time: Double?
     var source: String?  // マイク or Mac音声, when the passage is in the transcript.
 }
+// Finding words inside one meeting: its transcript and its minutes each have a find bar, which steps through the
+// lines or items holding every word.
+struct FindState: Equatable {
+    var query = ""
+    var index = 0
+    var open = false
+    var focus = 0  // Bumped to put the cursor back in the field.
+    var terms: [String] { MeetingSearch.terms(query) }
+    /// Moves to the next (1) or previous (-1) match, wrapping around.
+    mutating func step(_ delta: Int, count: Int) {
+        guard count > 0 else { return }
+        index = ((index + delta) % count + count) % count
+    }
+    func current(in matches: [String]) -> String? {
+        matches.isEmpty || terms.isEmpty ? nil : matches[min(index, matches.count - 1)]
+    }
+}
 enum MeetingSearch {
     static let options: String.CompareOptions = [.caseInsensitive, .widthInsensitive]
+    private static func containsAll(_ text: String, _ terms: [String]) -> Bool {
+        !terms.isEmpty && terms.allSatisfy { text.range(of: $0, options: options) != nil }
+    }
+    /// The transcript lines holding every word, in order.
+    static func lines(_ meeting: Meeting, terms: [String]) -> [String] {
+        meeting.segments.filter { containsAll($0.text, terms) }.map(\.id)
+    }
+    /// The minutes items holding every word in any of their fields, in the order the minutes show them.
+    static func items(_ meeting: Meeting, terms: [String]) -> [String] {
+        guard let content = meeting.notes?.content else { return [] }
+        let shown =
+            content.summary.filter { $0.state != .cancelled } + content.decisions.filter { $0.state != .cancelled }
+            + content.unresolved.filter { $0.state == .open } + content.history
+            + content.actions.filter { $0.state != .cancelled }
+        return shown.filter { item in
+            containsAll(
+                [item.text, item.owner, item.due, item.reason, item.nextStep, item.changeSummary].compactMap { $0 }
+                    .joined(separator: "\n"), terms)
+        }.map(\.id)
+    }
     /// Keywords separated by spaces (half-width or full-width). A meeting must contain every one.
     static func terms(_ query: String) -> [String] {
         var seen = Set<String>()
