@@ -63,4 +63,8 @@ PLIST
 # audio recording permission. Set GIJILOG_SIGN_IDENTITY to a code-signing certificate name to keep it.
 codesign --force --sign "${GIJILOG_SIGN_IDENTITY:--}" "$APP/Contents/MacOS/gijilog-mcp"
 codesign --force --sign "${GIJILOG_SIGN_IDENTITY:--}" "$APP"
+# macOS keeps showing an app's earlier icon until the app's folder changes: mark it changed and register it again.
+touch "$APP" "$APP/Contents"
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" \
+  >/dev/null 2>&1 || true
 printf '%s\n' "$APP"
