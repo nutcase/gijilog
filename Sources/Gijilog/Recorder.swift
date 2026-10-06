@@ -25,6 +25,7 @@ final class Recorder: NSObject, @unchecked Sendable {
     private var chunkStarts: [Track: Double] = [:]
     private var cutters: [Track: ChunkCutter] = [:]
     private var origin: Double?
+    private var base = 0.0  // Where this recording starts on the meeting's clock: after any earlier recording.
     private var expectedNextTime: [Track: Double] = [:]
     var onChunk: (@Sendable (URL, Double, String) async -> Void)?
     private var deliveries: [UUID: Task<Void, Never>] = [:]
@@ -35,11 +36,13 @@ final class Recorder: NSObject, @unchecked Sendable {
     private var cancelledStart = false
     var onError: ((String) -> Void)?
     var onLevel: ((String, Float) -> Void)?  // Track name ("Mac音声" or "マイク") and peak level.
-    func start(folder: URL, microphone: String?) async throws {
+    /// Records into a meeting folder. With `continuingAt`, the meeting already has a recording that long: its
+    /// chunks stay listed and the new ones follow it.
+    func start(folder: URL, microphone: String?, continuingAt base: Double? = nil) async throws {
         queue.sync { cancelledStart = false }
         guard await AVCaptureDevice.requestAccess(for: .audio) else { throw AppError.message("マイクの使用を許可してください。") }
         try checkStarting()
-        try prepareFiles(in: folder)
+        try prepareFiles(in: folder, continuingAt: base)
         do {
             let capture = CaptureSession()
             try queue.sync {
@@ -81,7 +84,7 @@ final class Recorder: NSObject, @unchecked Sendable {
             throw error
         }
     }
-    func prepareFiles(in folder: URL) throws {
+    func prepareFiles(in folder: URL, continuingAt base: Double? = nil) throws {
         try queue.sync {
             guard !cancelledStart else { throw CancellationError() }
             guard !isStopping, !acceptingSamples, capture == nil, chunkFiles.isEmpty else {
@@ -89,11 +92,15 @@ final class Recorder: NSObject, @unchecked Sendable {
             }
             try FileManager.default.createDirectory(
                 at: folder.appendingPathComponent("chunks"), withIntermediateDirectories: true)
-            let manifest = RecordingManifest()
-            try JSONEncoder().encode(manifest).write(
-                to: folder.appendingPathComponent("recording.json"), options: .atomic)
+            let file = folder.appendingPathComponent("recording.json")
+            var manifest = RecordingManifest()
+            if base != nil, let data = try? Data(contentsOf: file) {
+                manifest = try JSONDecoder().decode(RecordingManifest.self, from: data)
+            }
+            try JSONEncoder().encode(manifest).write(to: file, options: .atomic)
             self.folder = folder
             self.origin = nil
+            self.base = max(0, base ?? 0)
             self.manifest = manifest
             self.lastMicrophoneInput = Date()
             self.notifiedMissingInput = false
@@ -131,6 +138,7 @@ final class Recorder: NSObject, @unchecked Sendable {
                 self.cutters.removeAll()
                 self.folder = nil
                 self.origin = nil
+                self.base = 0
                 self.manifest = RecordingManifest()
                 self.expectedNextTime.removeAll()
                 let pending = Array(self.deliveries.values)
@@ -224,7 +232,7 @@ final class Recorder: NSObject, @unchecked Sendable {
                 chunkFiles[type] = try AVAudioFile(
                     forWriting: url, settings: Self.compactSettings(format), commonFormat: format.commonFormat,
                     interleaved: format.isInterleaved)
-                let offset = max(0, timestamp - (origin ?? timestamp))
+                let offset = base + max(0, timestamp - (origin ?? timestamp))
                 chunkURLs[type] = url
                 chunkStarts[type] = offset
                 cutters[type, default: ChunkCutter()].begin()

@@ -80,3 +80,50 @@ extension ProcessingTests {
             "cleanup frees the complete meeting's working audio and leaves the failed one alone")
     }
 }
+
+extension ProcessingTests {
+    func testRecordingContinuesAfterTheEarlierPart() async throws {
+        let (folder, _) = try fixture(seconds: 1, amplitude: 0.25)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let recorder = Recorder()
+        try recorder.prepareFiles(in: folder)
+        recorder.consume(try audioSample(at: 0), of: .microphone)
+        try await recorder.stop()
+        try recorder.prepareFiles(in: folder, continuingAt: 100)
+        recorder.consume(try audioSample(at: 500), of: .microphone)
+        try await recorder.stop()
+        let inputs = try Processor.recordingInputs(folder: folder)
+        let length = try Processor.recordedLength(folder: folder)
+        try Self.check(
+            inputs.map(\.offset) == [0, 100] && abs(length - 101) < 0.01,
+            "the earlier chunks stay listed and the new part starts after them: \(inputs.map(\.offset)), \(length)")
+    }
+    @MainActor func testContinuingAMeetingWhoseWorkingAudioWasCleaned() async throws {
+        let (store, meeting, root) = try await importedMeeting(seconds: 45, removesWorkingAudio: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let segments = store.meetings[0].segments
+        let cleaned = try Store.workingAudioMissing(store.folder(meeting.id))
+        try Self.check(
+            store.canContinueRecording(store.meetings[0]) && cleaned,
+            "a finished meeting without working audio can be continued")
+        let base = try await store.prepareContinuation(meeting.id)
+        let again = try Self.require(store.meetings.first, "continued meeting")
+        let inputs = try Processor.recordingInputs(folder: store.folder(meeting.id))
+        try Self.check(
+            abs(base - 45) < 0.5 && !inputs.isEmpty
+                && inputs.allSatisfy { input in
+                    again.jobs.contains {
+                        $0.filename == "chunks/" + input.url.lastPathComponent && $0.state == .completed
+                    }
+                } && again.segments == segments && !store.pipeline.isProcessing(meeting.id),
+            "録音.m4a is cut into chunks again, already transcribed, and the new part starts after it: \(base)")
+        var timed = again
+        timed.clockStart = timed.date.addingTimeInterval(600)
+        try Self.check(
+            timed.recordingOrigin == timed.date.addingTimeInterval(600) && again.recordingOrigin == again.date,
+            "a continued meeting's clock runs on from its earlier part")
+        var planned = Meeting(title: "準備中")
+        planned.capture = .planned
+        try Self.check(!store.canContinueRecording(planned), "a prepared meeting is recorded, not continued")
+    }
+}

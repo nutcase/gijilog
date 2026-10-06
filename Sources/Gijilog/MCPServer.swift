@@ -383,7 +383,7 @@ struct MCPAccess: Identifiable, Equatable {
         else {
             return Self.success("録音中の会議はありません。", ["recording": false])
         }
-        let elapsed = Date().timeIntervalSince(meeting.date)
+        let elapsed = Date().timeIntervalSince(meeting.recordingOrigin)
         var text = "録音中: \(meeting.title)（経過 \(clock(elapsed))）　ID: \(meeting.id.uuidString)\n"
         var structured: [String: Any] = [
             "recording": true, "id": meeting.id.uuidString, "title": meeting.title, "elapsed_seconds": Int(elapsed),

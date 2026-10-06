@@ -436,21 +436,16 @@ import UniformTypeIdentifiers
         let hasAudio = try await Task.detached { try Processor.hasRecordedAudio(folder: path) }.value
         change(id) { $0.hasAudio = hasAudio }
     }
-    func start() async {
-        guard ready, !recording, !busy, !shuttingDown else { return }
-        guard hasKey else {
-            error = "録音するには、設定でOpenAI APIキーを保存してください。"
-            return
-        }
-        if !microphone.isEmpty && AVCaptureDevice(uniqueID: microphone) == nil {
-            error = "設定で選んだマイクが見つかりません。接続を確認するか、設定でマイクを選び直してください。"
-            return
-        }
+    /// What 録音を開始 does with the current selection: record the selected prepared meeting, or a new one.
+    var startsPreparedMeeting: Bool { selectedMeeting(where: { $0.capture == .planned }) != nil }
+    /// Records the selected prepared meeting, or a new one. `newMeeting` always starts a new one.
+    func start(newMeeting forcesNew: Bool = false) async {
+        guard canStartRecording() else { return }
         busy = true
         pendingCaptureError = nil
         defer { busy = false }
         // A prepared meeting that is selected is the one recorded, with its title, tags and agenda.
-        let planned = selectedMeeting(where: { $0.capture == .planned })
+        let planned = forcesNew ? nil : selectedMeeting(where: { $0.capture == .planned })
         let id: UUID
         if let planned {
             id = planned.id
@@ -466,6 +461,103 @@ import UniformTypeIdentifiers
             id = meeting.id
             meetings.insert(meeting, at: 0)
         }
+        await record(id) { meeting in
+            if let planned {
+                // Still prepared: the agenda waits for the next try.
+                meeting.capture = .planned
+                meeting.date = planned.date
+                meeting.settings = nil
+                meeting.finalReviewPending = nil
+                meeting.status = "準備中"
+                meeting.agenda = planned.agenda
+            } else {
+                meeting.capture = .interrupted
+                meeting.status = "録音開始失敗"
+            }
+        }
+    }
+    /// A finished meeting can take more recording once nothing is processing it.
+    func canContinueRecording(_ meeting: Meeting) -> Bool {
+        (meeting.capture == .stopped || meeting.capture == .interrupted) && meeting.id != activeID
+            && !isProcessing(meeting.id) && !preparingIDs.contains(meeting.id)
+    }
+    /// Records more of a finished meeting, such as after a break: the new speech follows the earlier recording on
+    /// the meeting's clock, the transcript and minutes grow, and stopping makes one 録音.m4a and reviews the whole
+    /// meeting again.
+    func continueRecording(_ id: UUID) async {
+        guard canStartRecording(), let before = meetings.first(where: { $0.id == id }), canContinueRecording(before)
+        else { return }
+        busy = true
+        pendingCaptureError = nil
+        defer { busy = false }
+        let base: Double
+        do { base = try await prepareContinuation(id) } catch {
+            self.error = error.localizedDescription
+            return
+        }
+        change(id) { meeting in
+            meeting.capture = .recording
+            meeting.status = "録音中"
+            meeting.settings = settings
+            meeting.finalReviewPending = true
+            meeting.notes?.reviewedSegmentIDs = nil
+            meeting.notes?.finalizedAt = nil
+            meeting.captureError = nil
+            meeting.clockStart = Date().addingTimeInterval(-base)
+        }
+        await record(id, continuingAt: base) { meeting in
+            meeting.capture = before.capture
+            meeting.status = before.status
+            meeting.settings = before.settings
+            meeting.finalReviewPending = before.finalReviewPending
+            meeting.notes?.reviewedSegmentIDs = before.notes?.reviewedSegmentIDs
+            meeting.notes?.finalizedAt = before.notes?.finalizedAt
+            meeting.clockStart = before.clockStart
+        }
+    }
+    /// Gets a finished meeting ready to record more and returns where the new part starts on its clock. Its earlier
+    /// audio has to stay in the working audio, so that 録音.m4a can be made again with both parts: when it was
+    /// cleaned up, 録音.m4a is cut into chunks again, marked as transcribed already.
+    func prepareContinuation(_ id: UUID) async throws -> Double {
+        let folder = folder(id)
+        if try await Task.detached(operation: { try Self.workingAudioMissing(folder) }).value {
+            let mix = folder.appendingPathComponent(AudioMixdown.filename)
+            guard FileManager.default.fileExists(atPath: mix.path) else {
+                throw AppError.message("この会議の録音（録音.m4a）が見つからないため、続けて録音できません。")
+            }
+            let chunks = try await Task.detached {
+                WorkingAudio.remove(in: folder)
+                return try await AudioImport.split(mix, into: folder)
+            }.value
+            change(id) { meeting in
+                for chunk in chunks {
+                    let relative = "chunks/" + chunk.filename
+                    meeting.jobs.removeAll { $0.filename == relative }
+                    meeting.jobs.append(
+                        TranscriptionJob(
+                            id: stableID(relative), filename: relative, offset: chunk.offset, source: chunk.source,
+                            state: .completed))
+                }
+            }
+        }
+        let length = try await Task.detached { try Processor.recordedLength(folder: folder) }.value
+        let lastSpeech = meetings.first { $0.id == id }?.segments.map(\.time).max() ?? 0
+        return max(length, lastSpeech + 1)
+    }
+    private func canStartRecording() -> Bool {
+        guard ready, !recording, !busy, !shuttingDown else { return false }
+        guard hasKey else {
+            error = "録音するには、設定でOpenAI APIキーを保存してください。"
+            return false
+        }
+        if !microphone.isEmpty && AVCaptureDevice(uniqueID: microphone) == nil {
+            error = "設定で選んだマイクが見つかりません。接続を確認するか、設定でマイクを選び直してください。"
+            return false
+        }
+        return true
+    }
+    /// Starts capturing into a meeting already marked as recording; on failure, `revert` puts the meeting back.
+    private func record(_ id: UUID, continuingAt base: Double? = nil, revert: (inout Meeting) -> Void) async {
         showNewMeeting()
         selected = id
         activeID = id
@@ -473,7 +565,8 @@ import UniformTypeIdentifiers
         do {
             try await checkpoint(id)
             pipeline.resume(id, key: key)
-            try await recorder.start(folder: folder(id), microphone: microphone.isEmpty ? nil : microphone)
+            try await recorder.start(
+                folder: folder(id), microphone: microphone.isEmpty ? nil : microphone, continuingAt: base)
             recording = true
             status = "録音中 — Mac音声＋マイク"
             activity = ProcessInfo.processInfo.beginActivity(options: .userInitiated, reason: "会議音声を録音中")
@@ -488,18 +581,7 @@ import UniformTypeIdentifiers
             }
         } catch {
             change(id) { meeting in
-                if let planned {
-                    // Still prepared: the agenda waits for the next try.
-                    meeting.capture = .planned
-                    meeting.date = planned.date
-                    meeting.settings = nil
-                    meeting.finalReviewPending = nil
-                    meeting.status = "準備中"
-                    meeting.agenda = planned.agenda
-                } else {
-                    meeting.capture = .interrupted
-                    meeting.status = "録音開始失敗"
-                }
+                revert(&meeting)
                 meeting.captureError = error.localizedDescription
             }
             activeID = nil
@@ -574,7 +656,7 @@ import UniformTypeIdentifiers
         change(id) {
             $0.capture = interrupted ? .interrupted : .stopped
             $0.status = "録音停止済み・残りを処理中"
-            $0.agenda = MeetingAgenda.finish($0.agenda, at: Date().timeIntervalSince($0.date))
+            $0.agenda = MeetingAgenda.finish($0.agenda, at: Date().timeIntervalSince($0.recordingOrigin))
         }
         do { try await discoverJobs(id) } catch {
             self.error = error.localizedDescription

@@ -110,10 +110,14 @@ struct Meeting: Codable, Identifiable {
     var tags: [String] = []  // In the order they were added; see MeetingTags for spelling and duplicates.
     var agenda: [AgendaItem] = []  // Optional; a meeting without one works exactly as before.
     var corrections: [TermCorrection] = []  // Misheard words fixed across the meeting; see Corrections.swift.
+    var clockStart: Date?  // Set when a recording continues the meeting: when its clock would have started.
     init(title: String) { self.title = title }
+    /// When the meeting's clock reads zero: the start of the recording, or, for a meeting recorded in parts, the
+    /// moment that puts the latest part right after the earlier ones.
+    var recordingOrigin: Date { clockStart ?? date }
     enum CodingKeys: String, CodingKey {
         case id, title, date, segments, minutes, status, capture, settings, jobs, notes, captureError, hasAudio,
-            revision, folderName, finalReviewPending, tags, agenda, corrections
+            revision, folderName, finalReviewPending, tags, agenda, corrections, clockStart
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -136,6 +140,7 @@ struct Meeting: Codable, Identifiable {
         tags = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
         agenda = try c.decodeIfPresent([AgendaItem].self, forKey: .agenda) ?? []
         corrections = try c.decodeIfPresent([TermCorrection].self, forKey: .corrections) ?? []
+        clockStart = try c.decodeIfPresent(Date.self, forKey: .clockStart)
     }
 }
 

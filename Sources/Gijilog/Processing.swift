@@ -152,6 +152,13 @@ enum Processor {
                 || (0xFF66...0xFF9F).contains($0.value)
         }
     }
+    /// How long the meeting's working audio runs on its clock: where the last chunk ends.
+    static func recordedLength(folder: URL) throws -> Double {
+        try recordingInputs(folder: folder, allowMissing: true).reduce(0) { length, input in
+            guard let file = try? AVAudioFile(forReading: input.url) else { return length }
+            return max(length, input.offset + Double(file.length) / file.processingFormat.sampleRate)
+        }
+    }
     static func recordingInputs(folder: URL, allowMissing: Bool = false) throws -> [RecordedInput] {
         let manifestURL = folder.appendingPathComponent("recording.json")
         var manifest: RecordingManifest?

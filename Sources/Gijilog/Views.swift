@@ -88,11 +88,35 @@ struct ViewSwitch {
         dismiss(id: "live")
     }
 }
+enum RecordingStart {
+    case selected  // The selected prepared meeting, or a new one.
+    case new
+    case continuing(UUID)
+}
 // Starting a recording from anywhere (window, menu, menu bar) switches to the compact view beside the call.
-@MainActor func startRecording(_ store: Store, views: ViewSwitch) {
+@MainActor func startRecording(_ store: Store, views: ViewSwitch, _ how: RecordingStart = .selected) {
     Task {
-        await store.start()
+        switch how {
+        case .selected: await store.start()
+        case .new: await store.start(newMeeting: true)
+        case .continuing(let id): await store.continueRecording(id)
+        }
         if store.recording { views.compact() }
+    }
+}
+/// The ways to start recording besides the record button's own: as a new meeting, or more of a finished one.
+struct RecordingStartMenu: View {
+    @ObservedObject var store: Store
+    let views: ViewSwitch
+    var body: some View {
+        Button("新しい会議として録音", systemImage: "plus.circle") { startRecording(store, views: views, .new) }
+            .disabled(store.busy || !store.ready || !store.hasKey)
+        if let meeting = store.selectedMeeting, meeting.capture == .stopped || meeting.capture == .interrupted {
+            Button("「\(meeting.title)」に続けて録音", systemImage: "record.circle") {
+                startRecording(store, views: views, .continuing(meeting.id))
+            }
+            .disabled(store.busy || !store.hasKey || !store.canContinueRecording(meeting))
+        }
     }
 }
 struct ContentView: View {
@@ -200,6 +224,15 @@ struct ContentView: View {
                     Button("全文を再処理", systemImage: "arrow.triangle.2.circlepath") {
                         Task { await store.process(rebuild: true) }
                     }.disabled(!idle || !store.hasKey || meeting.capture == .planned)
+                    if meeting.capture == .stopped || meeting.capture == .interrupted {
+                        Button("この会議に続けて録音", systemImage: "record.circle") {
+                            startRecording(
+                                store, views: ViewSwitch(open: openWindow, dismiss: dismissWindow),
+                                .continuing(meeting.id))
+                        }
+                        .disabled(
+                            store.recording || store.busy || !store.hasKey || !store.canContinueRecording(meeting))
+                    }
                     Button("語句をまとめて直す…", systemImage: "character.cursor.ibeam") {
                         store.correcting = CorrectionRequest(meetingID: meeting.id)
                     }
@@ -230,23 +263,33 @@ struct ContentView: View {
         }
         if !store.recording {
             ToolbarItemGroup(placement: .primaryAction) {
+                let views = ViewSwitch(open: openWindow, dismiss: dismissWindow)
+                // The label says what a click does: a prepared meeting that is selected is recorded, otherwise a
+                // new one. The arrow beside it offers the other ways.
                 Button {
-                    store.planMeeting()
+                    startRecording(store, views: views)
                 } label: {
-                    Label("アジェンダを準備", systemImage: "list.bullet.rectangle")
-                }
-                .help("録音の前に議題を用意しておく。会議の時間になったら、この会議を選んで録音を開始します（⌘N）")
-                .disabled(!store.ready)
-                Button {
-                    startRecording(store, views: ViewSwitch(open: openWindow, dismiss: dismissWindow))
-                } label: {
-                    Label("録音を開始", systemImage: "record.circle").labelStyle(.titleAndIcon)
+                    Label(store.startsPreparedMeeting ? "この会議を録音" : "新規録音", systemImage: "record.circle")
+                        .labelStyle(.titleAndIcon)
                 }
                 // The app's own red capsule: a system prominent button turns gray whenever the window is not
                 // in front, which is most of a meeting.
                 .buttonStyle(CapsuleButtonStyle(filled: true, height: 30))
-                .help("Macの音声とマイクの録音を始めて、議事録を作る（⌘⇧R）")
+                .help(
+                    store.startsPreparedMeeting
+                        ? "準備した会議の録音を始める（⌘⇧R）" : "新しい会議として、Macの音声とマイクの録音を始める（⌘⇧R）"
+                )
                 .disabled(store.busy || !store.ready || !store.hasKey)
+                Menu {
+                    RecordingStartMenu(store: store, views: views)
+                    Divider()
+                    Button("アジェンダを準備…", systemImage: "list.bullet.rectangle") { store.planMeeting() }
+                        .disabled(!store.ready)
+                } label: {
+                    Label("録音の始め方", systemImage: "chevron.down")
+                }
+                .menuIndicator(.hidden)
+                .help("新しい会議として録音・選んだ会議に続けて録音・アジェンダを準備（⌘N）")
             }
         }
     }
@@ -522,7 +565,7 @@ struct RecorderBar: View {
                     if !planned.agenda.isEmpty {
                         Text("議題 \(planned.agenda.count)件").font(.callout).foregroundStyle(.secondary)
                     }
-                    Text("「録音を開始」でこの会議の録音を始めます").font(.callout).foregroundStyle(.secondary)
+                    Text("「この会議を録音」で録音を始めます").font(.callout).foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 12)
@@ -548,7 +591,7 @@ struct RecorderBar: View {
             RecordingLamp()
             VStack(alignment: .leading, spacing: 0) {
                 TimelineView(.periodic(from: meeting.date, by: 1)) { context in
-                    Text(clock(context.date.timeIntervalSince(meeting.date)))
+                    Text(clock(context.date.timeIntervalSince(meeting.recordingOrigin)))
                         .font(.system(size: 30, weight: .light).monospacedDigit())
                 }
                 Text(meeting.title).font(.callout).foregroundStyle(.secondary).lineLimit(1)
@@ -763,7 +806,7 @@ struct EmptyDesk: View {
     var body: some View {
         VStack(spacing: 14) {
             Image(systemName: "waveform").font(.system(size: 36, weight: .light)).foregroundStyle(.secondary)
-            Text("会議が始まったら、録音を開始してください").font(.mincho(20))
+            Text("会議が始まったら、「新規録音」を押してください").font(.mincho(20))
             Text(
                 "Macの音声とマイクを録音し、話の切れ目ごとに文字起こしして、30秒ごとに議事録を書き足していきます。\n録音ファイルはウインドウにドロップしても読み込めます。OpenAIのAPI利用料がかかります。"
             )
@@ -806,7 +849,7 @@ struct MinutesDesk: View {
                     AgendaSection(meeting: meeting).padding(.top, 26)
                 }
                 if meeting.capture == .planned {
-                    Text("会議の時間になったら、この会議を選んだまま「録音を開始」を押してください。議事録はここに書き足されていきます。")
+                    Text("会議の時間になったら、この会議を選んだまま「この会議を録音」を押してください。議事録はここに書き足されていきます。")
                         .font(.callout).foregroundStyle(.secondary).padding(.top, 24)
                 } else if let notes = meeting.notes {
                     MinutesSections(
@@ -2311,7 +2354,7 @@ struct AgendaTiming: View {
             label("実際 " + MeetingAgenda.duration(spent), over: over(spent))
         } else if item.progress == .current, live {
             TimelineView(.periodic(from: .now, by: 1)) { context in
-                let spent = item.spent(now: context.date.timeIntervalSince(meeting.date))
+                let spent = item.spent(now: context.date.timeIntervalSince(meeting.recordingOrigin))
                 label("進行中 " + clock(spent) + (item.minutes.map { " / \($0)分" } ?? ""), over: over(spent))
             }
         } else if item.progress == .current {
@@ -2528,7 +2571,7 @@ struct LiveHeader: View {
                     RecordingLamp()
                     VStack(alignment: .leading, spacing: 0) {
                         TimelineView(.periodic(from: meeting.date, by: 1)) { context in
-                            Text(clock(context.date.timeIntervalSince(meeting.date)))
+                            Text(clock(context.date.timeIntervalSince(meeting.recordingOrigin)))
                                 .font(.system(size: 24, weight: .light).monospacedDigit())
                         }
                         Text(meeting.title).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -2895,12 +2938,26 @@ struct RecordingMenuItems: View {
                 .keyboardShortcut("r", modifiers: [.command, .shift])
                 .disabled(store.busy)
         } else {
-            Button("録音を開始") {
+            Button(store.startsPreparedMeeting ? "この会議を録音" : "新規録音") {
                 NSApp.activate()
                 startRecording(store, views: views)
             }
             .keyboardShortcut("r", modifiers: [.command, .shift])
             .disabled(store.busy || !store.ready || !store.hasKey)
+            if store.startsPreparedMeeting {
+                Button("新しい会議として録音") {
+                    NSApp.activate()
+                    startRecording(store, views: views, .new)
+                }
+                .disabled(store.busy || !store.ready || !store.hasKey)
+            }
+            if let meeting = store.selectedMeeting, meeting.capture == .stopped || meeting.capture == .interrupted {
+                Button("「\(meeting.title)」に続けて録音") {
+                    NSApp.activate()
+                    startRecording(store, views: views, .continuing(meeting.id))
+                }
+                .disabled(store.busy || !store.hasKey || !store.canContinueRecording(meeting))
+            }
         }
         Button("録音ファイルを読み込む…") {
             NSApp.activate()
@@ -2930,7 +2987,7 @@ struct MenuBarMenu: View {
     @ObservedObject var store: Store
     var body: some View {
         if store.recording, let meeting = store.activeMeeting {
-            Text("録音中 \(clock(Date().timeIntervalSince(meeting.date)))：\(meeting.title)")
+            Text("録音中 \(clock(Date().timeIntervalSince(meeting.recordingOrigin)))：\(meeting.title)")
         } else if !store.hasKey {
             Text("録音するには、設定で OpenAI の API キーを保存してください")
         }
