@@ -2029,6 +2029,10 @@ struct OwnerPicker: View {
         .padding(14)
         .frame(width: 300, alignment: .leading)
         .onAppear { Task { @MainActor in focused = true } }
+        // A popover is dark app chrome even when opened from the paper sheet, whose dark ink would not read on it:
+        // both the color scheme and the ink passed down from the sheet are set back.
+        .foregroundStyle(Color.primary)
+        .environment(\.colorScheme, .dark)
     }
 }
 struct PersonChipStyle: ButtonStyle {
@@ -2087,6 +2091,8 @@ struct DueCalendar: View {
         }
         .padding(12)
         .onAppear { selection.date = day ?? DueDate.calendar.startOfDay(for: picking.meetingDate) }
+        .foregroundStyle(Color.primary)
+        .environment(\.colorScheme, .dark)  // Dark app chrome, like the owner list.
     }
 }
 @MainActor final class DateSelection: ObservableObject {
