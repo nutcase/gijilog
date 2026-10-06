@@ -1,0 +1,17 @@
+{
+  "fill" : {
+    "automatic-gradient" : "srgb:0.08627,0.21176,0.29412,1.00000"
+  },
+  "groups" : [
+    {
+      "layers" : [
+        { "image-name" : "marks.svg", "name" : "marks", "glass" : false },
+        { "image-name" : "front.svg", "name" : "front" },
+        { "image-name" : "back.svg", "name" : "back" }
+      ],
+      "shadow" : { "kind" : "neutral", "opacity" : 0.5 },
+      "translucency" : { "enabled" : false, "value" : 0.5 }
+    }
+  ],
+  "supported-platforms" : { "squares" : "shared" }
+}

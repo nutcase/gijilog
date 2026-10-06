@@ -23,6 +23,22 @@ for icon_size in 16 32 128 256 512; do
   done
 done
 iconutil --convert icns "$iconset_dir" --output "$APP/Contents/Resources/AppIcon.icns"
+# macOS 26 and later draw an Icon Composer icon (Resources/AppIcon.icon) at every size, without the plate and
+# blur they give the icns above. It needs Xcode's actool; without Xcode the icns is the icon everywhere.
+actool="$(xcrun --find actool 2>/dev/null || true)"
+if [[ -z "$actool" && -x /Applications/Xcode.app/Contents/Developer/usr/bin/actool ]]; then
+  actool=/Applications/Xcode.app/Contents/Developer/usr/bin/actool
+fi
+rm -f "$APP/Contents/Resources/Assets.car"
+if [[ -n "$actool" ]]; then
+  assets_dir="$PWD/.build/AppIconAssets"
+  rm -rf "$assets_dir" && mkdir -p "$assets_dir"
+  "$actool" "$PWD/Resources/AppIcon.icon" --compile "$assets_dir" --platform macosx --minimum-deployment-target 15.0 \
+    --app-icon AppIcon --output-partial-info-plist "$assets_dir/partial.plist" >/dev/null
+  cp "$assets_dir/Assets.car" "$APP/Contents/Resources/Assets.car"
+else
+  print 'Xcode の actool がないため、アイコンは icns だけで作ります。'
+fi
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -32,6 +48,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleName</key><string>ギジログ</string>
 <key>CFBundleDisplayName</key><string>ギジログ</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
+<key>CFBundleIconName</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>
 <key>CFBundleDevelopmentRegion</key><string>ja</string>
