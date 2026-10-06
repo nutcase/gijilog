@@ -45,6 +45,7 @@ import UniformTypeIdentifiers
         didSet { if persistsSettings { UserDefaults.standard.set(vocabulary, forKey: "vocabulary") } }
     }
     @Published var compactWindowOpen = false  // Alerts go to the compact window while it is open, else the full one.
+    let player = ClipPlayer()  // Plays back one utterance of a finished meeting.
     // Sections of the minutes folded away, by title: the same in every meeting and in both windows, and kept.
     @Published var foldedSections: Set<String> = [] {
         didSet {
@@ -1281,6 +1282,7 @@ extension Store {
             let old = m.segments[i].text
             m.segments[i].text = text
             m.segments[i].edited = true
+            Self.markRevised(id, in: &m)
             if let term = TermMatcher.changedTerm(from: old, to: text) {
                 let count = m.occurrences(of: term.from, correctedTo: term.to).count
                 if count > 0 {
@@ -1293,8 +1295,36 @@ extension Store {
     }
     /// Deletes a line, such as speech invented for noise. Minutes citing it keep their other evidence.
     func removeSegment(_ meetingID: UUID, id: String) {
-        change(meetingID) { $0.segments.removeAll { $0.id == id } }
+        change(meetingID) { m in
+            m.segments.removeAll { $0.id == id }
+            Self.markRevised(id, in: &m)
+        }
         if editingSegment == id { editingSegment = nil }
+    }
+    /// Remembers a line corrected or deleted by hand, so minutes citing it are shown to need checking.
+    private static func markRevised(_ id: String, in meeting: inout Meeting) {
+        guard var notes = meeting.notes else { return }
+        notes.revisedSegmentIDs = (notes.revisedSegmentIDs ?? []).union([id])
+        meeting.notes = notes
+    }
+    /// Keeps the minutes as they are after lines they cite were corrected: the items are no longer marked.
+    func keepMinutesDespiteRevisions(_ meetingID: UUID) {
+        change(meetingID) { $0.notes?.revisedSegmentIDs = nil }
+    }
+    /// The meeting's 録音.m4a, for listening back, once recording is over and it has been made.
+    func recordingFile(_ meeting: Meeting) -> URL? {
+        guard meeting.id != activeID, meeting.capture != .recording else { return nil }
+        let url = folder(meeting.id).appendingPathComponent(AudioMixdown.filename)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+    /// Plays one utterance from the meeting's recording, or stops it when it is playing.
+    func play(_ segment: Segment, in meetingID: UUID) {
+        guard let meeting = meetings.first(where: { $0.id == meetingID }), let file = recordingFile(meeting) else {
+            return
+        }
+        do { try player.toggle(segment, in: meeting.segments, file: file) } catch {
+            self.error = error.localizedDescription
+        }
     }
     @discardableResult func addNoteItem(_ meetingID: UUID, part: NotePart, text: String) -> String? {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)

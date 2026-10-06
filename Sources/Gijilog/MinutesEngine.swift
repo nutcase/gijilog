@@ -303,6 +303,7 @@ enum MinutesEngine {
         }
         var result = previous
         result.content = content
+        result.revisedSegmentIDs = nil  // Written from the transcript as it is now, corrections included.
         if rejected > 0 { result.rejectedItems = (previous.rejectedItems ?? 0) + rejected }
         result.appliedSegmentIDs.formUnion(known.keys)
         result.latestSegmentIDs = nil

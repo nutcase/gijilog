@@ -83,13 +83,22 @@ struct MinutesState: Codable, Sendable {
     var reviewedSegmentIDs: Set<String>?  // Checkpointed progress through the post-meeting review.
     var finalizedAt: Date?
     var dismissed: [String]?  // Items deleted by hand, normalized, so the AI does not bring them back.
+    // Transcript lines corrected or deleted by hand since the minutes were written from the whole transcript: items
+    // citing them may no longer hold, until the minutes are written again or the user keeps them as they are.
+    var revisedSegmentIDs: Set<String>?
     // Passed through a live update and never saved: the agenda goes in, the topic being discussed comes out.
     var agenda: [AgendaItem] = []
     var topic: AgendaTopic?
     var corrections: [TermCorrection] = []  // The user's spellings, for the AI to follow.
     enum CodingKeys: String, CodingKey {
         case content, appliedSegmentIDs, updatedAt, extractionOnly, rejectedItems, latestSegmentIDs,
-            reviewedSegmentIDs, finalizedAt, dismissed
+            reviewedSegmentIDs, finalizedAt, dismissed, revisedSegmentIDs
+    }
+    /// The items shown in the minutes that cite a line corrected or deleted by hand, to check again.
+    var itemsCitingRevisedLines: Set<String> {
+        guard let revised = revisedSegmentIDs, !revised.isEmpty else { return [] }
+        let shown = content.summary + content.decisions + content.unresolved + content.actions
+        return Set(shown.filter { $0.state != .cancelled && !revised.isDisjoint(with: $0.evidence) }.map(\.id))
     }
 }
 struct Meeting: Codable, Identifiable {

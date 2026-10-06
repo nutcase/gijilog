@@ -351,6 +351,46 @@ struct TranscriptionHints: Sendable, Equatable {
     }
 }
 // One file to listen back to: the Mac audio and microphone tracks mixed on the common recording clock.
+/// Plays one utterance from a meeting's 録音.m4a. Every part of the meeting, continued recordings included, sits in
+/// that file at its time on the meeting's clock, so an utterance's time is where it starts. It plays to the next
+/// utterance from the same source (both are cut from one continuous recording), at most 30 seconds.
+@MainActor final class ClipPlayer: ObservableObject {
+    @Published private(set) var playing: String?  // The utterance being played.
+    private var player: AVAudioPlayer?
+    private var stopping: Task<Void, Never>?
+    nonisolated static func range(of segment: Segment, in segments: [Segment]) -> ClosedRange<Double> {
+        let next = segments.filter { $0.source == segment.source && $0.time > segment.time }.map(\.time).min()
+        let end = min(next ?? segment.time + 25, segment.time + 30)
+        return segment.time...max(end, segment.time + 2)
+    }
+    func toggle(_ segment: Segment, in segments: [Segment], file: URL) throws {
+        let again = playing == segment.id
+        stop()
+        guard !again else { return }
+        let player = try AVAudioPlayer(contentsOf: file)
+        let range = Self.range(of: segment, in: segments)
+        guard range.lowerBound < player.duration else {
+            throw AppError.message("この発言の時刻は録音（録音.m4a）の長さを超えています。")
+        }
+        player.currentTime = range.lowerBound
+        player.play()
+        self.player = player
+        playing = segment.id
+        let length = min(range.upperBound, player.duration) - range.lowerBound
+        stopping = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(length * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.stop()
+        }
+    }
+    func stop() {
+        stopping?.cancel()
+        stopping = nil
+        player?.stop()
+        player = nil
+        playing = nil
+    }
+}
 enum AudioMixdown {
     static let filename = "録音.m4a"
     static func write(folder: URL) async throws {

@@ -89,10 +89,16 @@ extension Store {
 }
 // The keywords being searched, for marking them in the minutes and transcript of the selected meeting.
 private struct SearchTermsKey: EnvironmentKey { static let defaultValue: [String] = [] }
+// The meeting whose recording can be listened back to, once it is over and 録音.m4a has been made.
+private struct PlayableMeetingKey: EnvironmentKey { static let defaultValue: UUID? = nil }
 extension EnvironmentValues {
     var searchTerms: [String] {
         get { self[SearchTermsKey.self] }
         set { self[SearchTermsKey.self] = newValue }
+    }
+    var playableMeeting: UUID? {
+        get { self[PlayableMeetingKey.self] }
+        set { self[PlayableMeetingKey.self] = newValue }
     }
 }
 /// The text with every keyword marked like a highlighter pen.
@@ -167,6 +173,8 @@ struct ContentView: View {
                     }
                 }
                 .environment(\.searchTerms, store.searchedTerms)
+                .environment(
+                    \.playableMeeting, store.selectedMeeting.flatMap { store.recordingFile($0) != nil ? $0.id : nil })
             }
             .background(Palette.kon)
             // Dropping recordings on the window makes minutes from them.
@@ -1159,7 +1167,9 @@ struct MinutesSections: View {
         let known = Dictionary(segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let latest = notes.latestSegmentIDs ?? []
         let content = notes.content
+        let revised = editable ? notes.itemsCitingRevisedLines : []
         VStack(alignment: .leading, spacing: 30) {
+            if !revised.isEmpty, let meetingID { RevisionNotice(meetingID: meetingID, count: revised.count) }
             if content.summary.contains(where: { !Set($0.evidence).isDisjoint(with: latest) }) {
                 HStack(spacing: 6) {
                     FreshSwatch()
@@ -1168,27 +1178,54 @@ struct MinutesSections: View {
             }
             NoteSection(
                 title: "要約", tone: .summary, items: content.summary.filter { $0.state != .cancelled }, known: known,
-                latest: latest, editing: edit(.summary), current: current)
+                latest: latest, editing: edit(.summary), current: current, revised: revised)
             NoteSection(
                 title: "決定事項と理由", tone: .decisions, items: content.decisions.filter { $0.state != .cancelled },
-                known: known, latest: latest, editing: edit(.decisions), current: current)
+                known: known, latest: latest, editing: edit(.decisions), current: current, revised: revised)
             NoteSection(
                 title: "未決事項・次の確認", tone: .unresolved, items: content.unresolved.filter { $0.state == .open },
-                known: known, latest: latest, editing: edit(.unresolved), current: current)
+                known: known, latest: latest, editing: edit(.unresolved), current: current, revised: revised)
             if !content.history.isEmpty {
                 NoteSection(
                     title: "議論の経緯", tone: .history, items: content.history, known: known, latest: latest,
-                    current: current)
+                    current: current, revised: revised)
             }
             NoteSection(
                 title: "アクションアイテム", tone: .actions, items: content.actions.filter { $0.state != .cancelled },
-                known: known, latest: latest, editing: edit(.actions), current: current)
+                known: known, latest: latest, editing: edit(.actions), current: current, revised: revised)
         }
         .padding(.top, 26)
     }
     private func edit(_ part: NotePart) -> NoteEditing? {
         guard editable, let meetingID else { return nil }
         return NoteEditing(meetingID: meetingID, part: part)
+    }
+}
+// Shown when transcript lines the minutes cite were corrected or deleted by hand: the minutes can be written again
+// from the corrected transcript (hand-edited items stay), or kept as they are.
+struct RevisionNotice: View {
+    @EnvironmentObject var store: Store
+    let meetingID: UUID
+    let count: Int
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Palette.yamabuki)
+                Text("文字起こしで直した発言をもとにした項目が\(count)件あります（「要確認」の印）。")
+                    .font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+            }
+            Text("直した文字起こしから議事録を作り直すと反映されます。手で直した項目はそのまま残ります。")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button("訂正を反映して更新") { Task { await store.refineMinutes(meetingID) } }
+                    .disabled(!store.hasKey)
+                Button("このままにする") { store.keepMinutesDespiteRevisions(meetingID) }
+            }
+            .controlSize(.small)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Palette.yamabuki.opacity(0.12)))
     }
 }
 /// Where an editable section's items live.
@@ -1205,6 +1242,7 @@ struct NoteSection: View {
     let latest: Set<String>
     var editing: NoteEditing?
     var current: String?
+    var revised: Set<String> = []  // Items citing transcript lines corrected since the minutes were written.
     var body: some View {
         // A folded section opens while the find bar's current match is in it.
         let folded = store.foldedSections.contains(title) && !items.contains { $0.id == current }
@@ -1224,11 +1262,11 @@ struct NoteSection: View {
                 if let editing {
                     EditableNoteRow(
                         editing: editing, item: item, known: known, fresh: fresh, tone: tone, number: index + 1,
-                        current: item.id == current)
+                        current: item.id == current, revised: revised.contains(item.id))
                 } else {
                     NoteRow(
                         item: item, known: known, fresh: fresh, tone: tone, number: index + 1,
-                        current: item.id == current)
+                        current: item.id == current, revised: revised.contains(item.id))
                 }
             }
             .id("note-" + item.id)
@@ -1372,6 +1410,7 @@ struct EditableNoteRow: View {
     let tone: NoteTone
     var number: Int?
     var current = false
+    var revised = false
     private var action: Bool { tone == .actions }
     private var key: String { editing.part.rawValue + "/" + item.id }
     var body: some View {
@@ -1382,6 +1421,7 @@ struct EditableNoteRow: View {
             } else {
                 NoteRow(
                     item: item, known: known, fresh: fresh, tone: tone, number: number, current: current,
+                    revised: revised,
                     edit: { field in
                         draft.opening = field
                         store.editingNoteItem = key
@@ -1749,6 +1789,7 @@ struct NoteRow: View {
     var number: Int?  // A summary topic's place in the meeting.
     var compact = false
     var current = false  // The find bar's current match.
+    var revised = false  // It cites a transcript line corrected or deleted since it was written.
     // Set where the minutes can be edited: clicking the text, the pencil, or an owner or deadline opens the item at
     // that field, and an action's box ticks it done.
     var edit: ((NoteField) -> Void)?
@@ -1800,8 +1841,15 @@ struct NoteRow: View {
                     NoteDetail(label: "経緯", text: change, color: NoteTone.history.color, compact: compact)
                         .padding(.leading, indent)
                 }
-                if action || closed || item.edited == true {
+                if action || closed || item.edited == true || revised {
                     HStack(spacing: 6) {
+                        if revised {
+                            Label("要確認", systemImage: "exclamationmark.triangle.fill")
+                                .labelStyle(.titleAndIcon).fontWeight(.semibold).foregroundStyle(Palette.yamabukiInk)
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(RoundedRectangle(cornerRadius: 4).fill(Palette.yamabuki.opacity(0.18)))
+                                .help("根拠の発言を文字起こしで直したか削除しました。今も合っているか確かめてください")
+                        }
                         if action {
                             Tag(label: "担当", symbol: "person.fill", value: item.owner, open: !closed)
                                 .editing(setOwner.map { _ in { people.on = true } }, help: "クリックして担当者を選ぶ")
@@ -1832,10 +1880,14 @@ struct NoteRow: View {
                     DisclosureGroup {
                         ForEach(evidence) { segment in
                             VStack(alignment: .leading, spacing: 3) {
-                                Text("\(clock(segment.time)) \(segment.source)").foregroundStyle(.secondary)
+                                HStack(spacing: 4) {
+                                    PlayButton(segment: segment)
+                                    Text("\(clock(segment.time)) \(segment.source)").foregroundStyle(.secondary)
+                                }
                                 Text(highlighted(segment.text, terms)).fixedSize(horizontal: false, vertical: true)
                             }
                             .padding(.vertical, 3)
+                            .frame(maxWidth: .infinity, alignment: .leading)  // Each line from the left edge.
                         }
                     } label: {
                         Text("根拠 \(clock(first.time))〜（\(evidence.count)件）").foregroundStyle(.secondary)
@@ -2152,6 +2204,37 @@ extension View {
         }
     }
 }
+// Plays an utterance from the meeting's recording, to check a name, a figure or how a decision was put; shown once
+// the recording is over. While it plays, it stops it. `shown` hides it until the pointer is over the line, keeping
+// its space so nothing moves.
+struct PlayButton: View {
+    @EnvironmentObject var store: Store
+    @Environment(\.playableMeeting) private var meetingID
+    let segment: Segment
+    var shown = true
+    var body: some View {
+        if let meetingID {
+            PlayButtonLabel(player: store.player, segment: segment, shown: shown) { store.play(segment, in: meetingID) }
+        }
+    }
+}
+private struct PlayButtonLabel: View {
+    @ObservedObject var player: ClipPlayer
+    let segment: Segment
+    let shown: Bool
+    let action: () -> Void
+    var body: some View {
+        let playing = player.playing == segment.id
+        Button(action: action) {
+            Image(systemName: playing ? "stop.circle.fill" : "play.circle.fill")
+                .foregroundStyle(playing ? Palette.asagi : Color.secondary)
+        }
+        .buttonStyle(.plain)
+        .help(playing ? "再生を止める" : "この発言を録音で聞く")
+        .opacity(shown || playing ? 1 : 0)
+        .accessibilityLabel(playing ? "再生を止める" : "この発言を再生")
+    }
+}
 struct Selectable: ViewModifier {
     let enabled: Bool
     func body(content: Content) -> some View {
@@ -2391,6 +2474,7 @@ struct TranscriptRow: View {
     @EnvironmentObject var store: Store
     @Environment(\.searchTerms) private var terms
     @StateObject private var draft = LineDraft()
+    @StateObject private var hover = Flag()
     @FocusState private var focused: Bool
     let segment: Segment
     var meetingID: UUID?
@@ -2406,6 +2490,7 @@ struct TranscriptRow: View {
                 if segment.edited == true {
                     Image(systemName: "pencil").help("手で直した発言です")
                 }
+                PlayButton(segment: segment, shown: hover.on)
             }
             .font(.caption).foregroundStyle(.secondary)
             if open {
@@ -2431,6 +2516,8 @@ struct TranscriptRow: View {
         }
         .padding(current ? 6 : 0)
         .background(RoundedRectangle(cornerRadius: 6).strokeBorder(current ? Palette.yamabuki : .clear, lineWidth: 1.5))
+        .contentShape(Rectangle())
+        .onHover { hover.on = $0 }
         .contextMenu {
             if editable, let meetingID {
                 Button("編集", systemImage: "pencil") { store.editingSegment = segment.id }

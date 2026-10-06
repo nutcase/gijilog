@@ -226,6 +226,19 @@ extension ProcessingTests {
         try Self.check(
             store.meetings[0].segments.map(\.text) == ["モリバスの価格を決めます", "森バスは来月リリースです"],
             "a blank edit is ignored, and an invented line can be deleted")
+        let revised = try Self.require(store.meetings[0].notes, "notes")
+        try Self.check(
+            revised.revisedSegmentIDs == ["a", "c"] && revised.itemsCitingRevisedLines == ["s1"],
+            "a corrected or deleted line marks the minutes citing it for checking")
+        let rewritten = try MinutesEngine.rewrite(
+            revised, delta: NotesDelta(summary: [NoteItem(id: "", text: "モリバス：価格を決める", evidence: ["a"])]),
+            transcript: store.meetings[0].segments)
+        try Self.check(
+            rewritten.revisedSegmentIDs == nil && rewritten.itemsCitingRevisedLines.isEmpty,
+            "minutes written again from the corrected transcript need no checking")
+        store.keepMinutesDespiteRevisions(meeting.id)
+        try Self.check(
+            store.meetings[0].notes?.itemsCitingRevisedLines.isEmpty == true, "the minutes can be kept as they are")
         await store.flushCheckpoints()
         let saved = try store.savedMeeting(meeting.id)
         let old = try JSONDecoder().decode(

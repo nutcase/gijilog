@@ -36,6 +36,53 @@ extension ProcessingTests {
         let seconds = try await mixed.load(.duration).seconds
         try Self.check(abs(seconds - 9) < 0.2, "both tracks are mixed on the recording clock: \(seconds)s")
     }
+    // An utterance plays from its time on the meeting's clock, which is where it sits in 録音.m4a, also in a part
+    // recorded after a break.
+    func testPlaybackFindsEachUtteranceInTheRecording() async throws {
+        let (root, tone) = try fixture(seconds: 3, amplitude: 0.25)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("meeting")
+        try FileManager.default.createDirectory(
+            at: folder.appendingPathComponent("chunks"), withIntermediateDirectories: true)
+        for name in ["first.caf", "after-break.caf"] {
+            try FileManager.default.copyItem(at: tone, to: folder.appendingPathComponent("chunks/" + name))
+        }
+        // The first part is 3 seconds; the meeting goes on after a break at 10 seconds on its clock.
+        let manifest = RecordingManifest(chunks: [
+            RecordedChunk(filename: "first.caf", offset: 0, source: "マイク"),
+            RecordedChunk(filename: "after-break.caf", offset: 10, source: "マイク"),
+        ])
+        try JSONEncoder().encode(manifest).write(to: folder.appendingPathComponent("recording.json"))
+        try await AudioMixdown.write(folder: folder)
+        let segments = [
+            Segment(id: "a", time: 0, source: "マイク", text: "前半"),
+            Segment(id: "b", time: 10, source: "マイク", text: "休憩のあと"),
+            Segment(id: "c", time: 1, source: "Mac音声", text: "相手側"),
+        ]
+        let first = ClipPlayer.range(of: segments[0], in: segments)
+        let later = ClipPlayer.range(of: segments[1], in: segments)
+        try Self.check(
+            first == 0...10 && later == 10...35 && ClipPlayer.range(of: segments[2], in: segments) == 1...26,
+            "an utterance plays to the next one from the same source, at most 30 seconds: \(first), \(later)")
+        let file = try AVAudioFile(forReading: folder.appendingPathComponent("録音.m4a"))
+        func loudness(at seconds: Double) throws -> Float {
+            let rate = file.processingFormat.sampleRate
+            file.framePosition = AVAudioFramePosition(seconds * rate)
+            let frames = AVAudioFrameCount(rate * 0.5)
+            let buffer = try Self.require(
+                AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frames), "buffer")
+            try file.read(into: buffer, frameCount: frames)
+            let samples = try Self.require(buffer.floatChannelData?[0], "samples")
+            let count = Int(buffer.frameLength)
+            return count == 0 ? 0 : (0..<count).reduce(Float(0)) { $0 + samples[$1] * samples[$1] } / Float(count)
+        }
+        let speech = try loudness(at: later.lowerBound + 0.5)
+        let breakTime = try loudness(at: 6)
+        try Self.check(
+            speech > 0.001 && breakTime < 0.000_01,
+            "the part after the break is heard from its utterance's time, with the break silent: \(speech), \(breakTime)"
+        )
+    }
     @MainActor func testSaveLocationMovesWithItsMeetings() async throws {
         let (root, _) = try fixture(seconds: 1, amplitude: 0)
         defer { try? FileManager.default.removeItem(at: root) }
