@@ -5,7 +5,7 @@ import Foundation
 // The fix is kept as a rule, so minutes the AI writes later and speech transcribed later are corrected too.
 
 enum NotePart: String, Codable, CaseIterable, Sendable { case summary, decisions, unresolved, actions }
-enum NoteField: String, Codable, CaseIterable, Sendable { case text, owner, due, reason, nextStep }
+enum NoteField: String, Codable, CaseIterable, Sendable { case text, owner, due, reason, nextStep, points, opinions }
 /// A piece of text in a meeting that a correction can change.
 enum TextPlace: Hashable, Codable, Sendable {
     case title
@@ -55,6 +55,7 @@ extension NotesDelta {
     }
 }
 extension NoteItem {
+    /// A field as text. A summary topic's points and opinions read one per line.
     subscript(field: NoteField) -> String? {
         get {
             switch field {
@@ -63,6 +64,8 @@ extension NoteItem {
             case .due: due
             case .reason: reason
             case .nextStep: nextStep
+            case .points: points?.joined(separator: "\n")
+            case .opinions: opinions?.joined(separator: "\n")
             }
         }
         set {
@@ -72,8 +75,16 @@ extension NoteItem {
             case .due: due = newValue
             case .reason: reason = newValue
             case .nextStep: nextStep = newValue
+            case .points: points = Self.lines(newValue)
+            case .opinions: opinions = Self.lines(newValue)
             }
         }
+    }
+    /// Text written one entry per line, without blank lines; nil when nothing is left.
+    static func lines(_ text: String?) -> [String]? {
+        let lines = (text ?? "").components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return lines.isEmpty ? nil : lines
     }
 }
 

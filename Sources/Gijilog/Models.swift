@@ -57,6 +57,9 @@ struct NoteItem: Codable, Identifiable, Sendable, Equatable {
     var nextStep: String?
     var changeSummary: String?
     var edited: Bool?  // Written or changed by hand: AI updates leave it as it is.
+    // A summary topic's main points at issue and the views put forward, one sentence each.
+    var points: [String]?
+    var opinions: [String]?
 }
 struct NotesDelta: Codable, Sendable {
     var summary: [NoteItem] = []
@@ -314,8 +317,8 @@ enum MeetingSearch {
             + content.actions.filter { $0.state != .cancelled }
         return shown.filter { item in
             containsAll(
-                [item.text, item.owner, item.due, item.reason, item.nextStep, item.changeSummary].compactMap { $0 }
-                    .joined(separator: "\n"), terms)
+                ([item.text, item.owner, item.due, item.reason, item.nextStep, item.changeSummary].compactMap { $0 }
+                    + (item.points ?? []) + (item.opinions ?? [])).joined(separator: "\n"), terms)
         }.map(\.id)
     }
     /// Keywords separated by spaces (half-width or full-width). A meeting must contain every one.
@@ -361,6 +364,7 @@ enum MeetingSearch {
             for item in content.summary + content.decisions + content.unresolved + content.actions {
                 places += [item.text, item.reason, item.nextStep, item.changeSummary, item.owner, item.due]
                     .compactMap { $0.map { (.minutes, $0, nil) } }
+                places += ((item.points ?? []) + (item.opinions ?? [])).map { (.minutes, $0, nil) }
             }
         } else if !meeting.minutes.isEmpty {
             places.append((.minutes, meeting.minutes, nil))

@@ -18,15 +18,20 @@ extension ProcessingTests {
             NoteItem(id: "quote", text: "見積もりを送る", owner: "田中", due: "金曜", evidence: ["after"]),
         ]
         notes.content.summary = [
-            NoteItem(id: "s1", text: "案の比較：費用が低いB案に決まった", evidence: ["after"]),
+            NoteItem(
+                id: "s1", text: "案の比較：費用が低いB案に決まった", evidence: ["after"], points: ["A案とB案のどちらにするか"],
+                opinions: ["費用を優先すべき", "納期も確かめたい"]),
             NoteItem(id: "s2", text: "日程は納期の確認後に決める", evidence: ["after"]),
         ]
         let markdown = MinutesEngine.render(notes, segments: [before, after], transcript: "原文")
         try Self.check(
-            markdown.contains("- [00:30] **案の比較**：費用が低いB案に決まった\n- [00:30] 日程は納期の確認後に決める\n")
+            markdown.contains(
+                "## 要約\n\n### 要約1：案の比較\n\n**概要**\n- 費用が低いB案に決まった\n\n**主な論点**\n- A案とB案のどちらにするか"
+                    + "\n\n**主な意見**\n- 費用を優先すべき\n- 納期も確かめたい\n\n### 要約2\n\n**概要**\n- 日程は納期の確認後に決める\n\n## ")
                 && MinutesEngine.summaryTopic("比較：") == nil
                 && MinutesEngine.summaryTopic(String(repeating: "長", count: 31) + "：結論") == nil,
-            "a summary item's topic is set in bold, and text without a short topic is left as it is")
+            "each summary topic has its heading, overview, points and opinions; text without a short topic is all overview"
+        )
         let decisionSection = markdown.components(separatedBy: "## 決定事項と理由\n")[1]
             .components(separatedBy: "\n## ")[0]
         try Self.check(
@@ -46,6 +51,55 @@ extension ProcessingTests {
         try Self.check(
             decoded.reason == nil && decoded.nextStep == nil && decoded.changeSummary == nil,
             "old saved notes remain readable")
+    }
+    @MainActor func testSummaryTopicsKeepTheirPointsAndOpinions() async throws {
+        let first = Segment(id: "a", time: 0, source: "マイク", text: "森バスの価格をどうするか。高すぎるという声もあります")
+        let second = Segment(id: "b", time: 30, source: "Mac音声", text: "価格は据え置きにしましょう")
+        var state = MinutesState()
+        state.appliedSegmentIDs = ["a"]
+        state.content.summary = [
+            NoteItem(
+                id: "summary-1", text: "価格：検討中", evidence: ["a"], points: ["森バスの価格をどうするか"], opinions: ["高すぎる"])
+        ]
+        let delta = NotesDelta(
+            summary: [NoteItem(id: "summary-1", text: "価格：据え置きにする", evidence: ["b"], points: [" ", ""])],
+            decisions: [NoteItem(id: "", text: "価格を据え置く", evidence: ["b"], points: ["論点"], opinions: ["意見"])])
+        let merged = MinutesEngine.merge(state, delta: delta, batch: [second], segments: [first, second])
+        try Self.check(
+            merged.content.summary[0].text == "価格：据え置きにする" && merged.content.summary[0].points == ["森バスの価格をどうするか"]
+                && merged.content.summary[0].opinions == ["高すぎる"] && merged.content.decisions[0].points == nil
+                && merged.content.decisions[0].opinions == nil,
+            "an update without points keeps the topic's, and only summary topics carry points and opinions")
+        let many = MinutesEngine.grounded(
+            NoteItem(id: "", text: "t", evidence: [], points: ["1", "2", "3", "4"]), known: [:], summary: true)
+        try Self.check(many.points == ["1", "2", "3"], "at most three points are kept")
+
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = Store(root: root, loadSettings: false)
+        var meeting = Meeting(title: "定例")
+        meeting.capture = .stopped
+        meeting.status = "完了"
+        meeting.segments = [first, second]
+        meeting.notes = merged
+        store.meetings = [meeting]
+        try Self.check(
+            MeetingSearch.items(meeting, terms: ["高すぎる"]) == ["summary-1"]
+                && MeetingSearch.search(meeting, terms: ["高すぎる"])?.place == .minutes,
+            "find in the meeting and the meeting search look in points and opinions")
+        store.updateNoteItem(meeting.id, part: .summary, id: "summary-1") { $0[.points] = "モリバスの価格をどうするか\n\n値上げの時期" }
+        let offer = try Self.require(store.correctionOffer, "an offer to fix the word elsewhere")
+        try Self.check(
+            store.meetings[0].notes?.content.summary[0].points == ["モリバスの価格をどうするか", "値上げの時期"]
+                && store.meetings[0].notes?.content.summary[0].edited == true && offer.from == "森バス",
+            "points are edited one per line, and a fixed word is offered for fixing elsewhere")
+        store.applyOfferedCorrection()
+        try Self.check(
+            store.meetings[0].segments[0].text.hasPrefix("モリバス")
+                && store.meetings[0].corrected(merged).content.summary[0].points?.first == "モリバスの価格をどうするか",
+            "a correction reaches the transcript and the points")
+        let saved = MinutesEngine.document(store.meetings[0], includesTranscript: false) ?? ""
+        try Self.check(saved.contains("**主な論点**\n- モリバスの価格をどうするか\n- 値上げの時期"), "the edit is in 議事録.md")
     }
     func testReviewCannotRollBackLaterEvidence() throws {
         let before = Segment(id: "before", time: 0, source: "マイク", text: "A案にします")
@@ -96,8 +150,10 @@ extension ProcessingTests {
         let item = decisions?["items"] as? [String: Any]
         let required = item?["required"] as? [String] ?? []
         try Self.check(
-            ["reason", "nextStep", "changeSummary"].allSatisfy(required.contains) && properties?["agendaTopic"] == nil,
-            "quality fields are in the strict API contract, without the live agenda fields")
+            ["reason", "nextStep", "changeSummary", "points", "opinions"].allSatisfy(required.contains)
+                && properties?["agendaTopic"] == nil && instructions.contains("主な論点") && instructions.contains("主な意見"),
+            "quality fields and a topic's points and opinions are in the strict API contract, without the live agenda fields"
+        )
         StructuredMockProtocol.reset(
             delta: NotesDelta(decisions: [NoteItem(id: "", text: "架空の決定", evidence: ["missing"])]))
         // Its only item cites speech that does not exist.

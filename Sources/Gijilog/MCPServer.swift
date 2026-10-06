@@ -150,7 +150,7 @@ struct MCPAccess: Identifiable, Equatable {
             ], required: ["query"]),
         tool(
             "get_meeting", "議事録",
-            "会議の議事録を Markdown で返します。要約、決定事項と理由、未決事項と次の確認、議論の経緯、アクションアイテム（担当・期限）、アジェンダ（予定と実際の時間）を含みます。",
+            "会議の議事録を Markdown で返します。要約（話題ごとの概要・主な論点・主な意見）、決定事項と理由、未決事項と次の確認、議論の経緯、アクションアイテム（担当・期限）、アジェンダ（予定と実際の時間）を含みます。",
             ["meeting_id": meetingID]),
         tool(
             "get_transcript", "文字起こし",
@@ -301,6 +301,8 @@ struct MCPAccess: Identifiable, Equatable {
                 ] {
                     if let value { row[key] = value }
                 }
+                if let points = item.points { row["points"] = points }
+                if let opinions = item.opinions { row["opinions"] = opinions }
                 return row
             }
         }

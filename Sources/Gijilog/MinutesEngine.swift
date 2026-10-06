@@ -113,12 +113,20 @@ enum MinutesEngine {
         同じ内容を複数の項目や欄に書かない。人名・社名・製品名は発言の表記に合わせる。
         spellingsは利用者が直した表記。fromの語はtoの表記で書く。
         """
+    // A summary item is a topic: what it came to, the points at issue, and the views put forward.
+    static let summaryRules = """
+        textは「話題：概要」の形で、概要はその話題で何を話し、どうなったかを1〜2文で書く。\
+        pointsは主な論点（何が問題になり、何を決める必要があったか）、opinionsは主な意見（出た意見・提案・懸念の中身）を、\
+        それぞれ0〜3個、1つ1文で短く書く。発言者は書かない。決定や作業の詳細はdecisions・actionsに書き、ここで繰り返さない。\
+        summary以外のpoints・opinionsは空配列。
+
+        """
     static let instructions =
         """
         会議に出ていない人が「何が決まり、なぜそうなり、次に何をすればよいか」を把握できる日本語の議事録を作る。
         previousは既存項目、newUtterancesは今回確認する発言、supportingUtterancesは既存項目の根拠発言。秒数は会議共通時刻。
         summary・decisions・unresolved・actionsの変更・追加だけをJSONで返す。省略は削除ではない。
-        summaryは話題ごとに1項目、最大8項目。「話題：結論や現状」の形で書く。発言順の羅列や同内容の繰り返しは避ける。
+        summaryは話題ごとに1項目、最大8項目。\(summaryRules)発言順の羅列や同内容の繰り返しは避ける。
         decisionsは明確に合意した内容のみ。提案・希望・検討中の案を決定にしない。reasonに発言で説明された判断理由・制約を書く。
         unresolvedは未決の論点。nextStepに決めるために必要と発言された確認・情報を書く。提案を補うための創作はしない。
         同じ論点・作業の変更は既存idを更新する。changeSummaryに「旧方針→新方針」と変更理由を簡潔に残す。
@@ -126,7 +134,7 @@ enum MinutesEngine {
         重複項目は根拠を一つへまとめ、他方をcancelledにしてchangeSummaryに統合先を記す。最新の結論と撤回案を両方有効にしない。
         actionsは具体的な作業を一項目一作業で。ownerとdueは根拠発言の表記をそのまま使う。曖昧な「私」「誰か」は担当者にしない。
         既知の担当・期限はその根拠も引き継ぐ。根拠がない場合はnull。話者名・今日の日付から人名や期日を推測しない。
-        各項目はid,text,owner,due,evidence,state,reason,nextStep,changeSummary。補足欄は根拠がない場合null。
+        各項目はid,text,owner,due,evidence,state,reason,nextStep,changeSummary,points,opinions。補足欄は根拠がない場合null。
         更新時は今も有効な理由・次の確認・変更の経緯を引き継ぐ。新しい結論に合わなくなった理由や確認事項はnullにする。
         新規idは空文字列、既存idは保持する。stateはopen,done,cancelled。完了・撤回・解決には明確な根拠が必要。
         evidenceは入力された発言のidsから選び、変更内容と理由の根拠を全て含め、newUtterancesのIDを最低1つ含める。
@@ -143,7 +151,7 @@ enum MinutesEngine {
         transcriptは会議の発言。秒数は会議共通時刻、sourcesは収録元で話者名ではない。同じ語の表記ゆれなど明らかな文字起こしの誤りは、文脈に合う表記にそろえてよい。
         draftは会議中に少しずつ作った下書き。拾い漏れの確認に使ってよいが、構成や言い回しは引き継がず、transcriptと合わない内容は採らない。agendaがあれば会議前に用意した議題。
         summary・decisions・unresolved・actionsの全項目を返す。返さなかった項目は議事録から消える。
-        summaryは話題ごとに1項目、話された順に最大8項目。「話題：結論や現状」の形で書く。agendaがあれば議題名を話題に使う。
+        summaryは話題ごとに1項目、話された順に最大8項目。agendaがあれば議題名を話題に使う。\(summaryRules)
         decisionsは会議で合意・決定した内容だけ。提案・希望・検討中の案は入れない。reasonに発言で説明された理由・制約を書く。
         途中で変わった方針は最終的な結論だけを書き、変わったことが大事ならreasonで触れる。撤回された案は書かない。
         actionsは誰かがやると決まった具体的な作業を一項目一作業で。ownerとdueは根拠発言の表記をそのまま使い、なければnull。曖昧な「私」「誰か」は担当者にしない。
@@ -171,10 +179,15 @@ enum MinutesEngine {
             "state": ["type": "string", "enum": ItemState.allCases.map(\.rawValue)],
             "reason": ["type": ["string", "null"]], "nextStep": ["type": ["string", "null"]],
             "changeSummary": ["type": ["string", "null"]],
+            "points": ["type": "array", "items": ["type": "string"]],
+            "opinions": ["type": "array", "items": ["type": "string"]],
         ]
         let item: [String: Any] = [
             "type": "object", "properties": fields,
-            "required": ["id", "text", "owner", "due", "evidence", "state", "reason", "nextStep", "changeSummary"],
+            "required": [
+                "id", "text", "owner", "due", "evidence", "state", "reason", "nextStep", "changeSummary", "points",
+                "opinions",
+            ],
             "additionalProperties": false,
         ]
         let array: [String: Any] = ["type": "array", "items": item]
@@ -258,7 +271,7 @@ enum MinutesEngine {
                     rejected += 1
                     continue
                 }
-                item = grounded(item, known: known)
+                item = grounded(item, known: known, summary: section == "summary")
                 guard !taken.contains(normalized(item.text)) else { continue }
                 item.evidence = Array(Set(item.evidence)).sorted()
                 item.changeSummary = nil
@@ -296,9 +309,16 @@ enum MinutesEngine {
         result.updatedAt = Date()
         return result
     }
-    /// The item with its owner and deadline kept only where its evidence says them word for word.
-    static func grounded(_ item: NoteItem, known: [String: Segment]) -> NoteItem {
+    /// The item with its owner and deadline kept only where its evidence says them word for word, and points and
+    /// opinions only on a summary topic.
+    static func grounded(_ item: NoteItem, known: [String: Segment], summary: Bool = false) -> NoteItem {
         var item = item
+        func list(_ lines: [String]?) -> [String]? {
+            let lines = (lines ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            return summary && !lines.isEmpty ? Array(lines.prefix(3)) : nil
+        }
+        item.points = list(item.points)
+        item.opinions = list(item.opinions)
         let original = item.evidence.compactMap { known[$0]?.text }.joined(separator: "\n")
         func field(_ value: String?) -> String? {
             guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty,
@@ -333,7 +353,7 @@ enum MinutesEngine {
                     rejected += 1
                     continue
                 }
-                item = grounded(item, known: known)
+                item = grounded(item, known: known, summary: section == "summary")
                 // What the user wrote or deleted by hand stays that way.
                 if dismissed.contains(normalized(item.text))
                     || items.contains(where: { $0.id == item.id && !item.id.isEmpty && $0.edited == true })
@@ -349,6 +369,8 @@ enum MinutesEngine {
                     }
                     item.owner = item.owner ?? items[i].owner
                     item.due = item.due ?? items[i].due
+                    item.points = item.points ?? items[i].points
+                    item.opinions = item.opinions ?? items[i].opinions
                     if normalized(item.text) == normalized(items[i].text) {
                         item.reason = item.reason ?? items[i].reason
                         item.nextStep = item.nextStep ?? items[i].nextStep
@@ -391,7 +413,7 @@ enum MinutesEngine {
         }
         // A known owner or deadline stands out; 未定 does not.
         func strong(_ value: String?) -> String { value.map { "**\(plain($0))**" } ?? "未定" }
-        func lines(_ items: [NoteItem], actions: Bool = false, topics: Bool = false) -> String {
+        func lines(_ items: [NoteItem], actions: Bool = false) -> String {
             if items.isEmpty { return "- なし" }
             return items.map { item in
                 let evidence = item.evidence.compactMap { known[$0] }.sorted { $0.time < $1.time }
@@ -407,10 +429,20 @@ enum MinutesEngine {
                         + detail
                 }
                 let time = evidence.first.map { "[\(clock($0.time))] " } ?? ""
-                var text = plain(item.text)
-                if topics, let topic = summaryTopic(text) { text = "**\(topic)**" + text.dropFirst(topic.count) }
-                return "- \(time)\(text)\(mark.isEmpty ? "" : "（" + mark + "）")" + detail
+                return "- \(time)\(plain(item.text))\(mark.isEmpty ? "" : "（" + mark + "）")" + detail
             }.joined(separator: "\n")
+        }
+        // Each summary topic under its own heading: its overview, then the points at issue and the views put forward.
+        func topics(_ items: [NoteItem]) -> String {
+            if items.isEmpty { return "- なし" }
+            return items.enumerated().map { number, item in
+                let parts = summaryParts(plain(item.text))
+                let heading = "### 要約\(number + 1)" + (parts.topic.map { "：" + $0 } ?? "")
+                let lists = [("概要", [parts.overview]), ("主な論点", item.points ?? []), ("主な意見", item.opinions ?? [])]
+                    .filter { !$0.1.isEmpty }
+                    .map { label, lines in "**\(label)**\n" + lines.map { "- " + plain($0) }.joined(separator: "\n") }
+                return ([heading] + lists).joined(separator: "\n\n")
+            }.joined(separator: "\n\n")
         }
         let candidate = state.extractionOnly ? "の候補" : ""
         let notice = state.extractionOnly ? "\nキーワードに基づく発言抽出の候補です。原文で確認してください。\n" : ""
@@ -418,9 +450,15 @@ enum MinutesEngine {
         let original = transcript.map { "\n\n## 文字起こし\n" + $0 } ?? ""
         // What a reader acts on comes first; the transcript, the longest part, comes last.
         return
-            "# \(plain(title ?? "議事録"))\n\(tagLine(tags))\(agendaSection(agenda))\(notice)\n## 要約\n\(lines(state.content.summary.filter { $0.state != .cancelled }, topics: true))\n\n## 決定事項と理由\(candidate)\n\(lines(state.content.decisions.filter { $0.state != .cancelled }))\n\n## アクションアイテム\n\(lines(state.content.actions.filter { $0.state != .cancelled }, actions: true))\n\n## 未決事項・次の確認\(candidate)\n\(lines(state.content.unresolved.filter { $0.state == .open }))\(history)\(original)"
+            "# \(plain(title ?? "議事録"))\n\(tagLine(tags))\(agendaSection(agenda))\(notice)\n## 要約\n\n\(topics(state.content.summary.filter { $0.state != .cancelled }))\n\n## 決定事項と理由\(candidate)\n\(lines(state.content.decisions.filter { $0.state != .cancelled }))\n\n## アクションアイテム\n\(lines(state.content.actions.filter { $0.state != .cancelled }, actions: true))\n\n## 未決事項・次の確認\(candidate)\n\(lines(state.content.unresolved.filter { $0.state == .open }))\(history)\(original)"
     }
-    /// The topic of a summary item written "話題：結論", to set in bold; nil when the item has no such topic.
+    /// A summary item's topic and overview, from text written "話題：概要". Without a short topic, all of it is the
+    /// overview.
+    static func summaryParts(_ text: String) -> (topic: String?, overview: String) {
+        guard let topic = summaryTopic(text) else { return (nil, text) }
+        return (topic, String(text.dropFirst(topic.count + 1)).trimmingCharacters(in: .whitespaces))
+    }
+    /// The topic of a summary item written "話題：概要", to set in bold; nil when the item has no such topic.
     static func summaryTopic(_ text: String) -> String? {
         guard let colon = text.firstIndex(of: "："), (1...30).contains(text.distance(from: text.startIndex, to: colon)),
             text.index(after: colon) != text.endIndex

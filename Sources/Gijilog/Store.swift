@@ -1194,10 +1194,17 @@ extension Store {
             item.edited = true
             m.notes?.content[part][i] = item
             if let notes = m.notes { m.minutes = MinutesEngine.render(notes, segments: m.segments) }
-            for field in [NoteField.text, .owner, .reason, .nextStep] {
-                guard let old = before[field], let new = item[field],
-                    let term = TermMatcher.changedTerm(from: old, to: new)
-                else { continue }
+            // Points and opinions are also compared line by line, so a line added in the same edit does not hide a
+            // fixed word.
+            let edits = [NoteField.text, .owner, .reason, .nextStep, .points, .opinions].flatMap { field in
+                guard let old = before[field], let new = item[field] else { return [(String, String)]() }
+                let lines = zip(old.components(separatedBy: "\n"), new.components(separatedBy: "\n")).filter {
+                    $0 != $1
+                }
+                return [(old, new)] + (field == .points || field == .opinions ? lines : [])
+            }
+            for (old, new) in edits {
+                guard let term = TermMatcher.changedTerm(from: old, to: new) else { continue }
                 let count = m.occurrences(of: term.from, correctedTo: term.to).count
                 if count > 0 {
                     offer = CorrectionOffer(meetingID: meetingID, from: term.from, to: term.to, count: count)

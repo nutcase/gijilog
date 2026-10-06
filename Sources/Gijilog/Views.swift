@@ -26,6 +26,8 @@ enum Palette {
     static let tokiwa = Color(hex: 0x1F7A4D)  // Decided.
     static let ruri = Color(hex: 0x1E50A2)  // Someone will do it.
     static let yamabukiInk = Color(hex: 0x93620A)  // Still open.
+    static let sumire = Color(hex: 0x5A4FA0)  // What was talked about, and the points at issue.
+    static let seiheki = Color(hex: 0x17707A)  // The views put forward.
 }
 // Each part of the minutes has its own ink and mark, so a reader finds what was decided, what is still open, and
 // who does what at a glance. The text itself stays sumi; color marks only headings, bullets and labels.
@@ -33,7 +35,7 @@ enum NoteTone {
     case summary, decisions, unresolved, history, actions
     var color: Color {
         switch self {
-        case .summary: Palette.ai
+        case .summary: Palette.sumire
         case .decisions: Palette.tokiwa
         case .unresolved: Palette.yamabukiInk
         case .history: Color(hex: 0x6B7280)
@@ -90,14 +92,6 @@ extension EnvironmentValues {
         get { self[SearchTermsKey.self] }
         set { self[SearchTermsKey.self] = newValue }
     }
-}
-/// A summary item's topic, the words before "：", in bold.
-func boldingTopic(_ text: AttributedString, of plain: String) -> AttributedString {
-    guard let topic = MinutesEngine.summaryTopic(plain) else { return text }
-    var result = text
-    let end = result.index(result.startIndex, offsetByCharacters: topic.count + 1)
-    result[result.startIndex..<end].inlinePresentationIntent = .stronglyEmphasized
-    return result
 }
 /// The text with every keyword marked like a highlighter pen.
 func highlighted(_ text: String, _ terms: [String]) -> AttributedString {
@@ -871,6 +865,7 @@ struct MinutesDesk: View {
             .padding(.horizontal, 48).padding(.vertical, 40)
             .frame(maxWidth: 760, alignment: .leading)
             .background(Palette.paper, in: RoundedRectangle(cornerRadius: 4))
+            .compositingGroup()  // One shadow for the sheet, not one under each line on it.
             .shadow(color: .black.opacity(0.35), radius: 24, y: 12)
             .environment(\.colorScheme, .light)
             .padding(32)
@@ -1214,15 +1209,17 @@ struct NoteSection: View {
             if items.isEmpty {
                 Text("まだありません").font(.callout).foregroundStyle(.secondary).padding(.vertical, 8)
             }
-            ForEach(items) { item in
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                 let fresh = !Set(item.evidence).isDisjoint(with: latest)
                 Group {
                     if let editing {
                         EditableNoteRow(
-                            editing: editing, item: item, known: known, fresh: fresh, tone: tone,
+                            editing: editing, item: item, known: known, fresh: fresh, tone: tone, number: index + 1,
                             current: item.id == current)
                     } else {
-                        NoteRow(item: item, known: known, fresh: fresh, tone: tone, current: item.id == current)
+                        NoteRow(
+                            item: item, known: known, fresh: fresh, tone: tone, number: index + 1,
+                            current: item.id == current)
                     }
                 }
                 .id("note-" + item.id)
@@ -1274,6 +1271,8 @@ struct FreshSwatch: View {
     @Published var due = ""
     @Published var reason = ""
     @Published var nextStep = ""
+    @Published var points = ""  // One per line.
+    @Published var opinions = ""
     @Published var done = false
     var cancelled = false
     private var original: NoteItem?  // The item as last loaded; only fields changed from it are saved.
@@ -1283,6 +1282,8 @@ struct FreshSwatch: View {
         due = item.due ?? ""
         reason = item.reason ?? ""
         nextStep = item.nextStep ?? ""
+        points = item[.points] ?? ""
+        opinions = item[.opinions] ?? ""
         done = item.state == .done
         original = item
         cancelled = false
@@ -1295,6 +1296,8 @@ struct FreshSwatch: View {
         if due == original.due ?? "" { due = item.due ?? "" }
         if reason == original.reason ?? "" { reason = item.reason ?? "" }
         if nextStep == original.nextStep ?? "" { nextStep = item.nextStep ?? "" }
+        if points == original[.points] ?? "" { points = item[.points] ?? "" }
+        if opinions == original[.opinions] ?? "" { opinions = item[.opinions] ?? "" }
         if done == (original.state == .done) { done = item.state == .done }
         self.original = item
     }
@@ -1308,6 +1311,8 @@ struct FreshSwatch: View {
         if text != original.text, let text = optional(text) { item.text = text }
         if reason != original.reason ?? "" { item.reason = optional(reason) }
         if nextStep != original.nextStep ?? "" { item.nextStep = optional(nextStep) }
+        if points != original[.points] ?? "" { item[.points] = points }
+        if opinions != original[.opinions] ?? "" { item[.opinions] = opinions }
         guard action else { return }
         if owner != original.owner ?? "" { item.owner = optional(owner) }
         if due != original.due ?? "" { item.due = optional(due) }
@@ -1325,6 +1330,7 @@ struct EditableNoteRow: View {
     let known: [String: Segment]
     let fresh: Bool
     let tone: NoteTone
+    var number: Int?
     var current = false
     private var action: Bool { tone == .actions }
     private var key: String { editing.part.rawValue + "/" + item.id }
@@ -1335,7 +1341,7 @@ struct EditableNoteRow: View {
                 editor
             } else {
                 NoteRow(
-                    item: item, known: known, fresh: fresh, tone: tone, current: current,
+                    item: item, known: known, fresh: fresh, tone: tone, number: number, current: current,
                     edit: { store.editingNoteItem = key }
                 )
                 .contextMenu {
@@ -1356,8 +1362,14 @@ struct EditableNoteRow: View {
     }
     private var editor: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TextField("内容", text: $draft.text, axis: .vertical)
+            TextField(editing.part == .summary ? "話題：概要" : "内容", text: $draft.text, axis: .vertical)
                 .font(.system(size: 14.5)).focused($focused, equals: .text).onSubmit(finish)
+            if editing.part == .summary {
+                ListField(title: "主な論点", ink: Palette.sumire, text: $draft.points)
+                    .focused($focused, equals: .points)
+                ListField(title: "主な意見", ink: Palette.seiheki, text: $draft.opinions)
+                    .focused($focused, equals: .opinions)
+            }
             if action {
                 HStack(spacing: 10) {
                     TextField("担当", text: $draft.owner).focused($focused, equals: .owner).onSubmit(finish)
@@ -1366,8 +1378,10 @@ struct EditableNoteRow: View {
                 }
                 .font(.callout)
             }
-            TextField("理由（任意）", text: $draft.reason, axis: .vertical)
-                .font(.caption).focused($focused, equals: .reason).onSubmit(finish)
+            if editing.part != .summary || !draft.reason.isEmpty {
+                TextField("理由（任意）", text: $draft.reason, axis: .vertical)
+                    .font(.caption).focused($focused, equals: .reason).onSubmit(finish)
+            }
             if editing.part == .unresolved || !draft.nextStep.isEmpty {
                 TextField("次の確認（任意）", text: $draft.nextStep, axis: .vertical)
                     .font(.caption).focused($focused, equals: .nextStep).onSubmit(finish)
@@ -1375,7 +1389,8 @@ struct EditableNoteRow: View {
             HStack(spacing: 10) {
                 Button("削除", role: .destructive, action: remove).buttonStyle(.borderless)
                 Spacer()
-                Text("Return で確定・Esc で取り消し").font(.caption).foregroundStyle(.secondary)
+                Text(editing.part == .summary ? "論点と意見は1行に1つ・Esc で取り消し" : "Return で確定・Esc で取り消し")
+                    .font(.caption).foregroundStyle(.secondary)
                 Button("完了", action: finish)
             }
             .controlSize(.small)
@@ -1399,6 +1414,23 @@ struct EditableNoteRow: View {
     private func remove() {
         draft.cancelled = true
         store.removeNoteItem(editing.meetingID, part: editing.part, id: item.id)
+    }
+}
+// A summary topic's points or opinions, one per line: Return starts the next one.
+struct ListField: View {
+    let title: String
+    let ink: Color
+    @Binding var text: String
+    var body: some View {
+        // A text editor has no baseline to share, so the label lines up with its first line by hand.
+        HStack(alignment: .top, spacing: 8) {
+            Text(title).font(.system(size: 10.5, weight: .bold)).foregroundStyle(ink)
+                .padding(.horizontal, 5).padding(.vertical, 1.5)
+                .background(RoundedRectangle(cornerRadius: 3).fill(ink.opacity(0.1)))
+                .padding(.top, 1)
+            TextEditor(text: $text).font(.system(size: 13)).scrollContentBackground(.hidden)
+                .frame(minHeight: 22, maxHeight: 90).fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 // "＋ 追加" at the end of an editable section opens a field; Return adds the item, an empty Return closes it.
@@ -1563,7 +1595,10 @@ struct CorrectionSheet: View {
             let sections: [NotePart: String] = [
                 .summary: "要約", .decisions: "決定事項", .unresolved: "未決事項", .actions: "アクション",
             ]
-            let fields: [NoteField: String] = [.owner: "の担当", .due: "の期限", .reason: "の理由", .nextStep: "の次の確認"]
+            let fields: [NoteField: String] = [
+                .owner: "の担当", .due: "の期限", .reason: "の理由", .nextStep: "の次の確認", .points: "の論点",
+                .opinions: "の意見",
+            ]
             return (sections[part] ?? "") + (fields[field] ?? "")
         case .segment(let id):
             let segment = meeting.segments.first { $0.id == id }
@@ -1632,39 +1667,51 @@ struct NoteRow: View {
     let known: [String: Segment]
     let fresh: Bool
     let tone: NoteTone
+    var number: Int?  // A summary topic's place in the meeting.
     var compact = false
     var current = false  // The find bar's current match.
     var edit: (() -> Void)?  // Set where the minutes can be edited: clicking the text opens the item.
     private var action: Bool { tone == .actions }
     private var closed: Bool { item.state != .open }
+    // A summary topic is marked by its number instead of a bullet.
+    private var topic: Bool { tone == .summary && SummaryTopic.applies(to: item) }
     var body: some View {
         let evidence = item.evidence.compactMap { known[$0] }.sorted { $0.time < $1.time }
-        let text = highlighted(item.text, terms)
+        let indent: CGFloat = topic && number != nil ? SummaryTopic.indent(compact) : 0  // Past a topic's number.
         HStack(alignment: .firstTextBaseline, spacing: 10) {
-            bullet
+            if !topic { bullet }
             VStack(alignment: .leading, spacing: compact ? 4 : 6) {
-                // Summary topics and decisions carry the weight a reader scans for.
-                Text(tone == .summary ? boldingTopic(text, of: item.text) : text)
-                    .font(
-                        .system(
-                            size: compact ? 13 : 14.5, weight: tone == .decisions && !closed ? .semibold : .regular)
-                    )
-                    .lineSpacing(compact ? 2 : 4)
-                    .strikethrough(item.state == .cancelled)
-                    .foregroundStyle(closed ? Color.secondary : Palette.sumi)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .modifier(Selectable(enabled: edit == nil))  // A selectable text would take the click.
-                    .contentShape(Rectangle())
-                    .onTapGesture { edit?() }
-                    .help(edit == nil ? "" : "クリックして編集")
+                Group {
+                    if topic {
+                        SummaryTopic(item: item, number: number, compact: compact)
+                    } else {
+                        // Decisions carry the weight a reader scans for.
+                        Text(highlighted(item.text, terms))
+                            .font(
+                                .system(
+                                    size: compact ? 13 : 14.5,
+                                    weight: tone == .decisions && !closed ? .semibold : .regular)
+                            )
+                            .lineSpacing(compact ? 2 : 4)
+                            .strikethrough(item.state == .cancelled)
+                            .foregroundStyle(closed ? Color.secondary : Palette.sumi)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .modifier(Selectable(enabled: edit == nil))  // A selectable text would take the click.
+                .contentShape(Rectangle())
+                .onTapGesture { edit?() }
+                .help(edit == nil ? "" : "クリックして編集")
                 if let reason = item.reason {
-                    NoteDetail(label: "理由", text: reason, color: tone.color, compact: compact)
+                    NoteDetail(label: "理由", text: reason, color: tone.color, compact: compact).padding(.leading, indent)
                 }
                 if let next = item.nextStep {
                     NoteDetail(label: "次の確認", text: next, color: Palette.yamabukiInk, compact: compact)
+                        .padding(.leading, indent)
                 }
                 if let change = item.changeSummary {
                     NoteDetail(label: "経緯", text: change, color: NoteTone.history.color, compact: compact)
+                        .padding(.leading, indent)
                 }
                 if action || closed || item.edited == true {
                     HStack(spacing: 6) {
@@ -1680,6 +1727,7 @@ struct NoteRow: View {
                         }
                     }
                     .font(.system(size: compact ? 11 : 11.5))
+                    .padding(.leading, indent)
                 }
                 if let first = evidence.first {
                     DisclosureGroup {
@@ -1694,6 +1742,7 @@ struct NoteRow: View {
                         Text("根拠 \(clock(first.time))〜（\(evidence.count)件）").foregroundStyle(.secondary)
                     }
                     .font(.caption)
+                    .padding(.leading, indent)
                 }
             }
         }
@@ -1723,6 +1772,76 @@ struct NoteRow: View {
         case .summary, .history:
             Circle().fill(tone.color.opacity(tone == .summary ? 0.55 : 0.35)).frame(width: 6, height: 6)
                 .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 2 }
+        }
+    }
+}
+// A summary topic: its number and name, then what it came to, the points at issue and the views put forward. Each
+// part has its own ink (sumi for the overview, sumire for the points, seiheki for the views), and the text after the
+// labels lines up.
+struct SummaryTopic: View {
+    @Environment(\.searchTerms) private var terms
+    let item: NoteItem
+    var number: Int?
+    var compact = false
+    static func applies(to item: NoteItem) -> Bool {
+        MinutesEngine.summaryTopic(item.text) != nil || item.points != nil || item.opinions != nil
+    }
+    /// How far the topic's parts sit in from its number: the number's width and the space after it.
+    static func indent(_ compact: Bool) -> CGFloat { compact ? 17 + 7 : 19 + 9 }
+    private struct Part {
+        let label: String
+        let ink: Color
+        let lines: [String]
+    }
+    var body: some View {
+        // Without a topic before "：", the whole text is the title.
+        let parts = MinutesEngine.summaryParts(item.text)
+        let rows = [
+            Part(label: "概要", ink: Palette.sumi.opacity(0.7), lines: parts.topic == nil ? [] : [parts.overview]),
+            Part(label: "主な論点", ink: Palette.sumire, lines: item.points ?? []),
+            Part(label: "主な意見", ink: Palette.seiheki, lines: item.opinions ?? []),
+        ].filter { !$0.lines.isEmpty }
+        VStack(alignment: .leading, spacing: compact ? 6 : 8) {
+            HStack(alignment: .firstTextBaseline, spacing: compact ? 7 : 9) {
+                if let number {
+                    Text("\(number)").font(.system(size: compact ? 10 : 11, weight: .bold)).monospacedDigit()
+                        .foregroundStyle(.white)
+                        .frame(width: compact ? 17 : 19, height: compact ? 17 : 19)
+                        .background(Circle().fill(Palette.sumire))
+                }
+                Text(highlighted(parts.topic ?? parts.overview, terms)).font(
+                    .system(size: compact ? 13.5 : 15, weight: .bold)
+                )
+                .foregroundStyle(Palette.sumi).fixedSize(horizontal: false, vertical: true)
+            }
+            VStack(alignment: .leading, spacing: compact ? 6 : 8) {
+                ForEach(rows, id: \.label) { part in
+                    HStack(alignment: .firstTextBaseline, spacing: compact ? 8 : 12) {
+                        // Labeled like a decision's 理由 or an open issue's 次の確認.
+                        Text(part.label).font(.system(size: compact ? 10 : 10.5, weight: .bold))
+                            .foregroundStyle(part.ink)
+                            .padding(.horizontal, 5).padding(.vertical, 1.5)
+                            .background(RoundedRectangle(cornerRadius: 3).fill(part.ink.opacity(0.1)))
+                            .frame(width: compact ? 54 : 60, alignment: .leading)
+                        VStack(alignment: .leading, spacing: compact ? 3 : 4) {
+                            ForEach(Array(part.lines.enumerated()), id: \.offset) { _, line in
+                                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                                    if part.label != "概要" {
+                                        Circle().fill(part.ink.opacity(0.7)).frame(width: 5, height: 5)
+                                            .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 3 }
+                                    }
+                                    Text(highlighted(line, terms)).lineSpacing(compact ? 1.5 : 3.5)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                        }
+                        .font(.system(size: part.label == "概要" ? (compact ? 12.5 : 14) : (compact ? 12 : 13.5)))
+                        .foregroundStyle(Palette.sumi.opacity(part.label == "概要" ? 1 : 0.88))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            .padding(.leading, number == nil ? 0 : Self.indent(compact))
         }
     }
 }
@@ -2856,10 +2975,10 @@ struct LiveSection: View {
             if items.isEmpty {
                 Text("まだありません").font(.caption).foregroundStyle(.secondary).padding(.vertical, 4)
             }
-            ForEach(items) { item in
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                 NoteRow(
                     item: item, known: known, fresh: !Set(item.evidence).isDisjoint(with: latest), tone: tone,
-                    compact: true)
+                    number: index + 1, compact: true)
             }
         }
     }
