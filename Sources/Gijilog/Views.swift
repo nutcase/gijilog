@@ -1052,7 +1052,7 @@ struct MeetingTitle: View {
                     .focused($focused)
                     .onChange(of: draft.text) { store.renameMeeting(meeting.id, to: draft.text) }
                     .onSubmit { store.editingTitle = nil }
-                    .onExitCommand {
+                    .onEscape {
                         store.renameMeeting(meeting.id, to: draft.original)
                         store.editingTitle = nil
                     }
@@ -1069,7 +1069,7 @@ struct MeetingTitle: View {
             if editing {
                 draft.original = meeting.title
                 draft.text = meeting.title
-                focused = true
+                Task { @MainActor in focused = true }  // Once the field is on screen.
             }
         }
         .onChange(of: focused) { if !focused && store.editingTitle == meeting.id { store.editingTitle = nil } }
@@ -1275,6 +1275,7 @@ struct FreshSwatch: View {
     @Published var opinions = ""
     @Published var done = false
     var cancelled = false
+    var opening: NoteField?  // The field to type in when the item opens, when not its text.
     private var original: NoteItem?  // The item as last loaded; only fields changed from it are saved.
     func load(_ item: NoteItem) {
         text = item.text
@@ -1342,7 +1343,11 @@ struct EditableNoteRow: View {
             } else {
                 NoteRow(
                     item: item, known: known, fresh: fresh, tone: tone, number: number, current: current,
-                    edit: { store.editingNoteItem = key }
+                    edit: { field in
+                        draft.opening = field
+                        store.editingNoteItem = key
+                    },
+                    toggle: item.state == .cancelled ? nil : { toggleDone() }
                 )
                 .contextMenu {
                     Button("編集", systemImage: "pencil") { store.editingNoteItem = key }
@@ -1353,7 +1358,10 @@ struct EditableNoteRow: View {
         .onChange(of: open, initial: true) { wasOpen, isOpen in
             if isOpen {
                 draft.load(item)
-                focused = .text
+                let field = draft.opening ?? .text
+                draft.opening = nil
+                // The editor's fields appear with this change; focus can move into one only once they are there.
+                Task { @MainActor in focused = field }
             } else if wasOpen && !draft.cancelled {
                 save()
             }
@@ -1398,12 +1406,17 @@ struct EditableNoteRow: View {
         .textFieldStyle(.plain)
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 6).fill(Palette.asagi.opacity(0.1)))
-        .onExitCommand {
+        .onEscape {
             draft.cancelled = true
             store.editingNoteItem = nil
         }
     }
     private func finish() { store.editingNoteItem = nil }
+    private func toggleDone() {
+        store.updateNoteItem(editing.meetingID, part: editing.part, id: item.id) {
+            $0.state = $0.state == .done ? .open : .done
+        }
+    }
     private func save() {
         let draft = draft
         let action = action
@@ -1448,7 +1461,7 @@ struct AddNoteItem: View {
                     TextField(placeholder, text: $draft.text, axis: .vertical)
                         .textFieldStyle(.plain).focused($focused)
                         .onSubmit(add)
-                        .onExitCommand { close() }
+                        .onEscape { close() }
                 }
                 .font(.system(size: 14.5))
                 .padding(.vertical, 9).padding(.horizontal, 8)
@@ -1670,7 +1683,11 @@ struct NoteRow: View {
     var number: Int?  // A summary topic's place in the meeting.
     var compact = false
     var current = false  // The find bar's current match.
-    var edit: (() -> Void)?  // Set where the minutes can be edited: clicking the text opens the item.
+    // Set where the minutes can be edited: clicking the text, the pencil, or an owner or deadline opens the item at
+    // that field, and an action's box ticks it done.
+    var edit: ((NoteField) -> Void)?
+    var toggle: (() -> Void)?
+    @StateObject private var hover = HoverFlag()
     private var action: Bool { tone == .actions }
     private var closed: Bool { item.state != .open }
     // A summary topic is marked by its number instead of a bullet.
@@ -1700,7 +1717,7 @@ struct NoteRow: View {
                 }
                 .modifier(Selectable(enabled: edit == nil))  // A selectable text would take the click.
                 .contentShape(Rectangle())
-                .onTapGesture { edit?() }
+                .onTapGesture { edit?(.text) }
                 .help(edit == nil ? "" : "クリックして編集")
                 if let reason = item.reason {
                     NoteDetail(label: "理由", text: reason, color: tone.color, compact: compact).padding(.leading, indent)
@@ -1717,7 +1734,9 @@ struct NoteRow: View {
                     HStack(spacing: 6) {
                         if action {
                             Tag(label: "担当", symbol: "person.fill", value: item.owner, open: !closed)
+                                .editing(edit.map { edit in { edit(.owner) } }, help: "クリックして担当を入力")
                             Tag(label: "期限", symbol: "calendar", value: item.due, open: !closed)
+                                .editing(edit.map { edit in { edit(.due) } }, help: "クリックして期限を入力")
                         } else if closed {
                             Text(item.state == .done ? "解決済み" : "撤回・統合").foregroundStyle(Palette.asagi)
                         }
@@ -1748,8 +1767,24 @@ struct NoteRow: View {
         }
         .padding(.vertical, compact ? 6 : 10).padding(.horizontal, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 4).fill(fresh ? Palette.asagi.opacity(0.1) : .clear))
+        .background(
+            RoundedRectangle(cornerRadius: 4).fill(
+                fresh ? Palette.asagi.opacity(0.1) : hover.on ? Palette.sumi.opacity(0.035) : .clear)
+        )
         .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(current ? Palette.yamabuki : .clear, lineWidth: 1.5))
+        // An editable item shows a pencil while the pointer is over it.
+        .overlay(alignment: .topTrailing) {
+            if let edit, hover.on {
+                Button {
+                    edit(.text)
+                } label: {
+                    Image(systemName: "pencil").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
+                        .padding(6).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).help("編集").padding(.top, 4).padding(.trailing, 2)
+            }
+        }
+        .onHover { inside in if edit != nil { hover.on = inside } }
     }
     // The bullet says what kind of item it is: a check for a decision, an open ring for an open question, a box to
     // tick for a task.
@@ -1757,12 +1792,18 @@ struct NoteRow: View {
         let size: CGFloat = compact ? 12 : 13
         switch tone {
         case .actions:
-            Image(
+            let box = Image(
                 systemName: item.state == .done
                     ? "checkmark.square.fill" : item.state == .cancelled ? "xmark.square" : "square"
             )
             .font(.system(size: size, weight: .medium))
             .foregroundStyle(closed ? Color.secondary : tone.color)
+            if let toggle {
+                Button(action: toggle) { box }.buttonStyle(.plain)
+                    .help(item.state == .done ? "未完了に戻す" : "完了にする")
+            } else {
+                box
+            }
         case .decisions:
             Image(systemName: "checkmark").font(.system(size: size - 2, weight: .heavy))
                 .foregroundStyle(closed ? Color.secondary : tone.color)
@@ -1863,6 +1904,27 @@ struct NoteDetail: View {
         }
     }
 }
+@MainActor final class HoverFlag: ObservableObject {
+    @Published var on = false
+}
+extension View {
+    /// Esc runs the action. A focused text field takes Esc for word completion before .onExitCommand sees it, so
+    /// the key is also caught on its way in.
+    func onEscape(_ action: @escaping () -> Void) -> some View {
+        onExitCommand(perform: action).onKeyPress(.escape) {
+            action()
+            return .handled
+        }
+    }
+    /// Makes the view a button that opens the item for editing, where it can be edited.
+    @ViewBuilder func editing(_ action: (() -> Void)?, help: String) -> some View {
+        if let action {
+            Button(action: action) { self }.buttonStyle(.plain).help(help)
+        } else {
+            self
+        }
+    }
+}
 struct Selectable: ViewModifier {
     let enabled: Bool
     func body(content: Content) -> some View {
@@ -1910,7 +1972,7 @@ struct FindBar: View {
             TextField(placeholder, text: $state.query)
                 .textFieldStyle(.plain).focused($focused)
                 .onSubmit { state.step(1, count: count) }
-                .onExitCommand { state = FindState() }
+                .onEscape { state = FindState() }
             if !state.terms.isEmpty {
                 Text(count == 0 ? "なし" : "\(min(state.index, count - 1) + 1)/\(count)")
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary).fixedSize()
@@ -2124,7 +2186,7 @@ struct TranscriptRow: View {
                     .textFieldStyle(.plain).font(.system(size: 13.5))
                     .focused($focused)
                     .onSubmit { store.editingSegment = nil }
-                    .onExitCommand {
+                    .onEscape {
                         draft.cancelled = true
                         store.editingSegment = nil
                     }
@@ -2155,7 +2217,7 @@ struct TranscriptRow: View {
                 draft.text = segment.text
                 draft.original = segment.text
                 draft.cancelled = false
-                focused = true
+                Task { @MainActor in focused = true }  // Once the field is on screen.
             } else if wasOpen && !draft.cancelled && draft.text != draft.original, let meetingID {
                 store.updateSegment(meetingID, id: segment.id, text: draft.text)
             }
