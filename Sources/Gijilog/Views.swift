@@ -119,7 +119,7 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     if store.showsTranscript, let meeting = store.selectedMeeting {
                         Rectangle().fill(Palette.ai).frame(width: 1)
-                        TranscriptPanel(meeting: meeting).frame(width: 320)
+                        TranscriptPanel(meeting: meeting, editable: store.canEditTranscript(meeting)).frame(width: 320)
                     }
                 }
                 .environment(\.searchTerms, store.searchedTerms)
@@ -902,7 +902,9 @@ struct MinutesDesk: View {
             if meeting.notes?.extractionOnly == true {
                 Notice(text: "以前のキーワード抽出で作った議事録です。「全文を再処理」でAIの議事録に作り直せます。")
             }
-            if let offer = store.correctionOffer, offer.meetingID == meeting.id { CorrectionOfferView(offer: offer) }
+            if let offer = store.correctionOffer, offer.meetingID == meeting.id, !offer.inTranscript {
+                CorrectionOfferView(offer: offer)
+            }
         }
         .padding(.top, 14)
     }
@@ -1442,22 +1444,37 @@ struct CorrectionSheet: View {
 struct CorrectionOfferView: View {
     @EnvironmentObject var store: Store
     let offer: CorrectionOffer
+    var stacked = false  // Buttons under the message, for the narrow transcript column.
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Image(systemName: "character.cursor.ibeam").foregroundStyle(Palette.asagi)
-            Text("「\(offer.from)」を「\(offer.to)」に直しました。ほかの\(offer.count)か所も直しますか？")
-                .font(.callout).fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 8)
-            Button("すべて直す") { store.applyOfferedCorrection() }
-            Button("確認して直す") {
-                store.correcting = CorrectionRequest(meetingID: offer.meetingID, from: offer.from, to: offer.to)
-                store.correctionOffer = nil
+        let message = Text("「\(offer.from)」を「\(offer.to)」に直しました。ほかの\(offer.count)か所も直しますか？")
+            .font(.callout).fixedSize(horizontal: false, vertical: true)
+        Group {
+            if stacked {
+                VStack(alignment: .leading, spacing: 8) {
+                    message
+                    HStack(spacing: 6) { buttons }
+                }
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Image(systemName: "character.cursor.ibeam").foregroundStyle(Palette.asagi)
+                    message
+                    Spacer(minLength: 8)
+                    buttons
+                }
             }
-            Button("直さない") { store.correctionOffer = nil }
         }
         .controlSize(.small)
         .padding(10)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Palette.asagi.opacity(0.12)))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Palette.asagi.opacity(stacked ? 0.2 : 0.12)))
+    }
+    @ViewBuilder private var buttons: some View {
+        Button("すべて直す") { store.applyOfferedCorrection() }
+        Button("確認して直す") {
+            store.correcting = CorrectionRequest(meetingID: offer.meetingID, from: offer.from, to: offer.to)
+            store.correctionOffer = nil
+        }
+        Button("直さない") { store.correctionOffer = nil }
     }
 }
 struct NoteRow: View {
@@ -1569,6 +1586,7 @@ struct TranscriptPanel: View {
     @StateObject private var follow = TranscriptFollow()
     let meeting: Meeting
     var showsHeader = true  // The compact window shows the count in its tab bar instead.
+    var editable = false  // Lines can be corrected in the full window.
     var body: some View {
         let live = meeting.id == store.activeID
         let matches =
@@ -1601,15 +1619,21 @@ struct TranscriptPanel: View {
                 .padding(.top, 10)
                 .pageTabBar()
             }
+            if let offer = store.correctionOffer, offer.meetingID == meeting.id, offer.inTranscript, editable {
+                CorrectionOfferView(offer: offer, stacked: true).padding(.horizontal, 12).padding(.top, 10)
+            }
             if meeting.segments.isEmpty {
-                Text(live ? "最初の発言は12秒ほどで表示されます。" : "文字起こしはまだありません。")
+                Text(live ? "最初の発言は10秒ほどで表示されます。" : "文字起こしはまだありません。")
                     .font(.callout).foregroundStyle(.secondary).padding(16)
                 Spacer()
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 16) {
-                            ForEach(meeting.segments) { segment in TranscriptRow(segment: segment).id(segment.id) }
+                            ForEach(meeting.segments) { segment in
+                                TranscriptRow(segment: segment, meetingID: meeting.id, editable: editable).id(
+                                    segment.id)
+                            }
                         }
                         .padding(16)
                         .textSelection(.enabled)
@@ -1633,7 +1657,8 @@ struct TranscriptPanel: View {
                         }
                     }
                     .onChange(of: meeting.segments.last?.id) {
-                        if live && follow.atEnd && terms.isEmpty { scrollToEnd(proxy) }
+                        // Not while a line is being corrected: following would scroll it away.
+                        if live && follow.atEnd && terms.isEmpty && store.editingSegment == nil { scrollToEnd(proxy) }
                     }
                     // A new search, or another meeting while searching, opens at the first matching utterance.
                     .task(id: "\(meeting.id) \(terms.joined(separator: " "))") {
@@ -1674,19 +1699,76 @@ struct ScrollMetrics: Equatable {
     var container: CGFloat
     var atEnd: Bool { offset + container >= content - 60 }
 }
+@MainActor final class LineDraft: ObservableObject {
+    @Published var text = ""
+    var original = ""
+    var cancelled = false
+}
+// One utterance. Where the transcript is editable, clicking the text opens it: Return saves, Esc cancels, and a
+// right-click deletes the line.
 struct TranscriptRow: View {
+    @EnvironmentObject var store: Store
     @Environment(\.searchTerms) private var terms
+    @StateObject private var draft = LineDraft()
+    @FocusState private var focused: Bool
     let segment: Segment
+    var meetingID: UUID?
+    var editable = false
     var body: some View {
+        let open = editable && store.editingSegment == segment.id
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Image(systemName: sourceSymbol(segment.source))
                 Text(clock(segment.time)).monospacedDigit()
                 Text(segment.source)
+                if segment.edited == true {
+                    Image(systemName: "pencil").help("手で直した発言です")
+                }
             }
             .font(.caption).foregroundStyle(.secondary)
-            Text(highlighted(segment.text, terms)).font(.system(size: 13.5)).lineSpacing(3)
-                .fixedSize(horizontal: false, vertical: true)
+            if open {
+                TextField("発言", text: $draft.text, axis: .vertical)
+                    .textFieldStyle(.plain).font(.system(size: 13.5))
+                    .focused($focused)
+                    .onSubmit { store.editingSegment = nil }
+                    .onExitCommand {
+                        draft.cancelled = true
+                        store.editingSegment = nil
+                    }
+                    .padding(6)
+                    .background(RoundedRectangle(cornerRadius: 5).fill(Palette.asagi.opacity(0.2)))
+                Text("Return で確定・Esc で取り消し").font(.caption2).foregroundStyle(.secondary)
+            } else {
+                Text(highlighted(segment.text, terms)).font(.system(size: 13.5)).lineSpacing(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .modifier(Selectable(enabled: !editable))  // A selectable text would take the click.
+                    .contentShape(Rectangle())
+                    .onTapGesture { if editable { store.editingSegment = segment.id } }
+                    .help(editable ? "クリックして編集" : "")
+            }
+        }
+        .contextMenu {
+            if editable, let meetingID {
+                Button("編集", systemImage: "pencil") { store.editingSegment = segment.id }
+                Button("この発言を削除", systemImage: "trash", role: .destructive) {
+                    store.removeSegment(meetingID, id: segment.id)
+                }
+            }
+        }
+        .onChange(of: open, initial: true) { wasOpen, isOpen in
+            if isOpen {
+                draft.text = segment.text
+                draft.original = segment.text
+                draft.cancelled = false
+                focused = true
+            } else if wasOpen && !draft.cancelled && draft.text != draft.original, let meetingID {
+                store.updateSegment(meetingID, id: segment.id, text: draft.text)
+            }
+        }
+        // A word fixed across the meeting while this line is open: follow it unless the line was typed in.
+        .onChange(of: segment.text) {
+            if open && draft.text == draft.original { draft.text = segment.text }
+            draft.original = segment.text
         }
     }
 }

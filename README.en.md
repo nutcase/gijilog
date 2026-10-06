@@ -77,9 +77,11 @@ Live updates remain on a 30-second timer. After recording and transcription fini
 
 ## Editing the minutes
 
+The transcript beside the minutes can be corrected too, also while recording: click an utterance to edit it, or right-click to delete one, such as a line invented for noise. Run 議事録を仕上げる to carry transcript fixes into the minutes.
+
 Once a meeting is finished, click an item in the full window to edit it (Return to finish, Esc to cancel); actions also take an owner, a deadline, and a done mark. Right-click an item to delete it, or use ＋ 追加 (Add) under a section. Items edited by hand are marked 手直し and are kept as they are by 議事録を仕上げる and a full reprocess; deleted items are not brought back.
 
-When an edit changes a word that appears elsewhere in the meeting, the app offers to fix the others too, or use この会議 → 語句をまとめて直す… (Fix a word across the meeting). Occurrences are found by spelling and by reading, looked up on the Mac, each shown in context with a checkbox. The fix is remembered for the meeting and applied to speech transcribed later and minutes the AI writes later; the right spelling becomes a transcription hint and, if you choose, joins the vocabulary list. Fixes can be undone from the same sheet.
+When an edit to an item or an utterance changes a word that appears elsewhere in the meeting, the app offers to fix the others too, or use この会議 → 語句をまとめて直す… (Fix a word across the meeting). Occurrences are found by spelling and by reading, looked up on the Mac, each shown in context with a checkbox. The fix is remembered for the meeting and applied to speech transcribed later and minutes the AI writes later; the right spelling becomes a transcription hint and, if you choose, joins the vocabulary list. Fixes can be undone from the same sheet.
 
 ## Tags
 
@@ -158,7 +160,7 @@ If your Documents folder syncs with iCloud Drive, recordings are uploaded too.
 ./scripts/build.sh   # build dist/ギジログ.app after the checks pass
 ```
 
-The 71 regression tests cover chunking at pauses and the shared recording clock, the voice gate and transcription hints, hand edits and word corrections, incremental minutes and evidence checks, retries and recovery after restart, moving the save location and upgrading from earlier versions, mixing the audio, importing recording files, cleaning up working audio, the final review, tags, search, the agenda, and the MCP server. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.
+The 72 regression tests cover chunking at pauses and the shared recording clock, the voice gate and transcription hints, hand edits and word corrections, incremental minutes and evidence checks, retries and recovery after restart, moving the save location and upgrading from earlier versions, mixing the audio, importing recording files, cleaning up working audio, the final review, tags, search, the agenda, and the MCP server. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.
 
 With only the Command Line Tools installed, SwiftUI's `@State` does not compile, so view state lives in `ObservableObject`s.
 

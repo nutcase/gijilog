@@ -146,4 +146,39 @@ extension ProcessingTests {
         store.change(meeting.id) { $0.capture = .recording }
         try Self.check(!store.canEditMinutes(store.meetings[0]), "minutes are not edited while the AI writes them")
     }
+    @MainActor func testEditingTheTranscriptByHand() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = Store(root: root, loadSettings: false)
+        var meeting = Meeting(title: "定例")
+        meeting.capture = .recording
+        meeting.segments = [
+            Segment(id: "a", time: 0, source: "マイク", text: "森バスの価格を決めます"),
+            Segment(id: "b", time: 10, source: "Mac音声", text: "森バスは来月リリースです"),
+            Segment(id: "c", time: 20, source: "Mac音声", text: "Hallo zusammen."),
+        ]
+        var notes = MinutesState()
+        notes.content.summary = [NoteItem(id: "s1", text: "森バス：価格を決める", evidence: ["a"])]
+        meeting.notes = notes
+        store.meetings = [meeting]
+        try Self.check(store.canEditTranscript(store.meetings[0]), "the transcript can be corrected while recording")
+        store.updateSegment(meeting.id, id: "a", text: " モリバスの価格を決めます ")
+        let offer = try Self.require(store.correctionOffer, "an offer to fix the word elsewhere")
+        try Self.check(
+            store.meetings[0].segments[0].text == "モリバスの価格を決めます" && store.meetings[0].segments[0].edited == true
+                && offer.inTranscript && offer.count == 2,
+            "a corrected line is marked, and the word is offered for fixing in the other line and the summary")
+        store.updateSegment(meeting.id, id: "b", text: "   ")
+        store.removeSegment(meeting.id, id: "c")
+        try Self.check(
+            store.meetings[0].segments.map(\.text) == ["モリバスの価格を決めます", "森バスは来月リリースです"],
+            "a blank edit is ignored, and an invented line can be deleted")
+        await store.flushCheckpoints()
+        let saved = try store.savedMeeting(meeting.id)
+        let old = try JSONDecoder().decode(
+            Segment.self, from: Data(#"{"id":"x","time":1,"source":"マイク","text":"旧"}"#.utf8))
+        try Self.check(
+            saved.segments[0].edited == true && saved.segments[1].edited == nil && old.edited == nil,
+            "the mark is saved, and older lines read without it")
+    }
 }

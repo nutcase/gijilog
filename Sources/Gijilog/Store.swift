@@ -48,6 +48,7 @@ import UniformTypeIdentifiers
     @Published var editingTitle: UUID?  // The meeting whose title is open for renaming.
     @Published var editingNoteItem: String?  // The minutes item open for editing, as "part/id".
     @Published var addingNoteItem: String?  // The section whose "add an item" field is open, as "meeting/part".
+    @Published var editingSegment: String?  // The transcript line open for editing.
     @Published var correctionOffer: CorrectionOffer?  // After an edit: fix the same word elsewhere too?
     @Published var correcting: CorrectionRequest?  // The sheet for fixing a word across a meeting.
     @Published var editingAgendaItem: UUID?  // The agenda topic open for editing; the others show as text.
@@ -1083,6 +1084,7 @@ struct CorrectionOffer: Equatable {
     var from: String
     var to: String
     var count: Int
+    var inTranscript = false  // Shown beside the transcript, where the edit was made.
 }
 struct CorrectionRequest: Identifiable {
     let id = UUID()
@@ -1122,6 +1124,35 @@ extension Store {
             }
         }
         correctionOffer = offer
+    }
+    /// The transcript can be corrected whenever it exists, also during the recording: transcription only adds
+    /// lines, and the minutes refer to lines by ID.
+    func canEditTranscript(_ meeting: Meeting) -> Bool { meeting.capture != .planned && !meeting.segments.isEmpty }
+    /// Corrects one line of the transcript. When the change fixed a word that appears elsewhere in the meeting,
+    /// offers to fix it there too.
+    func updateSegment(_ meetingID: UUID, id: String, text: String) {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        var offer: CorrectionOffer?
+        change(meetingID) { m in
+            guard let i = m.segments.firstIndex(where: { $0.id == id }), m.segments[i].text != text else { return }
+            let old = m.segments[i].text
+            m.segments[i].text = text
+            m.segments[i].edited = true
+            if let term = TermMatcher.changedTerm(from: old, to: text) {
+                let count = m.occurrences(of: term.from, correctedTo: term.to).count
+                if count > 0 {
+                    offer = CorrectionOffer(
+                        meetingID: meetingID, from: term.from, to: term.to, count: count, inTranscript: true)
+                }
+            }
+        }
+        correctionOffer = offer
+    }
+    /// Deletes a line, such as speech invented for noise. Minutes citing it keep their other evidence.
+    func removeSegment(_ meetingID: UUID, id: String) {
+        change(meetingID) { $0.segments.removeAll { $0.id == id } }
+        if editingSegment == id { editingSegment = nil }
     }
     @discardableResult func addNoteItem(_ meetingID: UUID, part: NotePart, text: String) -> String? {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)

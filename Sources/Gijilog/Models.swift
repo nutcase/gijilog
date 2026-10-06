@@ -5,18 +5,20 @@ struct Segment: Codable, Identifiable, Sendable, Equatable {
     var time: Double
     var source: String
     var text: String
+    var edited: Bool?  // Corrected by hand.
     init(id: String = UUID().uuidString, time: Double, source: String, text: String) {
         self.id = id
         self.time = time
         self.source = source
         self.text = text
     }
-    enum CodingKeys: String, CodingKey { case id, time, source, text }
+    enum CodingKeys: String, CodingKey { case id, time, source, text, edited }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         time = try c.decode(Double.self, forKey: .time)
         source = try c.decode(String.self, forKey: .source)
         text = try c.decode(String.self, forKey: .text)
+        edited = try c.decodeIfPresent(Bool.self, forKey: .edited)
         // Old meetings acquire repeatable IDs when reopened.
         id = try c.decodeIfPresent(String.self, forKey: .id) ?? stableID("\(time)|\(source)|\(text)")
     }
