@@ -620,3 +620,70 @@ actor MeetingRepository {
         return candidate
     }
 }
+/// An action's deadline as a day on the calendar. What was said ("10月10日", "金曜", "来週水曜", "明日") is read as a
+/// day counted from the meeting, and a picked day is written the way the minutes show dates.
+enum DueDate {
+    static let calendar: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.locale = Locale(identifier: "ja_JP")
+        return calendar
+    }()
+    private static let weekdays = ["日", "月", "火", "水", "木", "金", "土"]  // Calendar's weekday 1 is Sunday.
+    /// The day the deadline names, or nil when it does not name one ("11月", "来月中").
+    static func parse(_ text: String?, from meeting: Date) -> Date? {
+        guard
+            var text = text?.applyingTransform(.fullwidthToHalfwidth, reverse: false)?
+                .trimmingCharacters(in: .whitespaces), !text.isEmpty
+        else { return nil }
+        if let paren = text.firstIndex(where: { "（(".contains($0) }) { text = String(text[..<paren]) }  // "（金）"
+        for suffix in ["までに", "まで"] where text.hasSuffix(suffix) { text.removeLast(suffix.count) }
+        let day = calendar.startOfDay(for: meeting)
+        switch text {
+        case "今日", "本日": return day
+        case "明日": return calendar.date(byAdding: .day, value: 1, to: day)
+        case "明後日", "あさって": return calendar.date(byAdding: .day, value: 2, to: day)
+        default: break
+        }
+        let numbers = text.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }
+        if text.range(of: #"^\d{4}[年/-]\d{1,2}[月/-]\d{1,2}日?$"#, options: .regularExpression) != nil {
+            return date(numbers[0], numbers[1], numbers[2])
+        }
+        if text.range(of: #"^\d{1,2}[月/]\d{1,2}日?$"#, options: .regularExpression) != nil {
+            // A day more than a month gone is next year's ("1月10日" said in December).
+            let year = calendar.component(.year, from: day)
+            guard let this = date(year, numbers[0], numbers[1]) else { return nil }
+            guard let monthAgo = calendar.date(byAdding: .month, value: -1, to: day), this < monthAgo else {
+                return this
+            }
+            return date(year + 1, numbers[0], numbers[1])
+        }
+        let nextWeek = text.hasPrefix("来週")
+        let name = nextWeek ? String(text.dropFirst(2)) : text
+        guard
+            let index = weekdays.firstIndex(where: {
+                [$0 + "曜", $0 + "曜日"].contains(name) || ($0 == name && !nextWeek)
+            })
+        else { return nil }
+        if nextWeek {
+            // The named day in the week after the meeting's, weeks starting on Monday.
+            let sinceMonday = (calendar.component(.weekday, from: day) + 5) % 7
+            return calendar.date(byAdding: .day, value: 7 - sinceMonday + (index + 6) % 7, to: day)
+        }
+        // The next such day after the meeting: "金曜まで" said on a Friday means the next one.
+        return calendar.nextDate(after: day, matching: DateComponents(weekday: index + 1), matchingPolicy: .nextTime)
+    }
+    /// The day as the minutes write it, with the year only when it is not the meeting's.
+    static func text(_ date: Date, from meeting: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.locale = calendar.locale
+        let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: meeting)
+        formatter.dateFormat = sameYear ? "M月d日（E）" : "y年M月d日（E）"
+        return formatter.string(from: date)
+    }
+    private static func date(_ year: Int, _ month: Int, _ day: Int) -> Date? {
+        let components = DateComponents(year: year, month: month, day: day)
+        guard components.isValidDate(in: calendar) else { return nil }
+        return calendar.date(from: components)
+    }
+}

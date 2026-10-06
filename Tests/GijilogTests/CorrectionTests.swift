@@ -150,6 +150,55 @@ extension ProcessingTests {
         store.toggleFolded("議論の経緯")
         try Self.check(folded == ["議論の経緯"] && store.foldedSections.isEmpty, "a section folds away and opens again")
     }
+    @MainActor func testActionOwnersAndDeadlinesArePicked() throws {
+        func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
+            DueDate.calendar.date(from: DateComponents(year: y, month: m, day: d, hour: 13)) ?? Date()
+        }
+        func start(_ y: Int, _ m: Int, _ d: Int) -> Date { DueDate.calendar.startOfDay(for: day(y, m, d)) }
+        let tuesday = day(2026, 10, 6)
+        try Self.check(
+            DueDate.parse("10月10日", from: tuesday) == start(2026, 10, 10)
+                && DueDate.parse("１０/１０までに", from: tuesday) == start(2026, 10, 10)
+                && DueDate.parse("金曜", from: tuesday) == start(2026, 10, 9)
+                && DueDate.parse("来週水曜日", from: tuesday) == start(2026, 10, 14)
+                && DueDate.parse("明日", from: tuesday) == start(2026, 10, 7)
+                && DueDate.parse("2027年1月5日", from: tuesday) == start(2027, 1, 5)
+                && DueDate.parse("1月10日", from: day(2026, 12, 20)) == start(2027, 1, 10)
+                && DueDate.parse("11月", from: tuesday) == nil && DueDate.parse("2月30日", from: tuesday) == nil,
+            "a said deadline is read as a day counted from the meeting, and one that names no day is left alone")
+        let written = DueDate.text(start(2026, 10, 10), from: tuesday)
+        try Self.check(
+            written == "10月10日（土）" && DueDate.parse(written, from: tuesday) == start(2026, 10, 10)
+                && DueDate.text(start(2027, 1, 5), from: tuesday) == "2027年1月5日（火）",
+            "a picked day is written like the minutes' dates and reads back the same: \(written)")
+
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = Store(root: root, loadSettings: false)
+        func meeting(_ title: String, _ date: Date, _ owners: [String?]) -> Meeting {
+            var meeting = Meeting(title: title)
+            meeting.date = date
+            meeting.capture = .stopped
+            meeting.segments = [Segment(id: "a", time: 0, source: "マイク", text: "佐藤さんの件")]
+            var notes = MinutesState()
+            notes.content.actions = owners.enumerated().map {
+                NoteItem(id: "x\($0)", text: "作業\($0)", owner: $1, evidence: ["a"])
+            }
+            meeting.notes = notes
+            return meeting
+        }
+        let older = meeting("前回", day(2026, 10, 1), ["佐藤", "鈴木", "佐藤"])
+        let newer = meeting("今回", day(2026, 10, 6), ["佐藤さん", nil, "田中"])
+        store.meetings = [older, newer]
+        try Self.check(
+            store.knownOwners == ["佐藤さん", "田中", "鈴木"],
+            "everyone named as an owner is listed once as last written, most often first, then most recent: \(store.knownOwners)"
+        )
+        store.updateNoteItem(newer.id, part: .actions, id: "x0", offersCorrection: false) { $0.owner = "鈴木" }
+        try Self.check(
+            store.meetings[1].notes?.content.actions[0].owner == "鈴木" && store.correctionOffer == nil,
+            "picking someone else from the list does not offer to change the name across the meeting")
+    }
     @MainActor func testEditingTheTranscriptByHand() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

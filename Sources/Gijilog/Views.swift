@@ -1386,7 +1386,9 @@ struct EditableNoteRow: View {
                         draft.opening = field
                         store.editingNoteItem = key
                     },
-                    toggle: item.state == .cancelled ? nil : { toggleDone() }
+                    toggle: item.state == .cancelled ? nil : { toggleDone() },
+                    due: DuePicking(meetingDate: meetingDate) { date in setDue(date) },
+                    setOwner: { name in setOwner(name) }
                 )
                 .contextMenu {
                     Button("編集", systemImage: "pencil") { store.editingNoteItem = key }
@@ -1419,8 +1421,21 @@ struct EditableNoteRow: View {
             }
             if action {
                 HStack(spacing: 10) {
-                    TextField("担当", text: $draft.owner).focused($focused, equals: .owner).onSubmit(finish)
-                    TextField("期限", text: $draft.due).focused($focused, equals: .due).onSubmit(finish)
+                    // The list of people sits before the field, so it reads as the owner's, not the deadline's.
+                    HStack(spacing: 4) {
+                        let people = store.knownOwners
+                        if !people.isEmpty {
+                            Menu {
+                                ForEach(people.prefix(30), id: \.self) { name in Button(name) { draft.owner = name } }
+                            } label: {
+                                Image(systemName: "person.crop.circle")
+                            }
+                            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                            .help("これまでの担当者から選ぶ")
+                        }
+                        TextField("担当", text: $draft.owner).focused($focused, equals: .owner).onSubmit(finish)
+                    }
+                    DueField(text: $draft.due, meetingDate: meetingDate)
                     Toggle("完了", isOn: $draft.done).toggleStyle(.checkbox)
                 }
                 .font(.callout)
@@ -1451,6 +1466,18 @@ struct EditableNoteRow: View {
         }
     }
     private func finish() { store.editingNoteItem = nil }
+    private var meetingDate: Date { store.meetings.first { $0.id == editing.meetingID }?.date ?? Date() }
+    private func setDue(_ date: Date?) {
+        let meetingDate = meetingDate
+        store.updateNoteItem(editing.meetingID, part: editing.part, id: item.id) {
+            $0.due = date.map { DueDate.text($0, from: meetingDate) }
+        }
+    }
+    private func setOwner(_ name: String?) {
+        store.updateNoteItem(editing.meetingID, part: editing.part, id: item.id, offersCorrection: false) {
+            $0.owner = name
+        }
+    }
     private func toggleDone() {
         store.updateNoteItem(editing.meetingID, part: editing.part, id: item.id) {
             $0.state = $0.state == .done ? .open : .done
@@ -1726,7 +1753,11 @@ struct NoteRow: View {
     // that field, and an action's box ticks it done.
     var edit: ((NoteField) -> Void)?
     var toggle: (() -> Void)?
-    @StateObject private var hover = HoverFlag()
+    @StateObject private var hover = Flag()
+    @StateObject private var calendar = Flag()
+    var due: DuePicking?  // Set where an action's deadline can be picked from a calendar.
+    var setOwner: ((String?) -> Void)?  // Set where an action's owner can be picked from everyone named before.
+    @StateObject private var people = Flag()
     private var action: Bool { tone == .actions }
     private var closed: Bool { item.state != .open }
     // A summary topic is marked by its number instead of a bullet.
@@ -1773,9 +1804,19 @@ struct NoteRow: View {
                     HStack(spacing: 6) {
                         if action {
                             Tag(label: "担当", symbol: "person.fill", value: item.owner, open: !closed)
-                                .editing(edit.map { edit in { edit(.owner) } }, help: "クリックして担当を入力")
+                                .editing(setOwner.map { _ in { people.on = true } }, help: "クリックして担当者を選ぶ")
+                                .popover(isPresented: $people.on, arrowEdge: .bottom) {
+                                    if let setOwner {
+                                        OwnerPicker(current: item.owner, set: setOwner, close: { people.on = false })
+                                    }
+                                }
                             Tag(label: "期限", symbol: "calendar", value: item.due, open: !closed)
-                                .editing(edit.map { edit in { edit(.due) } }, help: "クリックして期限を入力")
+                                .editing(due.map { _ in { calendar.on = true } }, help: "クリックして期限の日付を選ぶ")
+                                .popover(isPresented: $calendar.on, arrowEdge: .bottom) {
+                                    if let due {
+                                        DueCalendar(current: item.due, picking: due, close: { calendar.on = false })
+                                    }
+                                }
                         } else if closed {
                             Text(item.state == .done ? "解決済み" : "撤回・統合").foregroundStyle(Palette.asagi)
                         }
@@ -1943,8 +1984,149 @@ struct NoteDetail: View {
         }
     }
 }
-@MainActor final class HoverFlag: ObservableObject {
+@MainActor final class Flag: ObservableObject {
     @Published var on = false
+}
+// An action's owner: everyone named as an owner before, to pick with one click, or a new name typed in.
+struct OwnerPicker: View {
+    @EnvironmentObject var store: Store
+    @StateObject private var draft = TextDraft()
+    @FocusState private var focused: Bool
+    let current: String?
+    let set: (String?) -> Void
+    let close: () -> Void
+    var body: some View {
+        let typed = draft.text.trimmingCharacters(in: .whitespaces)
+        let people = store.knownOwners.filter { typed.isEmpty || $0.localizedStandardContains(typed) }
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("名前を入力して Enter", text: $draft.text)
+                .textFieldStyle(.roundedBorder)
+                .focused($focused)
+                .onSubmit {
+                    if !typed.isEmpty { set(typed) }
+                    close()
+                }
+            if !people.isEmpty {
+                Text(typed.isEmpty ? "これまでの担当者" : "一致する担当者").font(.caption).foregroundStyle(.secondary)
+                FlowLayout(spacing: 6) {
+                    ForEach(people.prefix(24), id: \.self) { name in
+                        Button(name) {
+                            set(name)
+                            close()
+                        }
+                        .buttonStyle(PersonChipStyle(chosen: current.map(Store.personKey) == Store.personKey(name)))
+                    }
+                }
+            }
+            if current != nil {
+                Button("未定にする") {
+                    set(nil)
+                    close()
+                }
+                .controlSize(.small)
+            }
+        }
+        .padding(14)
+        .frame(width: 300, alignment: .leading)
+        .onAppear { Task { @MainActor in focused = true } }
+    }
+}
+struct PersonChipStyle: ButtonStyle {
+    var chosen = false
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: chosen ? .bold : .medium)).lineLimit(1)
+            .padding(.horizontal, 9).padding(.vertical, 3)
+            .background(Capsule().fill(chosen ? Color.accentColor.opacity(0.18) : .clear))
+            .overlay(Capsule().strokeBorder(Color.primary.opacity(chosen ? 0.5 : 0.25), lineWidth: 1))
+            .opacity(configuration.isPressed ? 0.6 : 1)
+            .contentShape(Capsule())
+    }
+}
+/// Where an action's deadline can be picked: the meeting's day, from which said days are counted, and what to do
+/// with the picked day (nil for none).
+struct DuePicking {
+    let meetingDate: Date
+    let set: (Date?) -> Void
+}
+// A calendar for an action's deadline. Picking a day saves it and closes; 未定にする clears it. A deadline said in
+// words that names no day ("11月") is shown above, so it is not lost by surprise.
+struct DueCalendar: View {
+    @StateObject private var selection = DateSelection()
+    let current: String?
+    let picking: DuePicking
+    let close: () -> Void
+    var body: some View {
+        let day = DueDate.parse(current, from: picking.meetingDate)
+        VStack(alignment: .leading, spacing: 10) {
+            if let current, day == nil {
+                Text("今の期限：\(current)").font(.caption).foregroundStyle(.secondary)
+            }
+            DatePicker(
+                "期限",
+                selection: Binding(
+                    get: { selection.date },
+                    set: { date in
+                        selection.date = date
+                        picking.set(date)
+                        close()
+                    }), displayedComponents: .date
+            )
+            .datePickerStyle(.graphical).labelsHidden()
+            HStack {
+                if current != nil {
+                    Button("未定にする") {
+                        picking.set(nil)
+                        close()
+                    }
+                }
+                Spacer()
+                Button("閉じる", action: close).keyboardShortcut(.cancelAction)
+            }
+            .controlSize(.small)
+        }
+        .padding(12)
+        .onAppear { selection.date = day ?? DueDate.calendar.startOfDay(for: picking.meetingDate) }
+    }
+}
+@MainActor final class DateSelection: ObservableObject {
+    @Published var date = Date()
+}
+// The deadline in the item editor: the day it names, as a button that opens the calendar, and a button to clear it.
+struct DueField: View {
+    @StateObject private var calendar = Flag()
+    @Binding var text: String
+    let meetingDate: Date
+    var body: some View {
+        let day = DueDate.parse(text, from: meetingDate)
+        HStack(spacing: 4) {
+            Button {
+                calendar.on = true
+            } label: {
+                Label(
+                    day.map { DueDate.text($0, from: meetingDate) } ?? (text.isEmpty ? "期限を選ぶ" : text + "（日付を選ぶ）"),
+                    systemImage: "calendar")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(text.isEmpty ? Color.secondary : Palette.sumi)
+            .popover(isPresented: $calendar.on, arrowEdge: .bottom) {
+                DueCalendar(
+                    current: text.isEmpty ? nil : text,
+                    picking: DuePicking(meetingDate: meetingDate) { date in
+                        text = date.map { DueDate.text($0, from: meetingDate) } ?? ""
+                    },
+                    close: { calendar.on = false })
+            }
+            if !text.isEmpty {
+                Button {
+                    text = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain).foregroundStyle(.tertiary).help("期限を未定にする")
+            }
+        }
+    }
 }
 extension View {
     /// Esc runs the action. A focused text field takes Esc for word completion before .onExitCommand sees it, so

@@ -1057,6 +1057,45 @@ import UniformTypeIdentifiers
     nonisolated static func exportFilename(_ title: String) -> String { fileSafeName(title, fallback: "議事録") + ".md" }
 }
 
+// MARK: - People
+
+extension Store {
+    /// Everyone named as an action's owner in any meeting, most often first: the list to pick an owner from, kept
+    /// up to date by the minutes themselves. A name written with or without さん is one person, spelled as in the
+    /// most recent meeting.
+    var knownOwners: [String] {
+        var counts: [String: (name: String, count: Int)] = [:]
+        var order: [String] = []
+        for meeting in meetings.sorted(by: { $0.date > $1.date }) {
+            for owner in meeting.notes?.content.actions.filter({ $0.state != .cancelled }).compactMap(\.owner) ?? [] {
+                let name = owner.trimmingCharacters(in: .whitespacesAndNewlines)
+                let key = Self.personKey(name)
+                guard !key.isEmpty else { continue }
+                if let entry = counts[key] {
+                    counts[key] = (entry.name, entry.count + 1)
+                } else {
+                    counts[key] = (name, 1)
+                    order.append(key)
+                }
+            }
+        }
+        return order.compactMap { counts[$0] }.enumerated()
+            .sorted {
+                $0.element.count != $1.element.count ? $0.element.count > $1.element.count : $0.offset < $1.offset
+            }
+            .map(\.element.name)
+    }
+    /// A name without spacing, width differences or a trailing honorific, to tell whether two names are one person.
+    nonisolated static func personKey(_ name: String) -> String {
+        var key = name.folding(options: [.widthInsensitive, .caseInsensitive], locale: nil).filter { !$0.isWhitespace }
+        for honorific in ["さん", "さま", "様", "氏", "くん", "君", "ちゃん"] where key.hasSuffix(honorific) {
+            if key.count > honorific.count { key.removeLast(honorific.count) }
+            break
+        }
+        return key
+    }
+}
+
 // MARK: - Tags
 
 extension Store {
@@ -1192,7 +1231,11 @@ extension Store {
     }
     /// Changes an item and marks it edited by hand, so AI updates leave it alone. When the edit fixed a word that
     /// appears elsewhere in the meeting, offers to fix it there too.
-    func updateNoteItem(_ meetingID: UUID, part: NotePart, id: String, _ update: (inout NoteItem) -> Void) {
+    /// Changes an item by hand. Fixing a word offers to fix it elsewhere in the meeting, unless `offersCorrection` is
+    /// false, as when a person is picked from the list (choosing someone else is not a misheard name).
+    func updateNoteItem(
+        _ meetingID: UUID, part: NotePart, id: String, offersCorrection: Bool = true, _ update: (inout NoteItem) -> Void
+    ) {
         var offer: CorrectionOffer?
         change(meetingID) { m in
             guard var item = m.notes?.content[part].first(where: { $0.id == id }),
@@ -1213,7 +1256,7 @@ extension Store {
                 }
                 return [(old, new)] + (field == .points || field == .opinions ? lines : [])
             }
-            for (old, new) in edits {
+            for (old, new) in edits where offersCorrection {
                 guard let term = TermMatcher.changedTerm(from: old, to: new) else { continue }
                 let count = m.occurrences(of: term.from, correctedTo: term.to).count
                 if count > 0 {

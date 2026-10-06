@@ -55,6 +55,7 @@ import Foundation
         try tests.testHandEditsSurviveAIUpdates()
         try await tests.testEditingMinutesByHand()
         try await tests.testEditingTheTranscriptByHand()
+        try tests.testActionOwnersAndDeadlinesArePicked()
         try await tests.testTranscriptionFailureIsShownAndRetriedWhileRecording()
         try await tests.testEarlierSettingsAndFoldersCarryOver()
         try await tests.testInterruptedRecordingGetsAudioOnFirstRecovery()
@@ -90,7 +91,7 @@ import Foundation
         try tests.testMCPKeepsWhatTheUserWithholds()
         try await tests.testMCPAnswersOverItsSocket()
         print(
-            "PASS: 76 checks (recording, continued recording, chunking at pauses, voice gate, transcription hints, editing and corrections, summary topics, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, audio mixdown, file import, upgrade and recovery, storage cleanup, minutes quality and final review, tags, search, agenda, MCP)"
+            "PASS: 77 checks (recording, continued recording, chunking at pauses, voice gate, transcription hints, editing and corrections, picking owners and deadlines, summary topics, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, audio mixdown, file import, upgrade and recovery, storage cleanup, minutes quality and final review, tags, search, agenda, MCP)"
         )
     }
     /// A steady tone, silent in the given ranges of seconds.
