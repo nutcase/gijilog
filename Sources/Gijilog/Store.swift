@@ -45,6 +45,15 @@ import UniformTypeIdentifiers
         didSet { if persistsSettings { UserDefaults.standard.set(vocabulary, forKey: "vocabulary") } }
     }
     @Published var compactWindowOpen = false  // Alerts go to the compact window while it is open, else the full one.
+    // Sections of the minutes folded away, by title: the same in every meeting and in both windows, and kept.
+    @Published var foldedSections: Set<String> = [] {
+        didSet {
+            if persistsSettings { UserDefaults.standard.set(foldedSections.sorted(), forKey: "foldedSections") }
+        }
+    }
+    func toggleFolded(_ section: String) {
+        if foldedSections.contains(section) { foldedSections.remove(section) } else { foldedSections.insert(section) }
+    }
     @Published var editingTitle: UUID?  // The meeting whose title is open for renaming.
     @Published var editingNoteItem: String?  // The minutes item open for editing, as "part/id".
     @Published var addingNoteItem: String?  // The section whose "add an item" field is open, as "meeting/part".
@@ -145,6 +154,7 @@ import UniformTypeIdentifiers
             mcpIncludesTranscript = defaults.object(forKey: "mcpIncludesTranscript") as? Bool ?? true
             mcpHiddenTags = defaults.stringArray(forKey: "mcpHiddenTags") ?? []
             vocabulary = defaults.string(forKey: "vocabulary") ?? ""
+            foldedSections = Set(defaults.stringArray(forKey: "foldedSections") ?? [])
             key = KeyStore.read()
             let savedModel = defaults.string(forKey: "summaryModel")
             model = savedModel == "gpt-4.1-mini" ? "gpt-6-sol" : (savedModel ?? model)

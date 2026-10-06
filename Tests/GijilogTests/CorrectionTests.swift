@@ -145,6 +145,10 @@ extension ProcessingTests {
             "edits are saved with the meeting")
         store.change(meeting.id) { $0.capture = .recording }
         try Self.check(!store.canEditMinutes(store.meetings[0]), "minutes are not edited while the AI writes them")
+        store.toggleFolded("議論の経緯")
+        let folded = store.foldedSections
+        store.toggleFolded("議論の経緯")
+        try Self.check(folded == ["議論の経緯"] && store.foldedSections.isEmpty, "a section folds away and opens again")
     }
     @MainActor func testEditingTheTranscriptByHand() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

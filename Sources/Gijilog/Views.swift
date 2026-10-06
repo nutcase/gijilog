@@ -32,9 +32,10 @@ enum Palette {
 // Each part of the minutes has its own ink and mark, so a reader finds what was decided, what is still open, and
 // who does what at a glance. The text itself stays sumi; color marks only headings, bullets and labels.
 enum NoteTone {
-    case summary, decisions, unresolved, history, actions
+    case agenda, summary, decisions, unresolved, history, actions
     var color: Color {
         switch self {
+        case .agenda: Palette.ai
         case .summary: Palette.sumire
         case .decisions: Palette.tokiwa
         case .unresolved: Palette.yamabukiInk
@@ -44,6 +45,7 @@ enum NoteTone {
     }
     var symbol: String {
         switch self {
+        case .agenda: "list.number"
         case .summary: "text.alignleft"
         case .decisions: "checkmark.seal.fill"
         case .unresolved: "questionmark.circle.fill"
@@ -1195,6 +1197,7 @@ struct NoteEditing {
     let part: NotePart
 }
 struct NoteSection: View {
+    @EnvironmentObject var store: Store
     let title: String
     let tone: NoteTone
     let items: [NoteItem]
@@ -1203,48 +1206,84 @@ struct NoteSection: View {
     var editing: NoteEditing?
     var current: String?
     var body: some View {
+        // A folded section opens while the find bar's current match is in it.
+        let folded = store.foldedSections.contains(title) && !items.contains { $0.id == current }
         VStack(alignment: .leading, spacing: 0) {
             SectionHeading(title: title, tone: tone, count: items.count)
-            SectionRule(tone: tone).padding(.top, 8).padding(.bottom, 4)
-            if items.isEmpty {
-                Text("まだありません").font(.callout).foregroundStyle(.secondary).padding(.vertical, 8)
-            }
-            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                let fresh = !Set(item.evidence).isDisjoint(with: latest)
-                Group {
-                    if let editing {
-                        EditableNoteRow(
-                            editing: editing, item: item, known: known, fresh: fresh, tone: tone, number: index + 1,
-                            current: item.id == current)
-                    } else {
-                        NoteRow(
-                            item: item, known: known, fresh: fresh, tone: tone, number: index + 1,
-                            current: item.id == current)
-                    }
-                }
-                .id("note-" + item.id)
-                if item.id != items.last?.id { Rectangle().fill(Palette.rule.opacity(0.5)).frame(height: 0.5) }
-            }
-            if let editing { AddNoteItem(editing: editing) }
+            SectionRule(tone: tone).padding(.top, 8).padding(.bottom, folded ? 0 : 4)
+            if !folded { rows }
         }
     }
+    @ViewBuilder private var rows: some View {
+        if items.isEmpty {
+            Text("まだありません").font(.callout).foregroundStyle(.secondary).padding(.vertical, 8)
+        }
+        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+            let fresh = !Set(item.evidence).isDisjoint(with: latest)
+            Group {
+                if let editing {
+                    EditableNoteRow(
+                        editing: editing, item: item, known: known, fresh: fresh, tone: tone, number: index + 1,
+                        current: item.id == current)
+                } else {
+                    NoteRow(
+                        item: item, known: known, fresh: fresh, tone: tone, number: index + 1,
+                        current: item.id == current)
+                }
+            }
+            .id("note-" + item.id)
+            if item.id != items.last?.id { Rectangle().fill(Palette.rule.opacity(0.5)).frame(height: 0.5) }
+        }
+        if let editing { AddNoteItem(editing: editing) }
+    }
 }
-// A section heading: its mark and count in the section's ink, the title in Mincho.
-struct SectionHeading: View {
+// A section heading: its mark and count in the section's ink, the title in Mincho. Clicking it folds the section
+// away or opens it again, with the chevron at its end showing which.
+struct SectionHeading<Trailing: View>: View {
+    @EnvironmentObject var store: Store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let title: String
     let tone: NoteTone
     let count: Int
     var compact = false
+    var folds = true
+    @ViewBuilder var trailing: () -> Trailing
     var body: some View {
+        let folded = store.foldedSections.contains(title)
+        if folds {
+            Button {
+                withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) { store.toggleFolded(title) }
+            } label: {
+                heading(folded: folded).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(folded ? "クリックで開く" : "クリックで畳む")
+            .accessibilityValue(folded ? "畳んでいます" : "開いています")
+        } else {
+            heading(folded: false)
+        }
+    }
+    private func heading(folded: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: compact ? 6 : 8) {
             Image(systemName: tone.symbol).font(.system(size: compact ? 12 : 14, weight: .semibold))
                 .foregroundStyle(tone.color)
-            Text(title).font(.mincho(compact ? 14 : 17))
+            Text(title).font(.mincho(compact ? 14 : 17)).foregroundStyle(Palette.sumi)
             Text("\(count)").font(.system(size: compact ? 10.5 : 11.5, weight: .bold)).monospacedDigit()
                 .foregroundStyle(tone.color)
                 .padding(.horizontal, 6).padding(.vertical, 1)
                 .background(Capsule().fill(tone.color.opacity(0.1)))
+            Spacer(minLength: 8)
+            trailing()
+            if folds {
+                Image(systemName: "chevron.down").font(.system(size: compact ? 10 : 11, weight: .semibold))
+                    .foregroundStyle(.secondary).rotationEffect(.degrees(folded ? -90 : 0))
+            }
         }
+    }
+}
+extension SectionHeading where Trailing == EmptyView {
+    init(title: String, tone: NoteTone, count: Int, compact: Bool = false, folds: Bool = true) {
+        self.init(title: title, tone: tone, count: count, compact: compact, folds: folds) { EmptyView() }
     }
 }
 // The rule under a heading begins in the section's ink.
@@ -1810,7 +1849,7 @@ struct NoteRow: View {
         case .unresolved:
             Circle().strokeBorder(Palette.yamabuki, lineWidth: 1.8).frame(width: 9, height: 9)
                 .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 1 }
-        case .summary, .history:
+        case .agenda, .summary, .history:
             Circle().fill(tone.color.opacity(tone == .summary ? 0.55 : 0.35)).frame(width: 6, height: 6)
                 .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 2 }
         }
@@ -2464,53 +2503,56 @@ struct AgendaSection: View {
         let live = meeting.id == store.activeID
         let editable = meeting.capture == .planned || live
         let planned = meeting.agenda.compactMap(\.minutes).reduce(0, +)
+        let folded = !compact && store.foldedSections.contains("アジェンダ")
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("アジェンダ").font(.mincho(compact ? 15 : 17))
-                Text("\(meeting.agenda.count)").font(.callout).foregroundStyle(.secondary)
+            SectionHeading(
+                title: "アジェンダ", tone: .agenda, count: meeting.agenda.count, compact: compact, folds: !compact
+            ) {
                 if planned > 0 { Text("予定 計\(planned)分").font(.caption).foregroundStyle(.secondary) }
-                Spacer(minLength: 0)
             }
-            Rectangle().fill(Palette.rule).frame(height: 1).padding(.top, 8).padding(.bottom, 4)
-            if live && !meeting.agenda.isEmpty {
-                Label("話している議題は、文字起こしから AI が判断します（約30秒ごと）", systemImage: "sparkles")
-                    .font(.caption).foregroundStyle(.secondary).padding(.vertical, 6).padding(.horizontal, 8)
-            }
-            ForEach(Array(meeting.agenda.enumerated()), id: \.element.id) { index, item in
-                AgendaRow(
-                    meeting: meeting, item: item, number: index + 1, editable: editable, live: live,
-                    last: index == meeting.agenda.count - 1, compact: compact)
-                Rectangle().fill(Palette.rule.opacity(0.5)).frame(height: 0.5)
-            }
-            if editable && store.addingAgenda == meeting.id {
-                // Return adds the topic; pasting several lines (an invite, a chat message) adds one per line.
-                TextField("議題を入力して Enter（複数行の貼り付けもできます）", text: $draft.text, axis: .vertical)
-                    .textFieldStyle(.plain).font(.system(size: compact ? 13 : 14))
-                    .lineLimit(1...4)
-                    .focused($adding)
-                    .padding(.vertical, compact ? 8 : 10).padding(.horizontal, 8)
-                    .background(RoundedRectangle(cornerRadius: 4).fill(Palette.asagi.opacity(0.1)))
-                    .padding(.top, 4)
-                    .onSubmit(add)
-                    .onChange(of: draft.text) { if draft.text.contains(where: \.isNewline) { add() } }
-                    .onAppear { adding = true }
-                    .onChange(of: adding) {
-                        if !adding && draft.text.isEmpty && store.addingAgenda == meeting.id {
-                            store.addingAgenda = nil
-                        }
-                    }
-            } else if editable {
-                // Not a field until asked for, so typing during the meeting cannot land here by accident.
-                Button {
-                    store.addingAgenda = meeting.id
-                } label: {
-                    Label("議題を追加", systemImage: "plus").font(.system(size: compact ? 12.5 : 13, weight: .medium))
-                }
-                .buttonStyle(.plain).foregroundStyle(Palette.asagi)
+            SectionRule(tone: .agenda).padding(.top, 8).padding(.bottom, folded ? 0 : 4)
+            if !folded { rows(live: live, editable: editable) }
+        }
+    }
+    @ViewBuilder private func rows(live: Bool, editable: Bool) -> some View {
+        if live && !meeting.agenda.isEmpty {
+            Label("話している議題は、文字起こしから AI が判断します（約30秒ごと）", systemImage: "sparkles")
+                .font(.caption).foregroundStyle(.secondary).padding(.vertical, 6).padding(.horizontal, 8)
+        }
+        ForEach(Array(meeting.agenda.enumerated()), id: \.element.id) { index, item in
+            AgendaRow(
+                meeting: meeting, item: item, number: index + 1, editable: editable, live: live,
+                last: index == meeting.agenda.count - 1, compact: compact)
+            Rectangle().fill(Palette.rule.opacity(0.5)).frame(height: 0.5)
+        }
+        if editable && store.addingAgenda == meeting.id {
+            // Return adds the topic; pasting several lines (an invite, a chat message) adds one per line.
+            TextField("議題を入力して Enter（複数行の貼り付けもできます）", text: $draft.text, axis: .vertical)
+                .textFieldStyle(.plain).font(.system(size: compact ? 13 : 14))
+                .lineLimit(1...4)
+                .focused($adding)
                 .padding(.vertical, compact ? 8 : 10).padding(.horizontal, 8)
-            } else if meeting.agenda.isEmpty {
-                Text("まだありません").font(.callout).foregroundStyle(.secondary).padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 4).fill(Palette.asagi.opacity(0.1)))
+                .padding(.top, 4)
+                .onSubmit(add)
+                .onChange(of: draft.text) { if draft.text.contains(where: \.isNewline) { add() } }
+                .onAppear { adding = true }
+                .onChange(of: adding) {
+                    if !adding && draft.text.isEmpty && store.addingAgenda == meeting.id {
+                        store.addingAgenda = nil
+                    }
+                }
+        } else if editable {
+            // Not a field until asked for, so typing during the meeting cannot land here by accident.
+            Button {
+                store.addingAgenda = meeting.id
+            } label: {
+                Label("議題を追加", systemImage: "plus").font(.system(size: compact ? 12.5 : 13, weight: .medium))
             }
+            .buttonStyle(.plain).foregroundStyle(Palette.asagi)
+            .padding(.vertical, compact ? 8 : 10).padding(.horizontal, 8)
+        } else if meeting.agenda.isEmpty {
+            Text("まだありません").font(.callout).foregroundStyle(.secondary).padding(.vertical, 8)
         }
     }
     private func add() {
@@ -3016,6 +3058,7 @@ struct LiveMinutes: View {
     }
 }
 struct LiveSection: View {
+    @EnvironmentObject var store: Store
     let title: String
     let tone: NoteTone
     let items: [NoteItem]
@@ -3024,24 +3067,26 @@ struct LiveSection: View {
     var body: some View {
         let unassigned =
             tone == .actions ? items.filter { $0.state == .open && ($0.owner == nil || $0.due == nil) }.count : 0
+        let folded = store.foldedSections.contains(title)
         VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                SectionHeading(title: title, tone: tone, count: items.count, compact: true)
-                Spacer()
+            SectionHeading(title: title, tone: tone, count: items.count, compact: true) {
                 if unassigned > 0 {
                     Text("担当・期限が未定 \(unassigned)件").font(.caption.weight(.semibold))
                         .foregroundStyle(Palette.yamabukiInk)
                 }
             }
             SectionRule(tone: tone).padding(.top, 5).padding(.bottom, 2)
-            if items.isEmpty {
-                Text("まだありません").font(.caption).foregroundStyle(.secondary).padding(.vertical, 4)
-            }
-            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                NoteRow(
-                    item: item, known: known, fresh: !Set(item.evidence).isDisjoint(with: latest), tone: tone,
-                    number: index + 1, compact: true)
-            }
+            if !folded { rows }
+        }
+    }
+    @ViewBuilder private var rows: some View {
+        if items.isEmpty {
+            Text("まだありません").font(.caption).foregroundStyle(.secondary).padding(.vertical, 4)
+        }
+        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+            NoteRow(
+                item: item, known: known, fresh: !Set(item.evidence).isDisjoint(with: latest), tone: tone,
+                number: index + 1, compact: true)
         }
     }
 }
