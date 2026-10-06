@@ -7,7 +7,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/Gijilog "$APP/Contents/MacOS/Gijilog"
 # The MCP bridge AI apps run (see MCPServer.swift); it is signed before the app that contains it.
 cp .build/release/gijilog-mcp "$APP/Contents/MacOS/gijilog-mcp"
-# Package the chosen artwork at every standard macOS icon size, including Retina variants.
+# Package the chosen artwork at every standard macOS icon size, including Retina variants. At 16 and 32 pixels
+# the artwork shrunk turns to blur, so those use versions drawn for the pixel grid (scripts/small-icons.swift).
 iconset_dir="$PWD/.build/AppIcon.iconset"
 mkdir -p "$iconset_dir"
 for icon_size in 16 32 128 256 512; do
@@ -15,7 +16,9 @@ for icon_size in 16 32 128 256 512; do
     icon_pixels=$((icon_size * icon_scale))
     icon_suffix=""
     if (( icon_scale == 2 )); then icon_suffix="@2x"; fi
-    sips -z "$icon_pixels" "$icon_pixels" Resources/AppIcon.png \
+    icon_source=Resources/AppIcon.png
+    if (( icon_pixels <= 32 )); then icon_source="Resources/AppIcon-${icon_pixels}.png"; fi
+    sips -z "$icon_pixels" "$icon_pixels" "$icon_source" \
       --out "$iconset_dir/icon_${icon_size}x${icon_size}${icon_suffix}.png" >/dev/null
   done
 done
