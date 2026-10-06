@@ -32,7 +32,7 @@ import Foundation
             try await Processor.recognizeChunk($0, offset: $1, source: $2, key: $3, hints: $4)
         },
         summarize: @escaping Summarize = { try await MinutesEngine.update($0, segments: $1, settings: $2, key: $3) },
-        retryDelay: @escaping (Int) -> TimeInterval = { pow(2, Double($0)) }
+        retryDelay: @escaping (Int) -> TimeInterval = { min(60, pow(2, Double($0))) }
     ) {
         self.store = store
         self.recognize = recognize
@@ -153,7 +153,7 @@ import Foundation
                     let retry = Processor.isRetryable(error)
                     store.change(meeting.id) { m in
                         if let i = m.jobs.firstIndex(where: { $0.id == job.id }) {
-                            let again = retry && m.jobs[i].attempts < 3
+                            let again = retry && m.jobs[i].attempts < Processor.maxAttempts
                             m.jobs[i].state = again ? .pending : .failed
                             m.jobs[i].lastError = error.localizedDescription
                             m.jobs[i].retryAfter =

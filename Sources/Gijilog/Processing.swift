@@ -52,11 +52,18 @@ enum KeyStore {
     }
 }
 enum Processor {
+    /// Tries a chunk of transcription gets before it is marked failed: about a minute with the backoff, so a Wi-Fi
+    /// switch or a short outage during a meeting heals by itself.
+    static let maxAttempts = 6
+    /// Errors that a later try can get past. A failed TLS handshake or name lookup is usually the network changing
+    /// under the request; an untrusted certificate is not retried, since it may be someone in the middle.
     static func isRetryable(_ error: Error) -> Bool {
         if let error = error as? CloudFailure { return error.code == 429 || error.code >= 500 }
         if let error = error as? URLError {
-            return [.timedOut, .networkConnectionLost, .notConnectedToInternet, .cannotConnectToHost].contains(
-                error.code)
+            return [
+                .timedOut, .networkConnectionLost, .notConnectedToInternet, .cannotConnectToHost, .cannotFindHost,
+                .dnsLookupFailed, .secureConnectionFailed, .dataNotAllowed,
+            ].contains(error.code)
         }
         return false
     }

@@ -110,7 +110,7 @@ extension ProcessingTests {
         try await store.waitUntilIdle()
         let calls = await meter.calls
         try Self.check(
-            calls["transient.caf"] == 3 && calls["auth.caf"] == 1,
+            calls["transient.caf"] == Processor.maxAttempts && calls["auth.caf"] == 1,
             "retry budget is bounded and authentication errors are not retried")
         try Self.check(
             store.meetings[0].jobs.allSatisfy { $0.state == .failed }, "exhausted work remains visible and resumable")
@@ -368,6 +368,11 @@ extension ProcessingTests {
         try Self.check(
             !Processor.isRetryable(CloudFailure(code: 401)) && Processor.isRetryable(CloudFailure(code: 429)),
             "retry transient errors only")
+        try Self.check(
+            Processor.isRetryable(URLError(.secureConnectionFailed))
+                && Processor.isRetryable(URLError(.dnsLookupFailed))
+                && !Processor.isRetryable(URLError(.serverCertificateUntrusted)),
+            "a failed TLS handshake or name lookup is retried, an untrusted certificate is not")
     }
     actor Gate {
         var released = false
