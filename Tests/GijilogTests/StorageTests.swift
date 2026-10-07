@@ -83,6 +83,61 @@ extension ProcessingTests {
             "the part after the break is heard from its utterance's time, with the break silent: \(speech), \(breakTime)"
         )
     }
+    // A meeting folder synced from another Mac or restored appears in the list without a restart; a copy of a listed
+    // meeting and a meeting.json still being written do not.
+    @MainActor func testMeetingFoldersAddedWhileRunningAreListed() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = Store(root: root, loadSettings: false)
+        var here = Meeting(title: "この Mac の会議")
+        here.capture = .stopped
+        here.folderName = "2026-10-07 10.00 この Mac の会議"
+        store.meetings = [here]
+        try await store.checkpoint(here.id)
+        func write(_ meeting: Meeting, to name: String) throws {
+            let folder = root.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try JSONEncoder().encode(meeting).write(to: folder.appendingPathComponent("meeting.json"))
+        }
+        var synced = Meeting(title: "別の Mac の会議")
+        synced.date = here.date.addingTimeInterval(3600)
+        synced.capture = .stopped
+        try write(synced, to: "2026-10-07 11.00 別の Mac の会議")
+        try write(here, to: "2026-10-07 10.00 この Mac の会議 (2)")
+        let partial = root.appendingPathComponent("2026-10-07 12.00 同期中")
+        try FileManager.default.createDirectory(at: partial, withIntermediateDirectories: true)
+        try Data(#"{"id":"#.utf8).write(to: partial.appendingPathComponent("meeting.json"))
+        await store.loadAddedMeetings()
+        try Self.check(
+            store.meetings.map(\.id) == [synced.id, here.id]
+                && store.meetings[0].folderName == "2026-10-07 11.00 別の Mac の会議",
+            "a synced meeting is listed in date order, without the copy or the half-written one")
+        var later = Meeting(title: "同期中")
+        later.date = here.date.addingTimeInterval(7200)
+        try write(later, to: "2026-10-07 12.00 同期中")
+        await store.loadAddedMeetings()
+        await store.loadAddedMeetings()
+        try Self.check(
+            store.meetings.map(\.id) == [later.id, synced.id, here.id],
+            "a meeting whose file finished writing is listed on the next change, and only once")
+        store.change(synced.id) { $0.title = "こちらで直した" }
+        await store.flushCheckpoints()
+        let saved = try JSONDecoder().decode(
+            Meeting.self,
+            from: Data(contentsOf: root.appendingPathComponent("2026-10-07 11.00 別の Mac の会議/meeting.json")))
+        try Self.check(saved.title == "こちらで直した", "a listed meeting is saved in its own folder")
+
+        let watched = root.appendingPathComponent("watched")
+        try FileManager.default.createDirectory(at: watched, withIntermediateDirectories: true)
+        final class Seen: @unchecked Sendable { var changed = false }
+        let seen = Seen()
+        let watcher = FolderWatcher(watched) { seen.changed = true }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        try Data("x".utf8).write(to: watched.appendingPathComponent("new.txt"))
+        for _ in 0..<50 where !seen.changed { try await Task.sleep(nanoseconds: 100_000_000) }
+        withExtendedLifetime(watcher) {}
+        try Self.check(seen.changed, "the save location is watched for changes")
+    }
     @MainActor func testSaveLocationMovesWithItsMeetings() async throws {
         let (root, _) = try fixture(seconds: 1, amplitude: 0)
         defer { try? FileManager.default.removeItem(at: root) }

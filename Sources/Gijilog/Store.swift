@@ -109,6 +109,7 @@ import UniformTypeIdentifiers
     let meter = LevelMeter()
     let recorder: Recorder
     @Published private(set) var root: URL  // The save location: one folder per meeting.
+    private var folderWatcher: FolderWatcher?  // New meeting folders in the save location, while the app runs.
     let repository: MeetingRepository
     private let persistsSettings: Bool
     var activeID: UUID?
@@ -427,6 +428,29 @@ import UniformTypeIdentifiers
             // Only now are interrupted recordings marked and their audio found, so they get 録音.m4a on this launch.
             mixDown(meetings.filter { $0.capture != .recording && $0.hasAudio == true }.map(\.id), onlyMissing: true)
         } catch { self.error = error.localizedDescription }
+        if persistsSettings {
+            folderWatcher = FolderWatcher(root) { [weak self] in
+                Task { @MainActor in await self?.loadAddedMeetings() }
+            }
+        }
+    }
+    /// Lists meeting folders that appeared in the save location while the app runs, such as ones synced from another
+    /// Mac or restored from a backup, without a restart. They are shown as they are: nothing is processed for them
+    /// here, and a meeting already listed, or a copy of one, is not loaded again.
+    func loadAddedMeetings() async {
+        guard ready else { return }  // Loading at launch or after a move reads every folder anyway.
+        let known = Set(meetings.map { $0.folderName ?? $0.id.uuidString })
+        let listed = Set(meetings.map(\.id))
+        var added: [Meeting] = []
+        for meeting in await repository.loadAdded(skipping: known)
+        where !listed.contains(meeting.id) && !added.contains(where: { $0.id == meeting.id }) {
+            added.append(meeting)
+        }
+        guard !added.isEmpty else { return }
+        for meeting in added { revisions[meeting.id] = meeting.revision }
+        meetings = (meetings + added).sorted { $0.date > $1.date }
+        await repository.writeMissingDocuments(added)
+        status = added.count == 1 ? "「\(added[0].title)」を読み込みました" : "会議を\(added.count)件読み込みました"
     }
     func discoverJobs(_ id: UUID) async throws {
         let path = folder(id)

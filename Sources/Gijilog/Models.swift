@@ -1,3 +1,4 @@
+import CoreServices
 import Foundation
 
 struct Segment: Codable, Identifiable, Sendable, Equatable {
@@ -569,6 +570,23 @@ actor MeetingRepository {
         }
         return (meetings.sorted { $0.date > $1.date }, errors)
     }
+    /// Meetings in folders that are not in `known`: folders that appeared in the save location since it was loaded,
+    /// such as ones synced from another Mac, restored from a backup or put back from the Trash. A folder whose
+    /// meeting.json is still being written does not decode yet and is tried again on the next change.
+    func loadAdded(skipping known: Set<String>) -> [Meeting] {
+        guard let folders = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        else { return [] }
+        return folders.compactMap { folder in
+            guard !known.contains(folder.lastPathComponent),
+                let data = try? Data(contentsOf: folder.appendingPathComponent("meeting.json")),
+                var meeting = try? JSONDecoder().decode(Meeting.self, from: data)
+            else { return nil }
+            // A deleted meeting's folder is only back when the user put it back, so it is saved again from now on.
+            deleted.remove(meeting.id)
+            meeting.folderName = folder.lastPathComponent
+            return meeting
+        }
+    }
     // Meetings saved before 議事録.md existed get one when they are next loaded.
     func writeMissingDocuments(_ meetings: [Meeting]) {
         for meeting in meetings {
@@ -694,5 +712,36 @@ enum DueDate {
         let components = DateComponents(year: year, month: month, day: day)
         guard components.isValidDate(in: calendar) else { return nil }
         return calendar.date(from: components)
+    }
+}
+/// Calls back when anything inside a folder changes, its subfolders included, at most about once a second: meeting
+/// folders copied, restored or synced into the save location while the app runs.
+final class FolderWatcher {
+    private var stream: FSEventStreamRef?
+    private let changed: () -> Void
+    init(_ folder: URL, changed: @escaping () -> Void) {
+        self.changed = changed
+        var context = FSEventStreamContext(
+            version: 0, info: Unmanaged.passUnretained(self).toOpaque(), retain: nil, release: nil,
+            copyDescription: nil)
+        let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
+            guard let info else { return }
+            Unmanaged<FolderWatcher>.fromOpaque(info).takeUnretainedValue().changed()
+        }
+        guard
+            let stream = FSEventStreamCreate(
+                nil, callback, &context, [folder.path] as CFArray,
+                FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 1.0,
+                FSEventStreamCreateFlags(kFSEventStreamCreateFlagNone))
+        else { return }
+        FSEventStreamSetDispatchQueue(stream, .main)
+        FSEventStreamStart(stream)
+        self.stream = stream
+    }
+    deinit {
+        guard let stream else { return }
+        FSEventStreamStop(stream)
+        FSEventStreamInvalidate(stream)
+        FSEventStreamRelease(stream)
     }
 }

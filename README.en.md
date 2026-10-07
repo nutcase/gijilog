@@ -123,7 +123,7 @@ Click 読み込み (Import) in the toolbar (⌘O) or drop audio or video files o
 
 ## Where meetings are saved
 
-By default in `~/Documents/ギジログ`, one folder per meeting. You can choose another folder in Settings; existing meetings move with it.
+By default in `~/Documents/ギジログ`, one folder per meeting. You can choose another folder in Settings; existing meetings move with it. A meeting folder that appears there while the app runs (synced from another Mac through iCloud Drive or the like, restored from a backup, or put back from the Trash) is listed without a restart, once its meeting.json is complete; a copy of a listed meeting is not. Nothing is transcribed or written for such a meeting on this Mac, and a meeting should not be edited on two Macs at once.
 
 ```text
 ~/Documents/ギジログ/
@@ -165,7 +165,7 @@ If your Documents folder syncs with iCloud Drive, recordings are uploaded too.
 ./scripts/build.sh   # build dist/ギジログ.app after the checks pass
 ```
 
-The 78 regression tests cover continued recordings, chunking at pauses and the shared recording clock, the voice gate and transcription hints, hand edits and word corrections, picking owners and deadlines, listening back to an utterance, summary topics with their points and opinions, incremental minutes and evidence checks, retries and recovery after restart, moving the save location and upgrading from earlier versions, mixing the audio, importing recording files, cleaning up working audio, the final review, tags, search, the agenda, and the MCP server. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.
+The 79 regression tests cover continued recordings, chunking at pauses and the shared recording clock, the voice gate and transcription hints, hand edits and word corrections, picking owners and deadlines, listening back to an utterance, summary topics with their points and opinions, incremental minutes and evidence checks, retries and recovery after restart, moving the save location, listing meeting folders added while the app runs, and upgrading from earlier versions, mixing the audio, importing recording files, cleaning up working audio, the final review, tags, search, the agenda, and the MCP server. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.
 
 The icon is an Icon Composer file, `Resources/AppIcon.icon`; with Xcode installed, `build.sh` compiles it with actool, and macOS 26 and later draw it at every size. Without Xcode the build uses an icns made from `Resources/AppIcon.png` (and art drawn for 16 and 32 pixels).
 
