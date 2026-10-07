@@ -77,6 +77,24 @@ extension ProcessingTests {
             rewritten.content.decisions.map(\.text) == ["B案にする（手直し）", "C案も検討する"]
                 && rewritten.content.decisions[0].edited == true,
             "the final review keeps edited items, without duplicates or deleted ones")
+        // An item is edited because the user wanted it worded differently, so the AI writing the same item again
+        // almost never matches the edit word for word. It cites the same lines, which is how it is recognised.
+        let reworded = try MinutesEngine.rewrite(
+            state,
+            delta: NotesDelta(decisions: [
+                NoteItem(id: "", text: "B案に決定した", evidence: ["s1"]),
+                NoteItem(id: "", text: "C案も検討する", evidence: ["s2"]),
+            ]), transcript: [first, second])
+        try Self.check(
+            reworded.content.decisions.map(\.text) == ["B案にする（手直し）", "C案も検討する"],
+            "the final review does not add the AI's own wording of an edited item: \(reworded.content.decisions.map(\.text))"
+        )
+        let relive = MinutesEngine.merge(
+            state, delta: NotesDelta(decisions: [NoteItem(id: "", text: "B案に決めた", evidence: ["s1", "s2"])]),
+            batch: [second], segments: [first, second])
+        try Self.check(
+            relive.content.decisions.map(\.text) == ["B案にする（手直し）"],
+            "nor does a later part of a long meeting: \(relive.content.decisions.map(\.text))")
         var spelled = state
         spelled.corrections = [TermCorrection(variants: ["森バス"], to: "モリバス")]
         let input = try MinutesEngine.reviewInput(spelled, transcript: [first, second])

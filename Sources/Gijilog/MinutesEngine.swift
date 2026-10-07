@@ -255,6 +255,15 @@ enum MinutesEngine {
             previous, delta: try JSONDecoder().decode(NotesDelta.self, from: Data(text.utf8)), batch: batch,
             segments: segments)
     }
+    /// Whether an item the AI wrote is its own version of one the user edited: it cites at least half the lines of
+    /// the smaller of the two. An edit rewords the item on purpose, so the AI writing it again almost never matches
+    /// it word for word, and comparing text let both stand; the lines the item rests on do not change.
+    static func restates(_ item: NoteItem, _ edited: NoteItem) -> Bool {
+        let written = Set(item.evidence)
+        let kept = Set(edited.evidence)
+        guard !written.isEmpty, !kept.isEmpty else { return false }
+        return written.intersection(kept).count * 2 >= min(written.count, kept.count)
+    }
     /// The minutes written afresh: each item is checked against the transcript the model was given, as in merge,
     /// and the result replaces the draft. An empty answer keeps the draft instead.
     static func rewrite(_ previous: MinutesState, delta: NotesDelta, transcript: [Segment]) throws -> MinutesState {
@@ -272,7 +281,9 @@ enum MinutesEngine {
                     continue
                 }
                 item = grounded(item, known: known, summary: section == "summary")
-                guard !taken.contains(normalized(item.text)) else { continue }
+                guard !taken.contains(normalized(item.text)), !kept.contains(where: { restates(item, $0) }) else {
+                    continue
+                }
                 item.evidence = Array(Set(item.evidence)).sorted()
                 item.changeSummary = nil
                 if let i = result.firstIndex(where: { normalized($0.text) == normalized(item.text) }) {
@@ -358,6 +369,7 @@ enum MinutesEngine {
                 // What the user wrote or deleted by hand stays that way.
                 if dismissed.contains(normalized(item.text))
                     || items.contains(where: { $0.id == item.id && !item.id.isEmpty && $0.edited == true })
+                    || items.contains(where: { $0.edited == true && $0.id != item.id && restates(item, $0) })
                 {
                     continue
                 }
