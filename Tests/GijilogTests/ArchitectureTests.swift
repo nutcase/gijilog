@@ -447,6 +447,58 @@ extension ProcessingTests {
         let frames = try AVAudioFile(forReading: input[0].url).length
         try Self.check(frames == 16000, "quit closes the tail audio file")
     }
+    // A recording left running after the meeting stops by itself once nobody is heard for the set time; steady
+    // noise does not count as someone heard, and a warning comes in the last minute.
+    @MainActor func testRecordingStopsAfterALongSilence() async throws {
+        var cutter = ChunkCutter()
+        cutter.begin()
+        for _ in 0..<200 { _ = cutter.add(level: 0.02, seconds: 0.05) }
+        let steady = cutter.sounding
+        for _ in 0..<8 { _ = cutter.add(level: 0.15, seconds: 0.05) }
+        let voice = cutter.sounding
+        _ = cutter.add(level: 0.02, seconds: 0.05)
+        try Self.check(
+            steady == 0 && voice >= ChunkCutter.sound && cutter.sounding == 0,
+            "steady noise is background, and a voice above it is someone heard: \(steady), \(voice)")
+
+        let (root, _) = try fixture(seconds: 1, amplitude: 0)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = Store(root: root, loadSettings: false)
+        var meeting = Meeting(title: "置き忘れた録音")
+        meeting.settings = SessionSettings()
+        store.meetings = [meeting]
+        store.activeID = meeting.id
+        store.recording = true
+        try store.recorder.prepareFiles(in: store.folder(meeting.id))
+        final class Heard: @unchecked Sendable { var count = 0 }
+        let heard = Heard()
+        store.recorder.onSound = { heard.count += 1 }
+        store.recorder.consume(try audioSample(at: 0, amplitude: 0.0005), of: .microphone)
+        store.recorder.consume(try audioSample(at: 1, amplitude: 0.25), of: .microphone)
+        for _ in 0..<20 where heard.count == 0 { try await Task.sleep(nanoseconds: 50_000_000) }
+        try Self.check(heard.count == 1, "the recorder reports someone heard over a quiet room")
+
+        store.autoStopMinutes = 15
+        store.heardSound()
+        let start = Date()
+        try Self.check(
+            store.secondsUntilSilenceStop(now: start.addingTimeInterval(13 * 60)) == nil
+                && store.secondsUntilSilenceStop(now: start.addingTimeInterval(14 * 60 + 30)) == 30,
+            "the warning shows only in the last minute, counting down")
+        await store.stopIfSilent(now: start.addingTimeInterval(14 * 60))
+        store.autoStopMinutes = 0
+        await store.stopIfSilent(now: start.addingTimeInterval(3600))
+        try Self.check(store.recording, "recording goes on before the time, and when turned off")
+        store.autoStopMinutes = 15
+        let end = start.addingTimeInterval(15 * 60 + 1)
+        await store.stopIfSilent(now: end)
+        try Self.check(
+            !store.recording && store.meetings[0].capture == .stopped && store.meetings[0].stoppedForSilence == end,
+            "after 15 minutes without sound the recording stops, and the meeting says why")
+        let saved = try JSONDecoder().decode(
+            Meeting.self, from: Data(contentsOf: store.folder(meeting.id).appendingPathComponent("meeting.json")))
+        try Self.check(saved.stoppedForSilence == end, "the reason is saved with the meeting")
+    }
     func testRepositoryRejectsStaleSnapshot() async throws {
         let (root, _) = try fixture(seconds: 1, amplitude: 0)
         defer { try? FileManager.default.removeItem(at: root) }

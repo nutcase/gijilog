@@ -117,6 +117,32 @@ import UniformTypeIdentifiers
     lazy var pipeline = ProcessingPipeline(store: self)
     private var captureInputID: String?  // The microphone in use, so unrelated devices cannot stop a recording.
     private var summaryTimer: Timer?
+    private var silenceTimer: Timer?
+    // Recording stops by itself after this many minutes without sound on either track (0: never), as when a
+    // meeting ended and the recording was left running.
+    @Published var autoStopMinutes = 15 {
+        didSet { if persistsSettings { UserDefaults.standard.set(autoStopMinutes, forKey: "autoStopMinutes") } }
+    }
+    @Published private(set) var lastSoundAt = Date()  // When someone was last heard in the recording.
+    static let silenceWarning: TimeInterval = 60  // How long before stopping the warning shows.
+    /// Seconds until recording stops for silence, while it is close enough to warn; nil otherwise.
+    func secondsUntilSilenceStop(now: Date = Date()) -> Int? {
+        guard recording, autoStopMinutes > 0 else { return nil }
+        let left = Double(autoStopMinutes * 60) - now.timeIntervalSince(lastSoundAt)
+        return left <= Self.silenceWarning ? max(0, Int(left.rounded(.up))) : nil
+    }
+    /// Someone was heard, or the user asked to keep recording: the silence starts over.
+    func heardSound() { lastSoundAt = Date() }
+    func dismissSilenceStop(_ id: UUID) { change(id) { $0.stoppedForSilence = nil } }
+    func stopIfSilent(now: Date = Date()) async {
+        guard recording, !busy, autoStopMinutes > 0, let id = activeID,
+            now.timeIntervalSince(lastSoundAt) >= Double(autoStopMinutes * 60)
+        else { return }
+        await stop()
+        change(id) { $0.stoppedForSilence = now }
+        try? await checkpoint(id)
+        status = "音が\(autoStopMinutes)分なかったため、録音を止めました。"
+    }
     private var activity: NSObjectProtocol?
     private var shuttingDown = false
     private var pendingCaptureError: String?
@@ -156,6 +182,7 @@ import UniformTypeIdentifiers
             mcpEnabled = defaults.object(forKey: "mcpEnabled") as? Bool ?? true
             mcpIncludesTranscript = defaults.object(forKey: "mcpIncludesTranscript") as? Bool ?? true
             mcpHiddenTags = defaults.stringArray(forKey: "mcpHiddenTags") ?? []
+            autoStopMinutes = defaults.object(forKey: "autoStopMinutes") as? Int ?? 15
             // The list moved from the app's settings to the save location, to be shared with the meetings: what was
             // kept in the settings joins whatever the file has, once.
             // (Observers do not run in an initializer, so the file is written here.)
@@ -185,6 +212,7 @@ import UniformTypeIdentifiers
         recorder.onLevel = { [weak self] source, value in
             Task { @MainActor in self?.meter.record(value, microphone: source == "マイク") }
         }
+        recorder.onSound = { [weak self] in Task { @MainActor in self?.heardSound() } }
         // Search once typing pauses, and again as a live meeting grows.
         searchUpdates = Publishers.CombineLatest($searchText, $meetings)
             .debounce(for: .milliseconds(200), scheduler: DispatchQueue.main)
@@ -632,6 +660,13 @@ import UniformTypeIdentifiers
             }
             summaryTimer = timer
             RunLoop.main.add(timer, forMode: .common)
+            lastSoundAt = Date()
+            change(id) { $0.stoppedForSilence = nil }
+            let silence = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+                Task { @MainActor in await self?.stopIfSilent() }
+            }
+            silenceTimer = silence
+            RunLoop.main.add(silence, forMode: .common)
             if shuttingDown || pendingCaptureError != nil {
                 busy = false
                 if let message = pendingCaptureError { await interrupt(message) } else { await stop() }
@@ -698,6 +733,8 @@ import UniformTypeIdentifiers
         defer { busy = false }
         summaryTimer?.invalidate()
         summaryTimer = nil
+        silenceTimer?.invalidate()
+        silenceTimer = nil
         recording = false
         meter.reset()
         do { try await recorder.stop() } catch {

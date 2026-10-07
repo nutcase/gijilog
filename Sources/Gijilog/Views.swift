@@ -587,6 +587,12 @@ struct RecorderBar: View {
         .font(.callout)
     }
     private func live(_ meeting: Meeting) -> some View {
+        VStack(spacing: 10) {
+            liveControls(meeting)
+            SilenceWarning()
+        }
+    }
+    private func liveControls(_ meeting: Meeting) -> some View {
         HStack(spacing: 18) {
             RecordingLamp()
             VStack(alignment: .leading, spacing: 0) {
@@ -998,6 +1004,12 @@ struct MinutesDesk: View {
     @ViewBuilder private var notices: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let message = meeting.captureError { Notice(text: message) }
+            if let stopped = meeting.stoppedForSilence, meeting.capture != .recording {
+                Notice(
+                    text: "音がしばらくなかったため、\(stopped.formatted(date: .omitted, time: .shortened)) に録音を自動で止めました。"
+                        + "続きがあるときは「続けて録音」で録音できます。",
+                    actionTitle: "閉じる", action: { store.dismissSilenceStop(meeting.id) })
+            }
             if let failure = meeting.transcriptionFailure {
                 Notice(
                     text: failure, actionTitle: store.hasKey ? "再試行" : nil,
@@ -1143,6 +1155,28 @@ struct SuggestionChipStyle: ButtonStyle {
             .overlay(Capsule().strokeBorder(Palette.paper.opacity(0.35), lineWidth: 1))
             .opacity(configuration.isPressed ? 0.6 : 1)
             .contentShape(Capsule())
+    }
+}
+// Shown in the last minute before recording stops for a long silence, counting down, with a button to keep
+// recording. Nothing shows the rest of the time.
+struct SilenceWarning: View {
+    @EnvironmentObject var store: Store
+    var compact = false
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            if let left = store.secondsUntilSilenceStop(now: context.date) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: "speaker.slash.fill").foregroundStyle(Palette.yamabuki)
+                    Text("音が\(store.autoStopMinutes)分近くありません。あと\(left)秒で録音を止めます。")
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 4)
+                    Button("録音を続ける") { store.heardSound() }.controlSize(.small)
+                }
+                .font(compact ? .caption : .callout)
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Palette.yamabuki.opacity(0.18)))
+            }
+        }
     }
 }
 struct Notice: View {
@@ -2600,11 +2634,17 @@ struct GeneralSettings: View {
                         }
                     }
                     .disabled(store.recording)
+                    Picker("音がないときの自動停止", selection: $store.autoStopMinutes) {
+                        Text("しない").tag(0)
+                        ForEach([5, 10, 15, 30, 60], id: \.self) { Text("\($0)分で止める").tag($0) }
+                    }
                 } header: {
                     Text("録音")
                 } footer: {
-                    Text("会議の音はイヤホンで聞き、声はMac本体のマイクで録ると、二重に録音されずに済みます。")
-                        .fixedSize(horizontal: false, vertical: true)
+                    Text(
+                        "会議の音はイヤホンで聞き、声はMac本体のマイクで録ると、二重に録音されずに済みます。マイクにもMac音声にも人の声や物音がない状態が続くと、録音を自動で止めます（止める1分前に知らせます）。空調などの一定の音は無音として扱います。"
+                    )
+                    .fixedSize(horizontal: false, vertical: true)
                 }
                 Section {
                     LabeledContent("フォルダ") {
@@ -3199,6 +3239,7 @@ struct LiveHeader: View {
                     .disabled(store.busy)
                 }
                 LiveMeters(meter: store.meter)
+                SilenceWarning(compact: true)
             } else {
                 HStack(spacing: 8) {
                     if let planned = store.selectedMeeting, planned.capture == .planned {

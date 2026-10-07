@@ -33,6 +33,10 @@ final class Recorder: NSObject, @unchecked Sendable {
     private var lastMicrophoneInput = Date()
     private var notifiedMissingInput = false
     private var lastMeterUpdate: [Track: Date] = [:]
+    private var lastSoundReport: [Track: Date] = [:]
+    // Someone is heard on a track: sound above its background for a moment, at most once a second per track.
+    // Steady noise (a fan, the air conditioning) becomes the background and is not reported.
+    var onSound: (() -> Void)?
     private var cancelledStart = false
     var onError: ((String) -> Void)?
     var onLevel: ((String, Float) -> Void)?  // Track name ("Mac音声" or "マイク") and peak level.
@@ -248,6 +252,12 @@ final class Recorder: NSObject, @unchecked Sendable {
             if cutters[type, default: ChunkCutter()].add(level: ChunkCutter.level(buffer) ?? 1, seconds: seconds) {
                 finishChunk(type)
             }
+            if (cutters[type]?.sounding ?? 0) >= ChunkCutter.sound,
+                Date().timeIntervalSince(lastSoundReport[type] ?? .distantPast) >= 1
+            {
+                lastSoundReport[type] = Date()
+                onSound?()
+            }
             if let samples = buffer.floatChannelData?[0],
                 Date().timeIntervalSince(lastMeterUpdate[type] ?? .distantPast) >= 0.1
             {
@@ -265,8 +275,10 @@ struct ChunkCutter {
     static let minimum = 10.0  // Seconds before a pause may end the chunk.
     static let maximum = 25.0  // Seconds after which the chunk ends even mid-speech.
     static let pause = 0.3  // Seconds of quiet that count as a pause.
+    static let sound = 0.3  // Seconds of sound above the background that count as someone heard.
     private(set) var length = 0.0
     private var quiet = 0.0
+    private(set) var sounding = 0.0  // Seconds of sound above the background, up to now.
     // The background level. It drops to any quieter moment at once and rises by 5% a second, so it follows a room
     // that gets noisier without ever taking speech for background.
     private var floor: Float?
@@ -281,6 +293,7 @@ struct ChunkCutter {
         let background = min(level, max(floor ?? level, 0.0005) * Float(1 + 0.05 * seconds))
         floor = background
         quiet = level < max(0.003, background * 3) ? quiet + seconds : 0
+        sounding = quiet > 0 ? 0 : sounding + seconds
         return length >= Self.maximum || (length >= Self.minimum && quiet >= Self.pause)
     }
     /// The RMS level of a float buffer's first channel.

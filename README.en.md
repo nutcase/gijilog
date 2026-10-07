@@ -22,6 +22,7 @@ Keep its compact window next to the call to see what has been decided, what is s
 - **From existing recordings too**: import a Voice Memo, a Zoom recording, or any audio or video file and get the same minutes afterward.
 - **Audio and minutes together**: each meeting gets a folder with `議事録.md` (minutes) and `録音.m4a` (audio).
 - **Tags**: tag meetings and narrow the list to the ones you need.
+- **Stops a forgotten recording**: when neither the microphone nor the Mac audio has had a voice or sound for 15 minutes (5 to 60, or never, in Settings → 一般), recording stops by itself. A countdown with 録音を続ける (Keep recording) shows in the last minute, steady noise such as air conditioning counts as silence, and the meeting's page says when and why it stopped; 続けて録音 records the rest.
 - **Agenda**: prepare the topics before the meeting; during it, the AI follows which topic is being discussed from the transcript and the compact window shows it with its time. The minutes record how long each topic took.
 - **Keyword search**: search titles, tags, minutes, and transcripts at once, with every match marked.
 - **Edit the minutes**: click an item to change it. Fixing a misheard name offers to fix it across the meeting, including other spellings that read the same (森バス and もりばす for モリバス).
@@ -165,7 +166,7 @@ If your Documents folder syncs with iCloud Drive, recordings are uploaded too.
 ./scripts/build.sh   # build dist/ギジログ.app after the checks pass
 ```
 
-The 79 regression tests cover continued recordings, chunking at pauses and the shared recording clock, the voice gate and transcription hints, hand edits and word corrections, picking owners and deadlines, listening back to an utterance, summary topics with their points and opinions, incremental minutes and evidence checks, retries and recovery after restart, moving the save location, listing meeting folders added while the app runs, and upgrading from earlier versions, mixing the audio, importing recording files, cleaning up working audio, the final review, tags, search, the agenda, and the MCP server. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.
+The 80 regression tests cover stopping after a long silence, continued recordings, chunking at pauses and the shared recording clock, the voice gate and transcription hints, hand edits and word corrections, picking owners and deadlines, listening back to an utterance, summary topics with their points and opinions, incremental minutes and evidence checks, retries and recovery after restart, moving the save location, listing meeting folders added while the app runs, and upgrading from earlier versions, mixing the audio, importing recording files, cleaning up working audio, the final review, tags, search, the agenda, and the MCP server. Speech recognition and the API are mocked, and any unmocked network request fails. GitHub Actions runs SwiftLint, the tests, and a release build on every push and pull request.
 
 The icon is an Icon Composer file, `Resources/AppIcon.icon`; with Xcode installed, `build.sh` compiles it with actool, and macOS 26 and later draw it at every size. Without Xcode the build uses an icns made from `Resources/AppIcon.png` (and art drawn for 16 and 32 pixels).
 
