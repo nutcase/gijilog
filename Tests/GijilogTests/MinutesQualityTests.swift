@@ -157,6 +157,67 @@ extension ProcessingTests {
             NoteItem(id: "", text: "t", evidence: [], topic: "話題"), known: known, summary: true)
         try Self.check(
             kept.topic == "資生堂の案件" && dropped.topic == nil, "an item's topic is kept trimmed, not on a summary")
+
+        // An item edited to name another topic moves under it; one that still names its own, even in part, stays.
+        let summary = notes.content.summary
+        func moved(_ old: String, _ new: String, from current: Int?, in topics: [NoteItem] = summary) -> String? {
+            MinutesEngine.topicNamedByEdit(from: old, to: new, current: current, summary: topics)
+        }
+        try Self.check(
+            moved("SES案件の候補を確認する", "資生堂の案件の候補を確認する", from: 0) == "資生堂の案件"
+                && moved("候補を確認する", "資生堂の案件の候補を確認する", from: 0) == "資生堂の案件",
+            "an edit that names another topic moves the item there")
+        try Self.check(
+            moved("SES案件の候補を確認する", "SES案件と資生堂の案件を比べる", from: 0) == nil
+                && moved("SES案件の扱いを決める", "SES案件の扱いと資生堂の案件を決める", from: 0) == nil
+                && moved("候補を確認する", "候補を確かめる", from: 0) == nil
+                && moved("確認する", "資生堂の案件を確認する", from: 1) == nil,
+            "an item still naming its topic, or naming no other, stays")
+        let nested = [
+            NoteItem(id: "n1", text: "診断：日程を決める", evidence: []),
+            NoteItem(id: "n2", text: "セキュリティ診断：範囲を決める", evidence: []),
+        ]
+        try Self.check(
+            moved("範囲を決める", "セキュリティ診断の範囲を決める", from: nil, in: nested) == "セキュリティ診断",
+            "a name inside a longer one named too is the longer one")
+    }
+    // The topic an item is listed under follows a hand edit that names another, and can be chosen.
+    @MainActor func testEditedItemsMoveToTheTopicTheyName() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = Store(root: root, loadSettings: false)
+        var meeting = Meeting(title: "定例")
+        meeting.capture = .stopped
+        meeting.segments = [
+            Segment(id: "a", time: 0, source: "マイク", text: "モリバス系の環境を分けました"),
+            Segment(id: "b", time: 60, source: "マイク", text: "AIインタビュアーのモデルも整理します"),
+            Segment(id: "c", time: 200, source: "マイク", text: "AIインタビュアーのデプロイの残件です"),
+        ]
+        var notes = MinutesState()
+        notes.content.summary = [
+            NoteItem(id: "s1", text: "モリバス系：環境を分けた", evidence: ["a", "b"]),
+            NoteItem(id: "s2", text: "AIインタビュアー：デプロイの残件を確かめる", evidence: ["c"]),
+            NoteItem(id: "s3", text: "QB：指摘への対応を確かめる", evidence: []),
+        ]
+        notes.content.actions = [
+            NoteItem(id: "x", text: "モリバス系で使っているモデルを整理する", evidence: ["b"], topic: "モリバス系")
+        ]
+        meeting.notes = notes
+        store.meetings = [meeting]
+        func under() -> Int? {
+            guard let content = store.meetings[0].notes?.content else { return nil }
+            let known = Dictionary(uniqueKeysWithValues: store.meetings[0].segments.map { ($0.id, $0) })
+            return MinutesEngine.topicIndex(of: content.actions[0], in: content.summary, known: known)
+        }
+        store.updateNoteItem(meeting.id, part: .actions, id: "x") { $0.text = "AIインタビュアーで使っているモデルを整理する" }
+        let action = try Self.require(store.meetings[0].notes?.content.actions.first, "the edited action")
+        try Self.check(
+            under() == 1 && action.topic == "AIインタビュアー" && action.edited == true && store.correctionOffer == nil,
+            "an action edited to name another topic is listed under it, with no offer to fix a word: \(action)")
+        store.updateNoteItem(meeting.id, part: .actions, id: "x", offersCorrection: false) { $0.topic = "QB" }
+        try Self.check(under() == 2, "an action can be moved to a topic chosen by hand")
+        store.updateNoteItem(meeting.id, part: .actions, id: "x") { $0.owner = "中塩さん" }
+        try Self.check(under() == 2, "editing something else leaves it under its topic")
     }
     func testReviewCannotRollBackLaterEvidence() throws {
         let before = Segment(id: "before", time: 0, source: "マイク", text: "A案にします")

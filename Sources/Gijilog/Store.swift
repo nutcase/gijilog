@@ -1404,20 +1404,31 @@ extension Store {
         meeting.notes != nil && meeting.capture != .recording && meeting.capture != .planned
             && meeting.id != activeID && !pipeline.isProcessing(meeting.id)
     }
-    /// Changes an item and marks it edited by hand, so AI updates leave it alone. When the edit fixed a word that
-    /// appears elsewhere in the meeting, offers to fix it there too.
-    /// Changes an item by hand. Fixing a word offers to fix it elsewhere in the meeting, unless `offersCorrection` is
-    /// false, as when a person is picked from the list (choosing someone else is not a misheard name).
+    /// Changes an item and marks it edited by hand, so AI updates leave it alone. An item edited to name another
+    /// summary topic moves under it. Fixing a word offers to fix it elsewhere in the meeting, unless
+    /// `offersCorrection` is false, as when a person is picked from the list (choosing someone else is not a
+    /// misheard name), or the edit moved the item (it says what the item is about, not how a word sounded).
     func updateNoteItem(
         _ meetingID: UUID, part: NotePart, id: String, offersCorrection: Bool = true, _ update: (inout NoteItem) -> Void
     ) {
         var offer: CorrectionOffer?
+        var offersCorrection = offersCorrection
         change(meetingID) { m in
             guard var item = m.notes?.content[part].first(where: { $0.id == id }),
                 let i = m.notes?.content[part].firstIndex(where: { $0.id == id })
             else { return }
             let before = item
             update(&item)
+            if part != .summary, item.text != before.text, let summary = m.notes?.content.summary {
+                let known = Dictionary(m.segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                let current = MinutesEngine.topicIndex(of: before, in: summary, known: known)
+                if let topic = MinutesEngine.topicNamedByEdit(
+                    from: before.text, to: item.text, current: current, summary: summary)
+                {
+                    item.topic = topic
+                    offersCorrection = false
+                }
+            }
             guard item != before else { return }
             item.edited = true
             m.notes?.content[part][i] = item

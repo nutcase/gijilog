@@ -1312,7 +1312,7 @@ struct NoteSection: View {
             if let editing {
                 EditableNoteRow(
                     editing: editing, item: item, known: known, fresh: fresh, tone: tone, number: number,
-                    current: item.id == current, revised: revised.contains(item.id))
+                    current: item.id == current, revised: revised.contains(item.id), topics: topics)
             } else {
                 NoteRow(
                     item: item, known: known, fresh: fresh, tone: tone, number: number,
@@ -1512,6 +1512,7 @@ struct EditableNoteRow: View {
     var number: Int?
     var current = false
     var revised = false
+    var topics: [NoteItem] = []  // The summary's topics, which a decision, open issue or action can be moved under.
     private var action: Bool { tone == .actions }
     private var key: String { editing.part.rawValue + "/" + item.id }
     var body: some View {
@@ -1533,6 +1534,7 @@ struct EditableNoteRow: View {
                 )
                 .contextMenu {
                     Button("編集", systemImage: "pencil") { store.editingNoteItem = key }
+                    if editing.part != .summary && !topics.isEmpty { topicMenu }
                     Button("削除", systemImage: "trash", role: .destructive) { remove() }
                 }
             }
@@ -1615,6 +1617,28 @@ struct EditableNoteRow: View {
         }
     }
     private func finish() { store.editingNoteItem = nil }
+    // The summary topics, the one the item is under ticked: choosing another moves it there.
+    private var topicMenu: some View {
+        let under = MinutesEngine.topicIndex(of: item, in: topics, known: known)
+        return Menu("話題を移す", systemImage: "arrow.turn.down.right") {
+            ForEach(Array(topics.enumerated()), id: \.element.id) { index, topic in
+                let parts = MinutesEngine.summaryParts(topic.text)
+                let name = parts.topic ?? String(parts.overview.prefix(30))
+                Toggle(
+                    "\(index + 1). \(name)",
+                    isOn: Binding(
+                        get: { under == index },
+                        set: { _ in
+                            guard under != index else { return }
+                            store.updateNoteItem(
+                                editing.meetingID, part: editing.part, id: item.id, offersCorrection: false
+                            ) {
+                                $0.topic = parts.topic ?? topic.text
+                            }
+                        }))
+            }
+        }
+    }
     private var meetingDate: Date { store.meetings.first { $0.id == editing.meetingID }?.date ?? Date() }
     private func setDue(_ date: Date?) {
         let meetingDate = meetingDate

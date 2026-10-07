@@ -516,6 +516,45 @@ enum MinutesEngine {
         else { return nil }
         return nearest.index
     }
+    /// The summary topic an item moves to when it is edited to name another: one topic its new text names and its
+    /// old text did not, while it no longer names the topic it is under. Nil leaves it where it is.
+    static func topicNamedByEdit(from old: String, to new: String, current: Int?, summary: [NoteItem]) -> String? {
+        let names = summary.map { summaryTopic($0.text).map(normalized) ?? "" }
+        func named(_ text: String) -> Set<Int> {
+            let text = normalized(text)
+            return Set(names.indices.filter { names[$0].count >= 2 && text.contains(names[$0]) })
+        }
+        let now = named(new)
+        if let current, now.contains(current) { return nil }
+        // An item names its topic in part ("SES案件の候補" under "SES案件の扱い"): it still does while the edit keeps
+        // most of those words.
+        if let current, !names[current].isEmpty {
+            let kept = sharedRun(normalized(old), names[current])
+            if kept.count >= 2 && sharedRun(kept, normalized(new)).count * 3 >= kept.count * 2 { return nil }
+        }
+        // A name inside a longer one named too ("診断" in "セキュリティ診断") is that one.
+        let added = now.subtracting(named(old))
+        let whole = added.filter { i in !added.contains { $0 != i && names[$0].contains(names[i]) } }
+        guard whole.count == 1, let i = whole.first, i != current else { return nil }
+        return summaryTopic(summary[i].text)
+    }
+    /// The longest run of characters two texts share.
+    static func sharedRun(_ first: String, _ second: String) -> String {
+        let a = Array(first)
+        let b = Array(second)
+        guard !a.isEmpty, !b.isEmpty else { return "" }
+        var longest = (length: 0, end: 0)
+        var previous = [Int](repeating: 0, count: b.count + 1)
+        for i in 1...a.count {
+            var row = [Int](repeating: 0, count: b.count + 1)
+            for j in 1...b.count where a[i - 1] == b[j - 1] {
+                row[j] = previous[j - 1] + 1
+                if row[j] > longest.length { longest = (row[j], i) }
+            }
+            previous = row
+        }
+        return String(a[(longest.end - longest.length)..<longest.end])
+    }
     /// Items under the summary topic each belongs to, in the summary's order, keeping their own order within a
     /// topic; those that belong to none come last.
     static func groupedByTopic(_ items: [NoteItem], summary: [NoteItem], known: [String: Segment])

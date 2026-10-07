@@ -76,6 +76,7 @@ import Foundation
         try tests.testMinutesExplainDecisionsAndSeparateHistory()
         try await tests.testSummaryTopicsKeepTheirPointsAndOpinions()
         try tests.testActionsAreListedUnderTheirTopics()
+        try await tests.testEditedItemsMoveToTheTopicTheyName()
         try tests.testReviewCannotRollBackLaterEvidence()
         try await tests.testReviewUsesStructuredQualityContract()
         try await tests.testFinalReviewDiscardsOutdatedResponse()
@@ -99,7 +100,7 @@ import Foundation
         try tests.testMCPKeepsWhatTheUserWithholds()
         try await tests.testMCPAnswersOverItsSocket()
         print(
-            "PASS: 85 checks (recording, stopping after a silence, continued recording, chunking at pauses, voice gate, transcription hints, editing and corrections, learning misheard words, picking owners and deadlines, listening back, summary topics, actions by topic, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, the vocabulary file, folders added or changed while running, audio mixdown, file import, upgrade and recovery, storage cleanup, minutes quality and final review, tags, search, agenda, MCP)"
+            "PASS: 86 checks (recording, stopping after a silence, continued recording, chunking at pauses, voice gate, transcription hints, editing and corrections, learning misheard words, picking owners and deadlines, listening back, summary topics, actions by topic, moving them by hand, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, the vocabulary file, folders added or changed while running, audio mixdown, file import, upgrade and recovery, storage cleanup, minutes quality and final review, tags, search, agenda, MCP)"
         )
     }
     /// A steady tone, silent in the given ranges of seconds.
