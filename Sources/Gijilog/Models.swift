@@ -61,7 +61,7 @@ struct NoteItem: Codable, Identifiable, Sendable, Equatable {
     // A summary topic's main points at issue and the views put forward, one sentence each.
     var points: [String]?
     var opinions: [String]?
-    var topic: String?  // An action's summary topic, by its name ("話題" of "話題：概要"), to group the actions by.
+    var topic: String?  // The summary topic of a decision, open issue or action, by its name ("話題" of "話題：概要").
 }
 struct NotesDelta: Codable, Sendable {
     var summary: [NoteItem] = []

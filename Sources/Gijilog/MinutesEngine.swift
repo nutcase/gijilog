@@ -121,10 +121,11 @@ enum MinutesEngine {
         summary以外のpoints・opinionsは空配列。
 
         """
-    // An action is read on its own, apart from the talk it came from, and is listed under its topic.
+    // A decision, open issue or action is read on its own, apart from the talk it came from, and is listed under its
+    // topic.
     static let actionRules = """
-        actionsのtextは、それだけ読んで何の件か分かるように、案件名・相手・対象を含めて書く（「その件を確認する」ではなく「資生堂の案件の予算を確認する」）。\
-        actionsのtopicには、その作業が出てきたsummaryの話題名（「話題：概要」の話題の部分）をそのまま書く。どの話題とも言えなければnull。summary・decisions・unresolvedのtopicはnull。
+        decisions・unresolved・actionsのtextは、それだけ読んで何の件か分かるように、案件名・相手・対象を含めて書く（「その件を確認する」ではなく「資生堂の案件の予算を確認する」）。\
+        decisions・unresolved・actionsのtopicには、その項目が出てきたsummaryの話題名（「話題：概要」の話題の部分）をそのまま書く。どの話題とも言えなければnull。summaryのtopicはnull。
         """
     static let instructions =
         """
@@ -456,17 +457,15 @@ enum MinutesEngine {
                 return "- \(time)\(plain(item.text))\(mark.isEmpty ? "" : "（" + mark + "）")" + detail
             }.joined(separator: "\n")
         }
-        // Actions under the summary topic they came from, in the summary's order, the rest last.
-        func groupedActions() -> String {
+        // Decisions, open issues or actions under the summary topic they came from, in the summary's order, the rest
+        // last.
+        func grouped(_ items: [NoteItem], actions: Bool = false) -> String {
             let summary = state.content.summary.filter { $0.state != .cancelled }
-            let groups = groupedByTopic(
-                state.content.actions.filter { $0.state != .cancelled }, summary: summary, known: known)
-            guard groups.contains(where: { $0.topic != nil }) else {
-                return lines(groups.flatMap(\.items), actions: true)
-            }
+            let groups = groupedByTopic(items, summary: summary, known: known)
+            guard groups.contains(where: { $0.topic != nil }) else { return lines(items, actions: actions) }
             return groups.map { group in
                 let heading = group.topic.map { "**\($0 + 1). \(plain(summaryParts(summary[$0].text).topic ?? ""))**" }
-                return (heading ?? "**その他**") + "\n" + lines(group.items, actions: true)
+                return (heading ?? "**その他**") + "\n" + lines(group.items, actions: actions)
             }.joined(separator: "\n\n")
         }
         // Each summary topic under its own heading: its overview, then the points at issue and the views put forward.
@@ -487,7 +486,7 @@ enum MinutesEngine {
         let original = transcript.map { "\n\n## 文字起こし\n" + $0 } ?? ""
         // What a reader acts on comes first; the transcript, the longest part, comes last.
         return
-            "# \(plain(title ?? "議事録"))\n\(tagLine(tags))\(agendaSection(agenda))\(notice)\n## 要約\n\n\(topics(state.content.summary.filter { $0.state != .cancelled }))\n\n## 決定事項と理由\(candidate)\n\(lines(state.content.decisions.filter { $0.state != .cancelled }))\n\n## アクションアイテム\n\(groupedActions())\n\n## 未決事項・次の確認\(candidate)\n\(lines(state.content.unresolved.filter { $0.state == .open }))\(history)\(original)"
+            "# \(plain(title ?? "議事録"))\n\(tagLine(tags))\(agendaSection(agenda))\(notice)\n## 要約\n\n\(topics(state.content.summary.filter { $0.state != .cancelled }))\n\n## 決定事項と理由\(candidate)\n\(grouped(state.content.decisions.filter { $0.state != .cancelled }))\n\n## アクションアイテム\n\(grouped(state.content.actions.filter { $0.state != .cancelled }, actions: true))\n\n## 未決事項・次の確認\(candidate)\n\(grouped(state.content.unresolved.filter { $0.state == .open }))\(history)\(original)"
     }
     /// The summary topic an item belongs to, by its place in the summary: the topic the AI named for it, or, when it
     /// named none (or the item was written before topics were named), the topic whose talk the item's evidence falls

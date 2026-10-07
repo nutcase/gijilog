@@ -1218,10 +1218,12 @@ struct MinutesSections: View {
                 latest: latest, editing: edit(.summary), current: current, revised: revised)
             NoteSection(
                 title: "決定事項と理由", tone: .decisions, items: content.decisions.filter { $0.state != .cancelled },
-                known: known, latest: latest, editing: edit(.decisions), current: current, revised: revised)
+                known: known, latest: latest, editing: edit(.decisions), current: current, revised: revised,
+                topics: content.summary.filter { $0.state != .cancelled })
             NoteSection(
                 title: "未決事項・次の確認", tone: .unresolved, items: content.unresolved.filter { $0.state == .open },
-                known: known, latest: latest, editing: edit(.unresolved), current: current, revised: revised)
+                known: known, latest: latest, editing: edit(.unresolved), current: current, revised: revised,
+                topics: content.summary.filter { $0.state != .cancelled })
             if !content.history.isEmpty {
                 NoteSection(
                     title: "議論の経緯", tone: .history, items: content.history, known: known, latest: latest,
@@ -1281,7 +1283,7 @@ struct NoteSection: View {
     var editing: NoteEditing?
     var current: String?
     var revised: Set<String> = []  // Items citing transcript lines corrected since the minutes were written.
-    var topics: [NoteItem] = []  // The summary's topics, for the actions listed under the topic each came from.
+    var topics: [NoteItem] = []  // The summary's topics, for decisions, open issues or actions listed by topic.
     var body: some View {
         // A folded section opens while the find bar's current match is in it.
         let folded = store.foldedSections.contains(title) && !items.contains { $0.id == current }
@@ -1343,7 +1345,8 @@ struct TopicGroup: Identifiable {
         }
     }
 }
-// The heading of a run of actions: the summary topic's number and name, as the summary shows them.
+// The heading of a run of decisions, open issues or actions: the summary topic's number and name, as the summary
+// shows them.
 struct TopicGroupHeading: View {
     let heading: (number: Int?, name: String)
     var compact = false
@@ -3407,10 +3410,10 @@ struct LiveMinutes: View {
                     latest: latest)
                 LiveSection(
                     title: "決定事項と理由", tone: .decisions, items: content.decisions.filter { $0.state != .cancelled },
-                    known: known, latest: latest)
+                    known: known, latest: latest, topics: content.summary.filter { $0.state != .cancelled })
                 LiveSection(
                     title: "未決事項・次の確認", tone: .unresolved, items: content.unresolved.filter { $0.state == .open },
-                    known: known, latest: latest)
+                    known: known, latest: latest, topics: content.summary.filter { $0.state != .cancelled })
                 if !content.history.isEmpty {
                     LiveSection(title: "議論の経緯", tone: .history, items: content.history, known: known, latest: latest)
                 }
@@ -3433,7 +3436,7 @@ struct LiveSection: View {
     let items: [NoteItem]
     let known: [String: Segment]
     let latest: Set<String>
-    var topics: [NoteItem] = []  // The summary's topics, for the actions listed under the topic each came from.
+    var topics: [NoteItem] = []  // The summary's topics, for decisions, open issues or actions listed by topic.
     var body: some View {
         let unassigned =
             tone == .actions ? items.filter { $0.state == .open && ($0.owner == nil || $0.due == nil) }.count : 0

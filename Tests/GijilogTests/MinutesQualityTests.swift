@@ -122,6 +122,13 @@ extension ProcessingTests {
             NoteItem(id: "x3", text: "別件を確認する", evidence: ["e"]),
             NoteItem(id: "x4", text: "SES案件の意見を聞く", evidence: ["e"], topic: "SES案件"),
         ]
+        notes.content.decisions = [
+            NoteItem(id: "d1", text: "資生堂の案件は渡辺さんを交えて決める", evidence: ["d"], topic: "資生堂の案件"),
+            NoteItem(id: "d2", text: "SES案件は要領がわかる人も入れて検討する", evidence: ["b"]),
+        ]
+        notes.content.unresolved = [
+            NoteItem(id: "u1", text: "資生堂の案件の進め方は未決", evidence: ["d"], nextStep: "渡辺さんと話す")
+        ]
         let known = Dictionary(uniqueKeysWithValues: segments.map { ($0.id, $0) })
         let groups = MinutesEngine.groupedByTopic(notes.content.actions, summary: notes.content.summary, known: known)
         try Self.check(
@@ -129,6 +136,13 @@ extension ProcessingTests {
             "a named topic, or the talk an action's evidence falls in, places it; the rest come last: \(groups)")
         let markdown = MinutesEngine.render(notes, segments: segments)
         let actions = markdown.components(separatedBy: "## アクションアイテム\n")[1].components(separatedBy: "\n## ")[0]
+        let decisions = markdown.components(separatedBy: "## 決定事項と理由\n")[1].components(separatedBy: "\n## ")[0]
+        try Self.check(
+            decisions.hasPrefix("**1. SES案件の扱い**\n- [02:00] SES案件は")
+                && decisions.contains("\n\n**2. 資生堂の案件**\n- [07:00] 資生堂の案件は"),
+            "decisions are listed under their topics too: \(decisions)")
+        let open = markdown.components(separatedBy: "## 未決事項・次の確認\n")[1].components(separatedBy: "\n## ")[0]
+        try Self.check(open.hasPrefix("**2. 資生堂の案件**\n- [07:00] 資生堂の案件の進め方は未決"), "and open issues: \(open)")
         try Self.check(
             actions.hasPrefix("**1. SES案件の扱い**\n- [ ] SES案件の候補に")
                 && actions.contains("\n\n**2. 資生堂の案件**\n- [ ] 資生堂の案件について")
