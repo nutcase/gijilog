@@ -49,6 +49,11 @@ enum LearnedWords {
     static func format(_ words: [LearnedWord]) -> String {
         words.map { $0.variants.joined(separator: "、") + " → " + $0.to }.joined(separator: "\n")
     }
+    /// The list to start from: the fixes made by hand in the meetings so far, oldest first.
+    static func seed(from meetings: [Meeting]) -> String {
+        meetings.sorted { $0.date < $1.date }.flatMap(\.corrections).filter { $0.learned != true }
+            .reduce("") { learning($1.variants, to: $1.to, in: $0) }
+    }
     /// The list with a fix added: its spellings join the right spelling's line, or start one.
     static func learning(_ variants: [String], to: String, in text: String) -> String {
         var words = parse(text)

@@ -227,6 +227,16 @@ extension ProcessingTests {
                 && LearnedWords.learning(["モリ バス", "森バス"], to: "モリバス", in: "森バス → モリバス")
                     == "森バス、モリ バス → モリバス",
             "the list reads one right spelling a line, and a fix joins its line")
+        var first = Meeting(title: "前々回")
+        first.date = Date(timeIntervalSince1970: 0)
+        first.corrections = [TermCorrection(variants: ["高山"], to: "高松")]
+        var second = Meeting(title: "前回")
+        second.corrections = [
+            TermCorrection(variants: ["IQ"], to: "AIQ"), TermCorrection(variants: ["森バス"], to: "モリバス", learned: true),
+        ]
+        try Self.check(
+            LearnedWords.seed(from: [second, first]) == "高山 → 高松\nIQ → AIQ",
+            "the fixes already made by hand start the list, oldest first, without learned ones")
 
         let (root, audio) = try fixture(seconds: 12, amplitude: 0.25)
         defer { try? FileManager.default.removeItem(at: root) }

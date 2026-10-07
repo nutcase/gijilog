@@ -493,6 +493,10 @@ import UniformTypeIdentifiers
                     try await checkpoint(id)
                 }
             }
+            // The first launch that learns misheard words starts from the fixes already made in the meetings.
+            if persistsSettings && VocabularyFile.read(in: root, name: LearnedWords.name) == nil {
+                learnedWords = LearnedWords.seed(from: meetings)
+            }
             // Only now are interrupted recordings marked and their audio found, so they get 録音.m4a on this launch.
             mixDown(meetings.filter { $0.capture != .recording && $0.hasAudio == true }.map(\.id), onlyMissing: true)
         } catch { self.error = error.localizedDescription }
