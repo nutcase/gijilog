@@ -41,20 +41,32 @@ import UniformTypeIdentifiers
     @Published var settingsTab = "一般"
     @Published var liveTab = "議事録"  // The compact window shows the minutes or the transcript.
     // Names and terms the transcription should spell this way, one per line or separated by commas.
-    @Published var vocabulary = "" {
-        didSet { if persistsSettings && !readingVocabulary { VocabularyFile.write(vocabulary, in: root) } }
+    @Published var vocabulary = "" { didSet { saveVocabulary() } }
+    // Misheard words learned from every fix ("森バス、もりばす → モリバス" a line): new speech is fixed with them, and
+    // their right spellings are transcription hints. Both lists are kept in the save location's vocabulary.json.
+    @Published var learnedWords = "" { didSet { saveVocabulary() } }
+    var learned: [LearnedWord] { LearnedWords.parse(learnedWords) }
+    private var readingVocabulary = false  // Taking the lists from their file, which need not be written back.
+    // vocabulary.json written wrong, as by hand: the lists are not saved until it is put right, so that nothing
+    // written there is lost.
+    @Published private(set) var vocabularyProblem: VocabularyFile.Unreadable?
+    private func saveVocabulary() {
+        guard persistsSettings && !readingVocabulary && vocabularyProblem == nil else { return }
+        VocabularyFile(terms: vocabulary, corrections: learnedWords).write(in: root)
     }
-    private var readingVocabulary = false  // Taking the list from its file, which need not be written back.
-    // Misheard words learned from every fix ("森バス、もりばす → モリバス" a line), kept as 聞き間違い.txt in the save
-    // location: new speech is fixed with them, and their right spellings are transcription hints.
-    @Published var learnedWords = "" {
-        didSet {
-            if persistsSettings && !readingVocabulary {
-                VocabularyFile.write(learnedWords, in: root, name: LearnedWords.name)
-            }
+    /// The lists in a save location's vocabulary.json; nil when it has none, or one written wrong, which is noted.
+    private func readVocabulary(in root: URL) -> VocabularyFile? {
+        do {
+            let file = try VocabularyFile.read(in: root)
+            vocabularyProblem = nil
+            return file
+        } catch {
+            let problem = error as? VocabularyFile.Unreadable ?? VocabularyFile.Unreadable()
+            if vocabularyProblem != problem { status = problem.message }
+            vocabularyProblem = problem
+            return nil
         }
     }
-    var learned: [LearnedWord] { LearnedWords.parse(learnedWords) }
     /// What transcription is told to spell this way for a meeting: the vocabulary list, the right spellings learned
     /// from fixes (but those undone in this meeting), and the people named as owners, without honorifics.
     func hintVocabulary(for meeting: Meeting) -> String {
@@ -206,17 +218,22 @@ import UniformTypeIdentifiers
             mcpIncludesTranscript = defaults.object(forKey: "mcpIncludesTranscript") as? Bool ?? true
             mcpHiddenTags = defaults.stringArray(forKey: "mcpHiddenTags") ?? []
             autoStopMinutes = defaults.object(forKey: "autoStopMinutes") as? Int ?? 15
-            // The list moved from the app's settings to the save location, to be shared with the meetings: what was
-            // kept in the settings joins whatever the file has, once.
-            // (Observers do not run in an initializer, so the file is written here.)
-            learnedWords = VocabularyFile.read(in: root, name: LearnedWords.name) ?? ""
-            let file = VocabularyFile.read(in: root) ?? ""
-            if let kept = defaults.string(forKey: "vocabulary") {
-                vocabulary = VocabularyFile.merged(file, kept)
-                if VocabularyFile.write(vocabulary, in: root) { defaults.removeObject(forKey: "vocabulary") }
+            // The lists are read from the save location without writing them back (the observers of these published
+            // properties do run here, and an empty list read before its file exists would create it empty).
+            readingVocabulary = true
+            VocabularyFile.adoptOldFiles(in: root)
+            let file = readVocabulary(in: root) ?? VocabularyFile()
+            learnedWords = LearnedWords.format(file.corrections)
+            // The vocabulary moved from the app's settings to the save location, to be shared with the meetings:
+            // what was kept in the settings joins whatever the file has, once.
+            if let kept = defaults.string(forKey: "vocabulary"), vocabularyProblem == nil {
+                let joined = file.merging(terms: kept, corrections: "")
+                vocabulary = joined.terms.joined(separator: "\n")
+                if joined.write(in: root) { defaults.removeObject(forKey: "vocabulary") }
             } else {
-                vocabulary = file
+                vocabulary = file.terms.joined(separator: "\n")
             }
+            readingVocabulary = false
             foldedSections = Set(defaults.stringArray(forKey: "foldedSections") ?? [])
             key = KeyStore.read()
             let savedModel = defaults.string(forKey: "summaryModel")
@@ -378,9 +395,16 @@ import UniformTypeIdentifiers
             root = newRoot
             // The list goes along, joined with one the new location may already have.
             if persistsSettings {
-                vocabulary = VocabularyFile.merged(VocabularyFile.read(in: newRoot) ?? "", vocabulary)
-                let there = LearnedWords.parse(VocabularyFile.read(in: newRoot, name: LearnedWords.name) ?? "")
-                learnedWords = there.reduce(learnedWords) { LearnedWords.learning($1.variants, to: $1.to, in: $0) }
+                VocabularyFile.adoptOldFiles(in: newRoot)
+                let there = readVocabulary(in: newRoot)
+                if vocabularyProblem == nil {
+                    let joined = (there ?? VocabularyFile()).merging(terms: vocabulary, corrections: learnedWords)
+                    readingVocabulary = true
+                    vocabulary = joined.terms.joined(separator: "\n")
+                    learnedWords = LearnedWords.format(joined.corrections)
+                    readingVocabulary = false
+                    joined.write(in: newRoot)
+                }
             }
             if persistsSettings { UserDefaults.standard.set(newRoot.path, forKey: "storageFolder") }
             await recover()
@@ -493,9 +517,12 @@ import UniformTypeIdentifiers
                     try await checkpoint(id)
                 }
             }
-            // The first launch that learns misheard words starts from the fixes already made in the meetings.
-            if persistsSettings && VocabularyFile.read(in: root, name: LearnedWords.name) == nil {
-                learnedWords = LearnedWords.seed(from: meetings)
+            // The first launch that learns misheard words takes in the fixes already made in the meetings, joined with
+            // whatever the list has (another Mac may have started it).
+            if persistsSettings && vocabularyProblem == nil && !UserDefaults.standard.bool(forKey: "learnedWordsSeeded")
+            {
+                learnedWords = LearnedWords.merged(learnedWords, LearnedWords.seed(from: meetings))
+                UserDefaults.standard.set(true, forKey: "learnedWordsSeeded")
             }
             // Only now are interrupted recordings marked and their audio found, so they get 録音.m4a on this launch.
             mixDown(meetings.filter { $0.capture != .recording && $0.hasAudio == true }.map(\.id), onlyMissing: true)
@@ -532,15 +559,15 @@ import UniformTypeIdentifiers
         }
         if reloaded > 0 { status = reloaded == 1 ? "ほかで更新された会議を読み込み直しました" : "ほかで更新された会議を\(reloaded)件読み込み直しました" }
     }
-    /// Takes the vocabulary list from the save location when it changed there, as when another Mac edited it.
+    /// Takes the lists from the save location when they changed there, as when another Mac or a hand edited them.
+    /// Lists that read the same are kept as typed.
     func readVocabularyFile() {
-        guard persistsSettings else { return }
+        guard persistsSettings, let file = readVocabulary(in: root) else { return }
         readingVocabulary = true
         defer { readingVocabulary = false }
-        if let text = VocabularyFile.read(in: root), text != vocabulary { vocabulary = text }
-        if let text = VocabularyFile.read(in: root, name: LearnedWords.name), text != learnedWords {
-            learnedWords = text
-        }
+        let here = VocabularyFile(terms: vocabulary, corrections: learnedWords)
+        if file.terms != here.terms { vocabulary = file.terms.joined(separator: "\n") }
+        if file.corrections != here.corrections { learnedWords = LearnedWords.format(file.corrections) }
     }
     /// Lists meeting folders that appeared in the save location while the app runs, such as ones synced from another
     /// Mac or restored from a backup, without a restart. They are shown as they are: nothing is processed for them

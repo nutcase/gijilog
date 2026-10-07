@@ -143,11 +143,85 @@ extension ProcessingTests {
             VocabularyFile.merged("ギジログ\nモリバス", "モリバス、OKR\n高松") == "ギジログ\nモリバス\nOKR\n高松"
                 && VocabularyFile.merged("", "OKR") == "OKR" && VocabularyFile.merged("A, B", "") == "A, B",
             "two lists become one without repeats, and one alone is kept as typed")
+        let none = try VocabularyFile.read(in: watched)
+        let written = VocabularyFile(terms: "ギジログ\n高松", corrections: "").write(in: watched)
+        let read = try VocabularyFile.read(in: watched)
         try Self.check(
-            VocabularyFile.read(in: watched) == nil && VocabularyFile.write("ギジログ\n高松", in: watched)
-                && VocabularyFile.read(in: watched) == "ギジログ\n高松"
-                && FileManager.default.fileExists(atPath: watched.appendingPathComponent("語句リスト.txt").path),
-            "the list is saved as 語句リスト.txt in the save location")
+            none == nil && written && read?.terms == ["ギジログ", "高松"]
+                && FileManager.default.fileExists(atPath: watched.appendingPathComponent("vocabulary.json").path),
+            "the lists are saved as vocabulary.json in the save location")
+    }
+    // Both lists are kept as one JSON file, a term or a correction a line, to read and edit by hand. It is read
+    // leniently, a file written wrong is left as it is, and the text files kept before join it.
+    func testVocabularyIsKeptAsJSON() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let lists = VocabularyFile(
+            terms: "ギジログ\nモリバス、OKR\nギジログ", corrections: "森バス、もりばす → モリバス\nIQ → AIQ\n森 バス → モリバス")
+        try Self.check(
+            lists.json == """
+                {
+                  "terms": [
+                    "ギジログ",
+                    "モリバス",
+                    "OKR"
+                  ],
+                  "corrections": [
+                    { "heard": ["森バス", "もりばす", "森 バス"], "correct": "モリバス" },
+                    { "heard": ["IQ"], "correct": "AIQ" }
+                  ]
+                }
+                """ + "\n" && VocabularyFile().json == "{\n  \"terms\": [],\n  \"corrections\": []\n}\n",
+            "the file has a term or a correction a line, without repeats")
+        let reread = try VocabularyFile(json: Data(lists.json.utf8))
+        try Self.check(reread == lists, "the file reads back as written")
+        let typed = #"{"corrections": [{"heard": " 高山 ", "correct": "高松"}, {"heard": ["高松"], "correct": "高松"}]}"#
+        let lenient = try VocabularyFile(json: Data(typed.utf8))
+        let empty = try VocabularyFile(json: Data(" \n".utf8))
+        try Self.check(
+            lenient == VocabularyFile(corrections: [LearnedWord(variants: ["高山"], to: "高松")])
+                && empty == VocabularyFile(),
+            "a list may be left out, one spelling heard needs no brackets, and an empty file has empty lists")
+        let broken = "{\n  \"terms\": [\n    \"ギジログ\"\n    \"OKR\"\n  ]\n}\n"
+        var problem: VocabularyFile.Unreadable?
+        do { _ = try VocabularyFile(json: Data(broken.utf8)) } catch { problem = error as? VocabularyFile.Unreadable }
+        try Self.check(
+            problem?.line == 4, "a file written wrong is not read, and says the line: \(String(describing: problem))")
+
+        // Writing the same lists again leaves the file alone, not to stir the sync.
+        let file = root.appendingPathComponent("vocabulary.json")
+        let past = Date(timeIntervalSince1970: 1_000_000_000)
+        try Self.check(lists.write(in: root), "the lists are written")
+        try FileManager.default.setAttributes([.modificationDate: past], ofItemAtPath: file.path)
+        lists.write(in: root)
+        let modified = try FileManager.default.attributesOfItem(atPath: file.path)[.modificationDate] as? Date
+        try Self.check(
+            modified == past,
+            "the same lists are not written again")
+
+        // The text files kept before join the file and go.
+        let oldTerms = root.appendingPathComponent("語句リスト.txt")
+        let oldCorrections = root.appendingPathComponent("聞き間違い.txt")
+        try Data("高松\nOKR".utf8).write(to: oldTerms)
+        try Data("高山 → 高松\nもりばす → モリバス".utf8).write(to: oldCorrections)
+        VocabularyFile.adoptOldFiles(in: root)
+        let adopted = try VocabularyFile.read(in: root)
+        try Self.check(
+            adopted?.terms == ["ギジログ", "モリバス", "OKR", "高松"]
+                && adopted?.corrections == [
+                    LearnedWord(variants: ["森バス", "もりばす", "森 バス"], to: "モリバス"),
+                    LearnedWord(variants: ["IQ"], to: "AIQ"), LearnedWord(variants: ["高山"], to: "高松"),
+                ]
+                && !FileManager.default.fileExists(atPath: oldTerms.path)
+                && !FileManager.default.fileExists(atPath: oldCorrections.path),
+            "the old text files join vocabulary.json and are removed: \(String(describing: adopted))")
+        try Data(broken.utf8).write(to: file)
+        try Data("高松".utf8).write(to: oldTerms)
+        VocabularyFile.adoptOldFiles(in: root)
+        let left = try String(contentsOf: file, encoding: .utf8)
+        try Self.check(
+            left == broken && FileManager.default.fileExists(atPath: oldTerms.path),
+            "a file written wrong is left as it is, and the old ones with it")
     }
     // A listed meeting changed in the save location by another Mac is read again; changes made here and not yet saved
     // win, and this app's own saves are not taken for changes.

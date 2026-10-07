@@ -32,10 +32,13 @@ struct LearnedWord: Equatable, Sendable {
     var variants: [String]
     var to: String
 }
-/// The misheard words learned from every fix, kept in the save location as 聞き間違い.txt next to the vocabulary list,
-/// one right spelling a line: "森バス、もりばす → モリバス". Shared like the meetings, and editable by hand.
+/// The misheard words learned from every fix, as the settings show them: one right spelling a line, after the
+/// spellings heard, "森バス、もりばす → モリバス". Kept in the save location's vocabulary.json, shared like the meetings.
 enum LearnedWords {
-    static let name = "聞き間違い.txt"
+    /// One list with another's words joined in.
+    static func merged(_ list: String, _ other: String) -> String {
+        parse(other).reduce(list) { learning($1.variants, to: $1.to, in: $0) }
+    }
     static func parse(_ text: String) -> [LearnedWord] {
         text.components(separatedBy: .newlines).compactMap { line in
             let sides = line.components(separatedBy: "→")

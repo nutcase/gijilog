@@ -768,19 +768,117 @@ enum DueDate {
         return calendar.date(from: components)
     }
 }
-/// The vocabulary list, kept in the save location as 語句リスト.txt next to the meeting folders, so that it travels
-/// with them: synced with iCloud Drive or the like, every Mac using that location shares it.
-enum VocabularyFile {
-    static let name = "語句リスト.txt"
-    static func read(in root: URL, name: String = name) -> String? {
-        try? String(contentsOf: root.appendingPathComponent(name), encoding: .utf8)
+/// The team's words, kept in the save location as vocabulary.json next to the meeting folders, so that they travel
+/// with them: synced with iCloud Drive or the like, every Mac using that location shares them. "terms" are the names
+/// and words transcription should spell this way, and "corrections" the misheard words learned from fixes, each with
+/// the spellings heard and the right one. The file can be edited by hand; one written wrong is left as it is.
+struct VocabularyFile: Equatable {
+    var terms: [String] = []
+    var corrections: [LearnedWord] = []
+    static let name = "vocabulary.json"
+    // Before, the lists were text files: a term, or a line like "森バス、もりばす → モリバス", a line.
+    static let oldNames = (terms: "語句リスト.txt", corrections: "聞き間違い.txt")
+    /// A file that is not JSON as this app reads it, with the line where reading stopped when JSON tells it.
+    struct Unreadable: Error, Equatable {
+        var line: Int?
+        var message: String {
+            "保存先の \(VocabularyFile.name) の書き方に誤りがあり、読み込めません"
+                + (line.map { "（\($0)行目あたり）" } ?? "") + "。直すまで、用語集と覚えた聞き間違いの変更は保存しません。"
+        }
     }
-    @discardableResult static func write(_ text: String, in root: URL, name: String = name) -> Bool {
+    init(terms: [String] = [], corrections: [LearnedWord] = []) {
+        self.init(
+            terms: terms.joined(separator: "\n"), corrections: LearnedWords.format(corrections))
+    }
+    /// The lists as they are typed in the settings, without blanks or repeats.
+    init(terms: String, corrections: String) {
+        self.terms = TranscriptionHints.terms(terms)
+        self.corrections = LearnedWords.parse(LearnedWords.merged("", corrections))
+    }
+    init(json: Data) throws {
+        guard !String(decoding: json, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            self.init()
+            return
+        }
+        do {
+            let document = try JSONDecoder().decode(Document.self, from: json)
+            self.init(
+                terms: document.terms ?? [],
+                corrections: (document.corrections ?? []).map { LearnedWord(variants: $0.heard, to: $0.correct) })
+        } catch {
+            let description = String(describing: error)
+            let line = description.range(of: "line [0-9]+", options: .regularExpression).flatMap {
+                Int(description[$0].dropFirst(5))
+            }
+            throw Unreadable(line: line)
+        }
+    }
+    private struct Document: Decodable {
+        var terms: [String]?
+        var corrections: [Correction]?
+        struct Correction: Decodable {
+            var heard: [String]
+            var correct: String
+            enum CodingKeys: CodingKey { case heard, correct }
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                correct = try container.decode(String.self, forKey: .correct)
+                // One spelling heard may be written without the brackets.
+                if let heard = try? container.decode([String].self, forKey: .heard) {
+                    self.heard = heard
+                } else {
+                    heard = [try container.decode(String.self, forKey: .heard)]
+                }
+            }
+        }
+    }
+    /// The file's text: a term a line, and a correction a line, to read and edit by hand.
+    var json: String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .withoutEscapingSlashes
+        func quoted(_ text: String) -> String { String(decoding: (try? encoder.encode(text)) ?? Data(), as: UTF8.self) }
+        func list(_ lines: [String]) -> String {
+            lines.isEmpty ? "[]" : "[\n" + lines.map { "    " + $0 }.joined(separator: ",\n") + "\n  ]"
+        }
+        let corrections = corrections.map {
+            "{ \"heard\": [" + $0.variants.map(quoted).joined(separator: ", ") + "], \"correct\": " + quoted($0.to)
+                + " }"
+        }
+        return "{\n  \"terms\": " + list(terms.map(quoted)) + ",\n  \"corrections\": " + list(corrections) + "\n}\n"
+    }
+    /// The lists with others joined in, without repeats.
+    func merging(terms: String, corrections: String) -> VocabularyFile {
+        VocabularyFile(
+            terms: Self.merged(self.terms.joined(separator: "\n"), terms),
+            corrections: LearnedWords.merged(LearnedWords.format(self.corrections), corrections))
+    }
+    /// The lists in a save location: nil when it has no file, and an error when the file is written wrong.
+    static func read(in root: URL) throws -> VocabularyFile? {
+        guard let data = try? Data(contentsOf: root.appendingPathComponent(name)) else { return nil }
+        return try VocabularyFile(json: data)
+    }
+    @discardableResult func write(in root: URL) -> Bool {
+        let file = root.appendingPathComponent(Self.name)
+        let data = Data(json.utf8)
+        // Writing the same again would only stir the sync and the folder's watchers.
+        if (try? Data(contentsOf: file)) == data { return true }
         do {
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-            try Data(text.utf8).write(to: root.appendingPathComponent(name), options: .atomic)
+            try data.write(to: file, options: .atomic)
             return true
         } catch { return false }
+    }
+    /// The lists kept as text files before join the file, which takes their place. A file written wrong is left until
+    /// it is put right, and the text files with it.
+    static func adoptOldFiles(in root: URL) {
+        let files = [oldNames.terms, oldNames.corrections].map { root.appendingPathComponent($0) }
+        let texts = files.map { try? String(contentsOf: $0, encoding: .utf8) }
+        guard texts.contains(where: { $0 != nil }) else { return }
+        let current: VocabularyFile?
+        do { current = try read(in: root) } catch { return }
+        guard (current ?? VocabularyFile()).merging(terms: texts[0] ?? "", corrections: texts[1] ?? "").write(in: root)
+        else { return }
+        for (file, text) in zip(files, texts) where text != nil { try? FileManager.default.removeItem(at: file) }
     }
     /// Lists from two places as one, a term each per line, without repeats: the list kept in the app's settings
     /// before it moved here, or the one already in a save location another Mac set up.

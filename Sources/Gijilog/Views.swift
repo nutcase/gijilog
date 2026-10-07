@@ -2802,6 +2802,13 @@ struct TranscriptionSettings: View {
     @EnvironmentObject var store: Store
     var body: some View {
         Form {
+            if let problem = store.vocabularyProblem {
+                Section {
+                    Label(problem.message, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             Section {
                 TextEditor(text: $store.vocabulary)
                     .font(.body)
@@ -2817,7 +2824,7 @@ struct TranscriptionSettings: View {
                 Text("用語集")
             } footer: {
                 Text(
-                    "会議によく出る人名・社名・製品名・略語を、1行に1つ（または読点で区切って）入力してください。文字起こしでこの表記が使われやすくなります。会議名とアジェンダの議題、直前の発言も、文字起こしのヒントとして一緒に送ります。用語集は保存先の「語句リスト.txt」に保存するので、保存先を iCloud Drive などで同期していれば、ほかの Mac とも共有されます。"
+                    "会議によく出る人名・社名・製品名・略語を、1行に1つ（または読点で区切って）入力してください。文字起こしでこの表記が使われやすくなります。会議名とアジェンダの議題、直前の発言も、文字起こしのヒントとして一緒に送ります。用語集は、覚えた聞き間違いと一緒に保存先の「vocabulary.json」に保存するので、保存先を iCloud Drive などで同期していれば、ほかの Mac とも共有されます。"
                 )
                 .fixedSize(horizontal: false, vertical: true)
             }
@@ -2836,7 +2843,7 @@ struct TranscriptionSettings: View {
                 Text("覚えた聞き間違い")
             } footer: {
                 Text(
-                    "語句を直すと「森バス、もりばす → モリバス」のように覚え、これからの会議では同じ聞き間違いを自動で直し、正しい語を文字起こしのヒントにも使います。会議の「語句をまとめて直す…」で、その会議の自動の直しだけを取り消せます。ここで行を消すと、覚えるのをやめます。保存先の「聞き間違い.txt」に保存します。担当者になった人の名前も、文字起こしのヒントに使います。"
+                    "語句を直すと「森バス、もりばす → モリバス」のように覚え、これからの会議では同じ聞き間違いを自動で直し、正しい語を文字起こしのヒントにも使います。会議の「語句をまとめて直す…」で、その会議の自動の直しだけを取り消せます。ここで行を消すと、覚えるのをやめます。担当者になった人の名前も、文字起こしのヒントに使います。"
                 )
                 .fixedSize(horizontal: false, vertical: true)
             }
