@@ -63,6 +63,29 @@ struct NoteItem: Codable, Identifiable, Sendable, Equatable {
     var opinions: [String]?
     var topic: String?  // The summary topic of a decision, open issue or action, by its name ("話題" of "話題：概要").
 }
+extension NoteItem {
+    /// An action's owners: owner holds one name, or several separated by "、".
+    var owners: [String] {
+        get { Self.names(owner) }
+        set { owner = newValue.isEmpty ? nil : newValue.joined(separator: "、") }
+    }
+    /// The owners with a name added, or taken off when it is there already (with or without さん).
+    static func toggling(_ name: String, in owner: String?) -> String? {
+        var names = names(owner)
+        if let i = names.firstIndex(where: { Store.personKey($0) == Store.personKey(name) }) {
+            names.remove(at: i)
+        } else {
+            names.append(name)
+        }
+        return names.isEmpty ? nil : names.joined(separator: "、")
+    }
+    static func names(_ owner: String?) -> [String] {
+        var seen = Set<String>()
+        return (owner ?? "").components(separatedBy: CharacterSet(charactersIn: "、,，"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+}
 struct NotesDelta: Codable, Sendable {
     var summary: [NoteItem] = []
     var decisions: [NoteItem] = []

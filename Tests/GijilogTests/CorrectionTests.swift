@@ -212,6 +212,25 @@ extension ProcessingTests {
             store.knownOwners == ["佐藤さん", "田中", "鈴木"],
             "everyone named as an owner is listed once as last written, most often first, then most recent: \(store.knownOwners)"
         )
+        var shared = NoteItem(id: "x9", text: "見積もりを作る", evidence: [])
+        shared.owners = ["塚原さん", "小堀さん"]
+        try Self.check(
+            shared.owner == "塚原さん、小堀さん" && NoteItem.names("塚原さん, 小堀さん、塚原さん") == ["塚原さん", "小堀さん"]
+                && NoteItem.toggling("小堀", in: shared.owner) == "塚原さん"
+                && NoteItem.toggling("市川さん", in: shared.owner) == "塚原さん、小堀さん、市川さん"
+                && NoteItem.toggling("塚原さん", in: "塚原さん") == nil,
+            "an action can have several owners, each added or taken off on its own")
+        let said = ["s": Segment(id: "s", time: 0, source: "マイク", text: "見積もりは塚原さんと小堀さんでお願いします")]
+        let checked = MinutesEngine.grounded(
+            NoteItem(id: "", text: "見積もりを作る", owner: "塚原さん、小堀さん、誰か、鈴木さん", evidence: ["s"]), known: said)
+        try Self.check(
+            checked.owner == "塚原さん、小堀さん", "each owner the speech names stays; an invented or vague one goes")
+        store.meetings[0].notes?.content.actions.append(shared)
+        try Self.check(
+            store.knownOwners.contains("塚原さん") && store.knownOwners.contains("小堀さん")
+                && !store.knownOwners.contains("塚原さん、小堀さん"),
+            "several owners are listed as separate people")
+        store.meetings[0].notes?.content.actions.removeLast()
         store.updateNoteItem(newer.id, part: .actions, id: "x0", offersCorrection: false) { $0.owner = "鈴木" }
         try Self.check(
             store.meetings[1].notes?.content.actions[0].owner == "鈴木" && store.correctionOffer == nil,

@@ -138,7 +138,7 @@ enum MinutesEngine {
         同じ論点・作業の変更は既存idを更新する。changeSummaryに「旧方針→新方針」と変更理由を簡潔に残す。
         取り下げた決定や不要になった作業は既存idをcancelledにする。解決した未決事項はdoneにし、必要ならdecisionsへ追加する。
         重複項目は根拠を一つへまとめ、他方をcancelledにしてchangeSummaryに統合先を記す。最新の結論と撤回案を両方有効にしない。
-        actionsは具体的な作業を一項目一作業で。ownerとdueは根拠発言の表記をそのまま使う。曖昧な「私」「誰か」は担当者にしない。
+        actionsは具体的な作業を一項目一作業で。ownerとdueは根拠発言の表記をそのまま使う。曖昧な「私」「誰か」は担当者にしない。担当者が複数ならownerに全員を「、」で区切って書く。
         \(actionRules)
         既知の担当・期限はその根拠も引き継ぐ。根拠がない場合はnull。話者名・今日の日付から人名や期日を推測しない。
         各項目はid,text,owner,due,evidence,state,reason,nextStep,changeSummary,points,opinions,topic。補足欄は根拠がない場合null。
@@ -161,7 +161,7 @@ enum MinutesEngine {
         summaryは話題ごとに1項目、話された順に最大8項目。agendaがあれば議題名を話題に使う。\(summaryRules)
         decisionsは会議で合意・決定した内容だけ。提案・希望・検討中の案は入れない。reasonに発言で説明された理由・制約を書く。
         途中で変わった方針は最終的な結論だけを書き、変わったことが大事ならreasonで触れる。撤回された案は書かない。
-        actionsは誰かがやると決まった具体的な作業を一項目一作業で。ownerとdueは根拠発言の表記をそのまま使い、なければnull。曖昧な「私」「誰か」は担当者にしない。
+        actionsは誰かがやると決まった具体的な作業を一項目一作業で。ownerとdueは根拠発言の表記をそのまま使い、なければnull。曖昧な「私」「誰か」は担当者にしない。担当者が複数ならownerに全員を「、」で区切って書く。
         \(actionRules)
         unresolvedは結論が出ずに持ち越した論点。nextStepに決めるために必要と話された確認・情報を書く。
         evidenceはtranscriptのidsから、その項目の内容と理由の根拠になる発言を全て選ぶ。根拠のない決定・担当者・期限・理由を書かない。話者名や今日の日付から人名や期日を推測しない。
@@ -349,9 +349,9 @@ enum MinutesEngine {
             else { return nil }
             return value
         }
-        item.owner = field(item.owner)
-        if let owner = item.owner, ["私", "自分", "こちら", "誰か", "担当者", "未定", "不明"].contains(owner) {
-            item.owner = nil
+        // Several owners are checked one by one: each name the evidence says stays.
+        item.owners = NoteItem.names(item.owner).filter { name in
+            field(name) != nil && !["私", "自分", "こちら", "誰か", "担当者", "未定", "不明"].contains(name)
         }
         item.due = field(item.due)
         return item

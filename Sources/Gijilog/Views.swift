@@ -1567,7 +1567,15 @@ struct EditableNoteRow: View {
                         let people = store.knownOwners
                         if !people.isEmpty {
                             Menu {
-                                ForEach(people.prefix(30), id: \.self) { name in Button(name) { draft.owner = name } }
+                                // Each name is ticked on or off, so an action can have several owners.
+                                ForEach(people.prefix(30), id: \.self) { name in
+                                    Toggle(
+                                        name,
+                                        isOn: Binding(
+                                            get: { NoteItem.names(draft.owner).contains(name) },
+                                            set: { _ in draft.owner = NoteItem.toggling(name, in: draft.owner) ?? ""
+                                            }))
+                                }
                             } label: {
                                 Image(systemName: "person.crop.circle")
                             }
@@ -1956,13 +1964,16 @@ struct NoteRow: View {
                                 .help("根拠の発言を文字起こしで直したか削除しました。今も合っているか確かめてください")
                         }
                         if action {
-                            Tag(label: "担当", symbol: "person.fill", value: item.owner, open: !closed)
-                                .editing(setOwner.map { _ in { people.on = true } }, help: "クリックして担当者を選ぶ")
-                                .popover(isPresented: $people.on, arrowEdge: .bottom) {
-                                    if let setOwner {
-                                        OwnerPicker(current: item.owner, set: setOwner, close: { people.on = false })
-                                    }
+                            Tag(
+                                label: "担当", symbol: "person.fill",
+                                value: item.owners.isEmpty ? nil : item.owners.joined(separator: "・"), open: !closed
+                            )
+                            .editing(setOwner.map { _ in { people.on = true } }, help: "クリックして担当者を選ぶ")
+                            .popover(isPresented: $people.on, arrowEdge: .bottom) {
+                                if let setOwner {
+                                    OwnerPicker(current: item.owner, set: setOwner, close: { people.on = false })
                                 }
+                            }
                             Tag(label: "期限", symbol: "calendar", value: item.due, open: !closed)
                                 .editing(due.map { _ in { calendar.on = true } }, help: "クリックして期限の日付を選ぶ")
                                 .popover(isPresented: $calendar.on, arrowEdge: .bottom) {
@@ -2134,6 +2145,8 @@ struct NoteDetail: View {
     @Published var on = false
 }
 // An action's owner: everyone named as an owner before, to pick with one click, or a new name typed in.
+// An action's owners: everyone named as an owner before, each ticked on or off with one click, or a new name typed
+// in. An action can have several owners.
 struct OwnerPicker: View {
     @EnvironmentObject var store: Store
     @StateObject private var draft = TextDraft()
@@ -2143,34 +2156,43 @@ struct OwnerPicker: View {
     let close: () -> Void
     var body: some View {
         let typed = draft.text.trimmingCharacters(in: .whitespaces)
+        let chosen = Set(NoteItem.names(current).map(Store.personKey))
         let people = store.knownOwners.filter { typed.isEmpty || $0.localizedStandardContains(typed) }
         VStack(alignment: .leading, spacing: 10) {
             TextField("名前を入力して Enter", text: $draft.text)
                 .textFieldStyle(.roundedBorder)
                 .focused($focused)
                 .onSubmit {
-                    if !typed.isEmpty { set(typed) }
-                    close()
+                    guard !typed.isEmpty else { return close() }
+                    if !chosen.contains(Store.personKey(typed)) { set(NoteItem.toggling(typed, in: current)) }
+                    draft.text = ""
                 }
             if !people.isEmpty {
-                Text(typed.isEmpty ? "これまでの担当者" : "一致する担当者").font(.caption).foregroundStyle(.secondary)
+                Text(typed.isEmpty ? "これまでの担当者（押すと加わり、もう一度押すと外れます）" : "一致する担当者")
+                    .font(.caption).foregroundStyle(.secondary)
                 FlowLayout(spacing: 6) {
                     ForEach(people.prefix(24), id: \.self) { name in
-                        Button(name) {
-                            set(name)
-                            close()
+                        Button {
+                            set(NoteItem.toggling(name, in: current))
+                        } label: {
+                            Label(name, systemImage: "checkmark").labelStyle(
+                                ChosenLabelStyle(chosen: chosen.contains(Store.personKey(name))))
                         }
-                        .buttonStyle(PersonChipStyle(chosen: current.map(Store.personKey) == Store.personKey(name)))
+                        .buttonStyle(PersonChipStyle(chosen: chosen.contains(Store.personKey(name))))
                     }
                 }
             }
-            if current != nil {
-                Button("未定にする") {
-                    set(nil)
-                    close()
+            HStack {
+                if current != nil {
+                    Button("未定にする") {
+                        set(nil)
+                        close()
+                    }
                 }
-                .controlSize(.small)
+                Spacer()
+                Button("閉じる", action: close)
             }
+            .controlSize(.small)
         }
         .padding(14)
         .frame(width: 300, alignment: .leading)
@@ -2179,6 +2201,16 @@ struct OwnerPicker: View {
         // both the color scheme and the ink passed down from the sheet are set back.
         .foregroundStyle(Color.primary)
         .environment(\.colorScheme, .dark)
+    }
+}
+// A chip's name, with a check in front once the person is chosen.
+struct ChosenLabelStyle: LabelStyle {
+    let chosen: Bool
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 4) {
+            if chosen { configuration.icon.font(.system(size: 10, weight: .bold)) }
+            configuration.title
+        }
     }
 }
 struct PersonChipStyle: ButtonStyle {

@@ -1215,7 +1215,7 @@ extension Store {
         var counts: [String: (name: String, count: Int)] = [:]
         var order: [String] = []
         for meeting in meetings.sorted(by: { $0.date > $1.date }) {
-            for owner in meeting.notes?.content.actions.filter({ $0.state != .cancelled }).compactMap(\.owner) ?? [] {
+            for owner in meeting.notes?.content.actions.filter({ $0.state != .cancelled }).flatMap(\.owners) ?? [] {
                 let name = owner.trimmingCharacters(in: .whitespacesAndNewlines)
                 let key = Self.personKey(name)
                 guard !key.isEmpty else { continue }
