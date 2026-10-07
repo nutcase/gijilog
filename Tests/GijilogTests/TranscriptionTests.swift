@@ -73,8 +73,19 @@ extension ProcessingTests {
         let prompt = hints.prompt
         try Self.check(
             prompt.contains("会議名: 週次定例") && prompt.contains("議題: リリース範囲、問い合わせ対応")
-                && prompt.contains("用語: ギジログ、OpenAI、MCP") && prompt.contains("直前の発言: A案にしましょう。"),
-            "the prompt carries the meeting's own spelling and the speech just before:\n\(prompt)")
+                && !prompt.contains("ギジログ") && prompt.contains("直前の発言: A案にしましょう。")
+                && hints.keywords == ["ギジログ", "OpenAI", "MCP"],
+            "the prompt carries the meeting's own names and the speech just before, the terms are keywords:\n\(prompt)")
+        let read = TranscriptionHints(
+            terms: ["AIQ（アイキュー）", "Moribus(モリバス)", "<b>太字</b>", "（注）", String(repeating: "長", count: 41)])
+        try Self.check(
+            read.keywords == ["AIQ", "Moribus", "b太字/b", "（注）"]
+                && read.prompt.contains("読み方: AIQ（アイキュー）、Moribus(モリバス)") && read.prompt.contains("固有名詞"),
+            "a term's reading goes in the prompt, and a keyword has no angle brackets and is no sentence: \(read.keywords)"
+        )
+        try Self.check(
+            TranscriptionHints(terms: (1...150).map { "語\($0)" }).keywords.count == TranscriptionHints.keywordCount,
+            "a long list keeps its first terms")
         var untitled = Meeting(title: "会議 2026/10/05 13:00")
         untitled.segments = [Segment(id: "a", time: 0, source: "マイク", text: String(repeating: "あ", count: 500))]
         let plain = TranscriptionHints(meeting: untitled, before: 60, vocabulary: "")
@@ -83,7 +94,7 @@ extension ProcessingTests {
                 && plain.preceding.count == TranscriptionHints.precedingLength,
             "an automatic title is no hint, and the preceding speech is bounded")
         try Self.check(
-            hints.removingEcho(from: "用語: ギジログ、OpenAI、MCP").isEmpty
+            hints.removingEcho(from: "会議名: 週次定例").isEmpty
                 && hints.removingEcho(from: "ギジログ、OpenAI、MCP").isEmpty,
             "text that only repeats the prompt is dropped")
         try Self.check(
@@ -110,10 +121,13 @@ extension ProcessingTests {
         let hints = TranscriptionHints(terms: ["ギジログ"], preceding: "前の発言です。")
         let segments = try await Processor.recognizeChunk(url, offset: 0, source: "マイク", key: "TEST", hints: hints)
         let body = MockCloudProtocol.lastBody
+        func field(_ name: String, _ value: String) -> Bool {
+            body.contains("name=\"\(name)\"\r\n\r\n\(value)\r\n")
+        }
         try Self.check(
-            segments.map(\.text) == ["確認します"] && body.contains("name=\"prompt\"")
-                && body.contains("用語: ギジログ") && body.contains("直前の発言: 前の発言です。")
-                && body.contains("gpt-4o-transcribe"),
-            "the transcription request sends the hints as its prompt")
+            segments.map(\.text) == ["確認します"] && field("model", "gpt-transcribe") && field("languages[]", "ja")
+                && !body.contains("name=\"language\"") && field("keywords[]", "ギジログ")
+                && body.contains("name=\"prompt\"") && body.contains("直前の発言: 前の発言です。"),
+            "the transcription request asks gpt-transcribe for Japanese, with the terms as keywords:\n\(body)")
     }
 }

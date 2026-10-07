@@ -115,7 +115,8 @@ enum Processor {
             else { continue }
             try file.read(into: buffer)
             guard voicedSeconds(buffer) >= minimumVoice else { continue }
-            let text = hints.removingEcho(from: try await cloudTranscribe(wav, key: key, prompt: hints.prompt))
+            let text = hints.removingEcho(
+                from: try await cloudTranscribe(wav, key: key, prompt: hints.prompt, keywords: hints.keywords))
             // Japanese is requested, so text without any Japanese is the model inventing speech for noise
             // ("Hallo zusammen.", "grazie mille."), or naming none: a lone "OK" is lost with it.
             if containsJapanese(text) {
@@ -243,12 +244,18 @@ enum Processor {
         formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
         return formatter.date(from: value).map { max(0, $0.timeIntervalSinceNow) }
     }
-    static func cloudTranscribe(_ url: URL, key: String, prompt: String? = nil) async throws -> String {
+    // gpt-transcribe takes the meeting as free text in "prompt" and the words to listen for as "keywords"; its
+    // "languages" replaces "language", which must not be sent with it.
+    static let transcriptionModel = "gpt-transcribe"
+    static func cloudTranscribe(_ url: URL, key: String, prompt: String? = nil, keywords: [String] = []) async throws
+        -> String
+    {
         let boundary = UUID().uuidString
         var body = Data()
         func append(_ text: String) { body.append(Data(text.utf8)) }
-        var fields = [("model", "gpt-4o-transcribe"), ("language", "ja")]
+        var fields = [("model", transcriptionModel), ("languages[]", "ja")]
         if let prompt, !prompt.isEmpty { fields.append(("prompt", prompt)) }
+        fields += keywords.map { ("keywords[]", $0) }
         for (name, value) in fields {
             append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n")
         }
@@ -275,9 +282,9 @@ struct CloudFailure: LocalizedError {
         "クラウドAPIエラー (\(code))\(message.map { ": " + $0 } ?? "")。APIキー・利用上限・モデル設定を確認してください。"
     }
 }
-// What the transcription model is told besides the audio: how this meeting spells its names and terms, and the
-// words just before the chunk, so a sentence carries on across chunks. The prompt is not speech, so text that only
-// repeats it is removed from the result.
+// What the transcription model is told besides the audio: the words to listen for, how this meeting names itself and
+// its topics, and the words just before the chunk, so a sentence carries on across chunks. The hints are not speech,
+// so text that only repeats them is removed from the result.
 struct TranscriptionHints: Sendable, Equatable {
     var title = ""
     var agenda: [String] = []
@@ -308,6 +315,33 @@ struct TranscriptionHints: Sendable, Equatable {
     static func tail(_ text: String) -> String {
         String(text.trimmingCharacters(in: .whitespacesAndNewlines).suffix(precedingLength))
     }
+    // The API documents no limit on the keywords, but refuses the whole request for one it cannot take: a long list
+    // keeps its first terms (the vocabulary's come first), and a sentence is no keyword.
+    static let keywordCount = 100
+    static let keywordLength = 40
+    /// The terms as the words to listen for, spelled as they should be written. A term written with its reading,
+    /// "AIQ（アイキュー）", is listened for as "AIQ", and its reading goes in the prompt. The API refuses a keyword
+    /// with "<", ">" or a line break.
+    var keywords: [String] {
+        var seen: Set<String> = []
+        let refused = "<>\r\n".unicodeScalars
+        let words = terms.map { term in
+            String(String.UnicodeScalarView(Self.spelling(term).unicodeScalars.filter { !refused.contains($0) }))
+                .trimmingCharacters(in: .whitespaces)
+        }
+        return Array(
+            words.filter { (1...Self.keywordLength).contains($0.count) && seen.insert($0).inserted }
+                .prefix(Self.keywordCount))
+    }
+    /// A term without the reading written after it in brackets.
+    static func spelling(_ term: String) -> String {
+        guard term.hasSuffix(")") || term.hasSuffix("）"),
+            let open = term.lastIndex(where: { $0 == "(" || $0 == "（" })
+        else { return term }
+        let base = term[..<open].trimmingCharacters(in: .whitespaces)
+        return base.isEmpty ? term : base
+    }
+    private var readings: [String] { terms.filter { Self.spelling($0) != $0 } }
     /// Lists items up to a length, so a long vocabulary cannot crowd out the rest of the prompt.
     private static func list(_ items: [String], limit: Int) -> String {
         var result = ""
@@ -320,12 +354,12 @@ struct TranscriptionHints: Sendable, Equatable {
     }
     var prompt: String {
         var lines = ["日本語の会議の文字起こしです。話したとおりに書き起こしてください。"]
-        if !title.isEmpty || !agenda.isEmpty || !terms.isEmpty {
+        if !title.isEmpty || !agenda.isEmpty || !readings.isEmpty {
             lines[0] += "固有名詞・製品名・略語は、次の表記に合わせてください。"
         }
         if !title.isEmpty { lines.append("会議名: " + String(title.prefix(100))) }
         if !agenda.isEmpty { lines.append("議題: " + Self.list(agenda, limit: 300)) }
-        if !terms.isEmpty { lines.append("用語: " + Self.list(terms, limit: 600)) }
+        if !readings.isEmpty { lines.append("読み方: " + Self.list(readings, limit: 300)) }
         if !preceding.isEmpty { lines.append("直前の発言: " + preceding) }
         return lines.joined(separator: "\n")
     }
@@ -345,7 +379,8 @@ struct TranscriptionHints: Sendable, Equatable {
         }
         // Nothing but a piece of the prompt. From the preceding speech only a whole sentence counts: stock phrases
         // such as "ありがとうございます。" (11 characters) really are said again, by the next person.
-        let names = TranscriptionHints(title: title, agenda: agenda, terms: terms).prompt
+        let hints = TranscriptionHints(title: title, agenda: agenda, terms: terms)
+        let names = hints.prompt + "\n" + hints.keywords.joined(separator: "、")
         if result.count >= 8 && names.contains(result) || result.count >= 12 && preceding.contains(result) { return "" }
         return result
     }

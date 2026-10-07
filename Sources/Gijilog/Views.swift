@@ -2711,7 +2711,7 @@ struct GeneralSettings: View {
                 } header: {
                     Text("OpenAI")
                 } footer: {
-                    Text("文字起こしは gpt-4o-transcribe、議事録は指定したモデルで作ります。APIキーはこのMacのKeychainに保存します。")
+                    Text("文字起こしは gpt-transcribe、議事録は指定したモデルで作ります。APIキーはこのMacのKeychainに保存します。")
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Section {
