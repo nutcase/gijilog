@@ -1345,24 +1345,35 @@ struct TopicGroup: Identifiable {
         }
     }
 }
-// The heading of a run of decisions, open issues or actions: the summary topic's number and name, as the summary
-// shows them.
+// The heading of a run of decisions, open issues or actions: the summary topic's number and name, drawn as the
+// summary draws them.
 struct TopicGroupHeading: View {
     let heading: (number: Int?, name: String)
     var compact = false
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            if let number = heading.number {
-                Text("\(number)").font(.system(size: compact ? 9.5 : 10, weight: .bold)).monospacedDigit()
+        TopicTitle(number: heading.number, name: heading.name, compact: compact)
+            .padding(.top, compact ? 8 : 14).padding(.bottom, compact ? 2 : 4).padding(.horizontal, 8)
+    }
+}
+// A summary topic's number and name, the same wherever the topic is named: in the summary, and over the decisions,
+// open issues and actions that came from it. Without a number (その他) the name is quieter.
+struct TopicTitle: View {
+    @Environment(\.searchTerms) private var terms
+    let number: Int?
+    let name: String
+    var compact = false
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: compact ? 7 : 9) {
+            if let number {
+                Text("\(number)").font(.system(size: compact ? 10 : 11, weight: .bold)).monospacedDigit()
                     .foregroundStyle(.white)
-                    .frame(width: compact ? 15 : 16, height: compact ? 15 : 16)
+                    .frame(width: compact ? 17 : 19, height: compact ? 17 : 19)
                     .background(Circle().fill(Palette.sumire))
             }
-            Text(heading.name).font(.system(size: compact ? 12 : 13, weight: .semibold))
-                .foregroundStyle(heading.number == nil ? Color.secondary : Palette.sumire)
-                .lineLimit(1)
+            Text(highlighted(name, terms)).font(.system(size: compact ? 13.5 : 15, weight: .bold))
+                .foregroundStyle(number == nil ? Color.secondary : Palette.sumi)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.top, compact ? 8 : 14).padding(.bottom, compact ? 2 : 4).padding(.horizontal, 8)
     }
 }
 // A section heading: its mark and count in the section's ink, the title in Mincho. Clicking it folds the section
@@ -2065,18 +2076,7 @@ struct SummaryTopic: View {
             Part(label: "主な意見", ink: Palette.seiheki, lines: item.opinions ?? []),
         ].filter { !$0.lines.isEmpty }
         VStack(alignment: .leading, spacing: compact ? 6 : 8) {
-            HStack(alignment: .firstTextBaseline, spacing: compact ? 7 : 9) {
-                if let number {
-                    Text("\(number)").font(.system(size: compact ? 10 : 11, weight: .bold)).monospacedDigit()
-                        .foregroundStyle(.white)
-                        .frame(width: compact ? 17 : 19, height: compact ? 17 : 19)
-                        .background(Circle().fill(Palette.sumire))
-                }
-                Text(highlighted(parts.topic ?? parts.overview, terms)).font(
-                    .system(size: compact ? 13.5 : 15, weight: .bold)
-                )
-                .foregroundStyle(Palette.sumi).fixedSize(horizontal: false, vertical: true)
-            }
+            TopicTitle(number: number, name: parts.topic ?? parts.overview, compact: compact)
             VStack(alignment: .leading, spacing: compact ? 6 : 8) {
                 ForEach(rows, id: \.label) { part in
                     HStack(alignment: .firstTextBaseline, spacing: compact ? 8 : 12) {
