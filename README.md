@@ -6,8 +6,8 @@
 [English](README.en.md)
 
 <p>
-  <img src="docs/images/compact.jpg" alt="会議中の小画面" height="420">
-  <img src="docs/images/main.jpg" alt="大きい画面（会議の一覧、進行中のアジェンダと話題ごとの要約、文字起こし）" height="420">
+  <img src="docs/images/compact.jpg" alt="会議中の小画面（話題ごとにまとめたアクションアイテム）" height="420">
+  <img src="docs/images/main.jpg" alt="大きい画面（会議の一覧、話題ごとの要約と決定事項、文字起こし）" height="420">
 </p>
 
 ## できること

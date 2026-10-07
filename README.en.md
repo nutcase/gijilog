@@ -9,8 +9,8 @@ Keep its compact window next to the call to see what has been decided, what is s
 > The interface and the generated minutes are in Japanese.
 
 <p>
-  <img src="docs/images/compact.jpg" alt="Compact window during a meeting" height="420">
-  <img src="docs/images/main.jpg" alt="Full window with the meeting list, the agenda in progress and the summary by topic, and the transcript" height="420">
+  <img src="docs/images/compact.jpg" alt="Compact window during a meeting, with the action items listed by topic" height="420">
+  <img src="docs/images/main.jpg" alt="Full window with the meeting list, the summary and decisions by topic, and the transcript" height="420">
 </p>
 
 ## Features
