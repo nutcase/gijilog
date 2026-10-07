@@ -499,6 +499,34 @@ extension ProcessingTests {
             Meeting.self, from: Data(contentsOf: store.folder(meeting.id).appendingPathComponent("meeting.json")))
         try Self.check(saved.stoppedForSilence == end, "the reason is saved with the meeting")
     }
+    // Quitting while 停止 is still finishing (the system audio capture can take a moment to end) waits for it, so the
+    // meeting is saved as stopped, not as an interrupted recording.
+    @MainActor func testQuittingRightAfterStoppingKeepsTheStop() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = Store(root: root, loadSettings: false)
+        var meeting = Meeting(title: "止めてすぐ閉じた")
+        meeting.settings = SessionSettings()
+        meeting.capture = .recording
+        store.meetings = [meeting]
+        // 停止 was pressed: recording is off, and the stop has not finished yet.
+        store.activeID = meeting.id
+        store.recording = false
+        store.stopping = true
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            store.change(meeting.id) { $0.capture = .stopped }
+            store.activeID = nil
+            store.stopping = false
+        }
+        await store.prepareForTermination()
+        // The app ends as soon as this returns: what is saved now is what the next launch finds.
+        let saved = try JSONDecoder().decode(
+            Meeting.self, from: Data(contentsOf: store.folder(meeting.id).appendingPathComponent("meeting.json")))
+        try Self.check(
+            saved.capture == .stopped && store.meetings[0].capture == .stopped,
+            "a stop under way when the app quits ends as a stop: \(saved.capture)")
+    }
     func testRepositoryRejectsStaleSnapshot() async throws {
         let (root, _) = try fixture(seconds: 1, amplitude: 0)
         defer { try? FileManager.default.removeItem(at: root) }

@@ -30,6 +30,7 @@ import Foundation
         try await tests.testStopDoesNotBlockNextMeeting()
         try await tests.testTerminationLeavesRecoverableJobs()
         try await tests.testRecordingStopsAfterALongSilence()
+        try await tests.testQuittingRightAfterStoppingKeepsTheStop()
         try await tests.testRepositoryRejectsStaleSnapshot()
         try await tests.testDeviceFormatChangeAndInputWatchdog()
         try await tests.testSummaryCoalescesLatestUtterances()
@@ -94,7 +95,7 @@ import Foundation
         try tests.testMCPKeepsWhatTheUserWithholds()
         try await tests.testMCPAnswersOverItsSocket()
         print(
-            "PASS: 80 checks (recording, stopping after a silence, continued recording, chunking at pauses, voice gate, transcription hints, editing and corrections, picking owners and deadlines, listening back, summary topics, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, folders added while running, audio mixdown, file import, upgrade and recovery, storage cleanup, minutes quality and final review, tags, search, agenda, MCP)"
+            "PASS: 81 checks (recording, stopping after a silence, continued recording, chunking at pauses, voice gate, transcription hints, editing and corrections, picking owners and deadlines, listening back, summary topics, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, folders added while running, audio mixdown, file import, upgrade and recovery, storage cleanup, minutes quality and final review, tags, search, agenda, MCP)"
         )
     }
     /// A steady tone, silent in the given ranges of seconds.

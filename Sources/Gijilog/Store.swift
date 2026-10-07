@@ -118,6 +118,9 @@ import UniformTypeIdentifiers
     private var captureInputID: String?  // The microphone in use, so unrelated devices cannot stop a recording.
     private var summaryTimer: Timer?
     private var silenceTimer: Timer?
+    // A stop is under way: the system audio capture is ending, the last audio is being written and the meeting
+    // saved as stopped. (Set only by stop; a test sets it to stand for a slow one.)
+    var stopping = false
     // Recording stops by itself after this many minutes without sound on either track (0: never), as when a
     // meeting ended and the recording was left running.
     @Published var autoStopMinutes = 15 {
@@ -730,7 +733,11 @@ import UniformTypeIdentifiers
     func stop(interrupted: Bool = false) async {
         guard recording, !busy, let id = activeID else { return }
         busy = true
-        defer { busy = false }
+        stopping = true
+        defer {
+            busy = false
+            stopping = false
+        }
         summaryTimer?.invalidate()
         summaryTimer = nil
         silenceTimer?.invalidate()
@@ -1098,6 +1105,8 @@ import UniformTypeIdentifiers
         stopMCPServer()  // The bridge starts the app again when an AI app next asks.
         pipeline.pause(terminal: true)
         recorder.cancelPendingStart()
+        // Quitting right after 停止 lets that stop finish, so the meeting is saved as stopped, not as interrupted.
+        for _ in 0..<300 where stopping { try? await Task.sleep(nanoseconds: 50_000_000) }
         if recording {
             await stop()
         } else if let id = activeID {
