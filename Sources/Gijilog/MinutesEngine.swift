@@ -121,6 +121,11 @@ enum MinutesEngine {
         summary以外のpoints・opinionsは空配列。
 
         """
+    // An action is read on its own, apart from the talk it came from, and is listed under its topic.
+    static let actionRules = """
+        actionsのtextは、それだけ読んで何の件か分かるように、案件名・相手・対象を含めて書く（「その件を確認する」ではなく「資生堂の案件の予算を確認する」）。\
+        actionsのtopicには、その作業が出てきたsummaryの話題名（「話題：概要」の話題の部分）をそのまま書く。どの話題とも言えなければnull。summary・decisions・unresolvedのtopicはnull。
+        """
     static let instructions =
         """
         会議に出ていない人が「何が決まり、なぜそうなり、次に何をすればよいか」を把握できる日本語の議事録を作る。
@@ -133,8 +138,9 @@ enum MinutesEngine {
         取り下げた決定や不要になった作業は既存idをcancelledにする。解決した未決事項はdoneにし、必要ならdecisionsへ追加する。
         重複項目は根拠を一つへまとめ、他方をcancelledにしてchangeSummaryに統合先を記す。最新の結論と撤回案を両方有効にしない。
         actionsは具体的な作業を一項目一作業で。ownerとdueは根拠発言の表記をそのまま使う。曖昧な「私」「誰か」は担当者にしない。
+        \(actionRules)
         既知の担当・期限はその根拠も引き継ぐ。根拠がない場合はnull。話者名・今日の日付から人名や期日を推測しない。
-        各項目はid,text,owner,due,evidence,state,reason,nextStep,changeSummary,points,opinions。補足欄は根拠がない場合null。
+        各項目はid,text,owner,due,evidence,state,reason,nextStep,changeSummary,points,opinions,topic。補足欄は根拠がない場合null。
         更新時は今も有効な理由・次の確認・変更の経緯を引き継ぐ。新しい結論に合わなくなった理由や確認事項はnullにする。
         新規idは空文字列、既存idは保持する。stateはopen,done,cancelled。完了・撤回・解決には明確な根拠が必要。
         evidenceは入力された発言のidsから選び、変更内容と理由の根拠を全て含め、newUtterancesのIDを最低1つ含める。
@@ -155,6 +161,7 @@ enum MinutesEngine {
         decisionsは会議で合意・決定した内容だけ。提案・希望・検討中の案は入れない。reasonに発言で説明された理由・制約を書く。
         途中で変わった方針は最終的な結論だけを書き、変わったことが大事ならreasonで触れる。撤回された案は書かない。
         actionsは誰かがやると決まった具体的な作業を一項目一作業で。ownerとdueは根拠発言の表記をそのまま使い、なければnull。曖昧な「私」「誰か」は担当者にしない。
+        \(actionRules)
         unresolvedは結論が出ずに持ち越した論点。nextStepに決めるために必要と話された確認・情報を書く。
         evidenceはtranscriptのidsから、その項目の内容と理由の根拠になる発言を全て選ぶ。根拠のない決定・担当者・期限・理由を書かない。話者名や今日の日付から人名や期日を推測しない。
         idは空文字列。stateはopen（会議中に作業の完了がはっきり話された場合だけdone）。changeSummaryはnull。補足欄は根拠がなければnull。
@@ -180,13 +187,14 @@ enum MinutesEngine {
             "reason": ["type": ["string", "null"]], "nextStep": ["type": ["string", "null"]],
             "changeSummary": ["type": ["string", "null"]],
             "points": ["type": "array", "items": ["type": "string"]],
+            "topic": ["type": ["string", "null"]],
             "opinions": ["type": "array", "items": ["type": "string"]],
         ]
         let item: [String: Any] = [
             "type": "object", "properties": fields,
             "required": [
                 "id", "text", "owner", "due", "evidence", "state", "reason", "nextStep", "changeSummary", "points",
-                "opinions",
+                "opinions", "topic",
             ],
             "additionalProperties": false,
         ]
@@ -331,6 +339,8 @@ enum MinutesEngine {
         }
         item.points = list(item.points)
         item.opinions = list(item.opinions)
+        let topic = item.topic?.trimmingCharacters(in: .whitespacesAndNewlines)
+        item.topic = summary || topic?.isEmpty != false ? nil : topic
         let original = item.evidence.compactMap { known[$0]?.text }.joined(separator: "\n")
         func field(_ value: String?) -> String? {
             guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty,
@@ -383,6 +393,7 @@ enum MinutesEngine {
                     item.owner = item.owner ?? items[i].owner
                     item.due = item.due ?? items[i].due
                     item.points = item.points ?? items[i].points
+                    item.topic = item.topic ?? items[i].topic
                     item.opinions = item.opinions ?? items[i].opinions
                     if normalized(item.text) == normalized(items[i].text) {
                         item.reason = item.reason ?? items[i].reason
@@ -445,6 +456,19 @@ enum MinutesEngine {
                 return "- \(time)\(plain(item.text))\(mark.isEmpty ? "" : "（" + mark + "）")" + detail
             }.joined(separator: "\n")
         }
+        // Actions under the summary topic they came from, in the summary's order, the rest last.
+        func groupedActions() -> String {
+            let summary = state.content.summary.filter { $0.state != .cancelled }
+            let groups = groupedByTopic(
+                state.content.actions.filter { $0.state != .cancelled }, summary: summary, known: known)
+            guard groups.contains(where: { $0.topic != nil }) else {
+                return lines(groups.flatMap(\.items), actions: true)
+            }
+            return groups.map { group in
+                let heading = group.topic.map { "**\($0 + 1). \(plain(summaryParts(summary[$0].text).topic ?? ""))**" }
+                return (heading ?? "**その他**") + "\n" + lines(group.items, actions: true)
+            }.joined(separator: "\n\n")
+        }
         // Each summary topic under its own heading: its overview, then the points at issue and the views put forward.
         func topics(_ items: [NoteItem]) -> String {
             if items.isEmpty { return "- なし" }
@@ -463,7 +487,52 @@ enum MinutesEngine {
         let original = transcript.map { "\n\n## 文字起こし\n" + $0 } ?? ""
         // What a reader acts on comes first; the transcript, the longest part, comes last.
         return
-            "# \(plain(title ?? "議事録"))\n\(tagLine(tags))\(agendaSection(agenda))\(notice)\n## 要約\n\n\(topics(state.content.summary.filter { $0.state != .cancelled }))\n\n## 決定事項と理由\(candidate)\n\(lines(state.content.decisions.filter { $0.state != .cancelled }))\n\n## アクションアイテム\n\(lines(state.content.actions.filter { $0.state != .cancelled }, actions: true))\n\n## 未決事項・次の確認\(candidate)\n\(lines(state.content.unresolved.filter { $0.state == .open }))\(history)\(original)"
+            "# \(plain(title ?? "議事録"))\n\(tagLine(tags))\(agendaSection(agenda))\(notice)\n## 要約\n\n\(topics(state.content.summary.filter { $0.state != .cancelled }))\n\n## 決定事項と理由\(candidate)\n\(lines(state.content.decisions.filter { $0.state != .cancelled }))\n\n## アクションアイテム\n\(groupedActions())\n\n## 未決事項・次の確認\(candidate)\n\(lines(state.content.unresolved.filter { $0.state == .open }))\(history)\(original)"
+    }
+    /// The summary topic an item belongs to, by its place in the summary: the topic the AI named for it, or, when it
+    /// named none (or the item was written before topics were named), the topic whose talk the item's evidence falls
+    /// in, else the one closest to it within five minutes.
+    static func topicIndex(of item: NoteItem, in summary: [NoteItem], known: [String: Segment]) -> Int? {
+        let names = summary.map { summaryTopic($0.text).map(normalized) ?? normalized($0.text) }
+        if let topic = item.topic.map(normalized), !topic.isEmpty {
+            if let i = names.firstIndex(of: topic) { return i }
+            if let i = names.firstIndex(where: { !$0.isEmpty && ($0.contains(topic) || topic.contains($0)) }) {
+                return i
+            }
+        }
+        guard let time = item.evidence.compactMap({ known[$0]?.time }).min() else { return nil }
+        let spans: [(index: Int, talk: ClosedRange<Double>)] = summary.enumerated().compactMap { i, topic in
+            let times = topic.evidence.compactMap { known[$0]?.time }
+            guard let start = times.min(), let end = times.max() else { return nil }
+            return (i, start...end)
+        }
+        func width(_ talk: ClosedRange<Double>) -> Double { talk.upperBound - talk.lowerBound }
+        func distance(_ talk: ClosedRange<Double>) -> Double {
+            time < talk.lowerBound ? talk.lowerBound - time : max(0, time - talk.upperBound)
+        }
+        if let inside = spans.filter({ $0.talk.contains(time) }).min(by: { width($0.talk) < width($1.talk) }) {
+            return inside.index
+        }
+        guard let nearest = spans.min(by: { distance($0.talk) < distance($1.talk) }), distance(nearest.talk) <= 300
+        else { return nil }
+        return nearest.index
+    }
+    /// Items under the summary topic each belongs to, in the summary's order, keeping their own order within a
+    /// topic; those that belong to none come last.
+    static func groupedByTopic(_ items: [NoteItem], summary: [NoteItem], known: [String: Segment])
+        -> [(topic: Int?, items: [NoteItem])]
+    {
+        var groups: [Int: [NoteItem]] = [:]
+        var rest: [NoteItem] = []
+        for item in items {
+            if let topic = topicIndex(of: item, in: summary, known: known) {
+                groups[topic, default: []].append(item)
+            } else {
+                rest.append(item)
+            }
+        }
+        let topics = groups.keys.sorted().map { (topic: Optional($0), items: groups[$0] ?? []) }
+        return rest.isEmpty ? topics : topics + [(topic: nil, items: rest)]
     }
     /// A summary item's topic and overview, from text written "話題：概要". Without a short topic, all of it is the
     /// overview.

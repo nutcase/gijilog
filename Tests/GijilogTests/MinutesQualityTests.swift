@@ -101,6 +101,49 @@ extension ProcessingTests {
         let saved = MinutesEngine.document(store.meetings[0], includesTranscript: false) ?? ""
         try Self.check(saved.contains("**主な論点**\n- モリバスの価格をどうするか\n- 値上げの時期"), "the edit is in 議事録.md")
     }
+    // Actions are listed under the summary topic they came from: the one the AI named, or for older minutes the one
+    // whose talk their evidence falls in; the rest come last under その他.
+    func testActionsAreListedUnderTheirTopics() throws {
+        let segments = [
+            Segment(id: "a", time: 0, source: "マイク", text: "SES案件の扱いを決めます"),
+            Segment(id: "b", time: 120, source: "マイク", text: "SESは要領がわかる人も入れましょう"),
+            Segment(id: "c", time: 300, source: "マイク", text: "資生堂の案件は渡辺さんと話します"),
+            Segment(id: "d", time: 420, source: "マイク", text: "資生堂は来週もう一度"),
+            Segment(id: "e", time: 2000, source: "マイク", text: "ところで別件です"),
+        ]
+        var notes = MinutesState()
+        notes.content.summary = [
+            NoteItem(id: "s1", text: "SES案件の扱い：受注候補を検討する", evidence: ["a", "b"]),
+            NoteItem(id: "s2", text: "資生堂の案件：渡辺さんを交えて再検討する", evidence: ["c", "d"]),
+        ]
+        notes.content.actions = [
+            NoteItem(id: "x1", text: "資生堂の案件について渡辺さんと話し合う", evidence: ["c"], topic: "資生堂の案件"),
+            NoteItem(id: "x2", text: "SES案件の候補に要領がわかる人を加える", evidence: ["b"]),
+            NoteItem(id: "x3", text: "別件を確認する", evidence: ["e"]),
+            NoteItem(id: "x4", text: "SES案件の意見を聞く", evidence: ["e"], topic: "SES案件"),
+        ]
+        let known = Dictionary(uniqueKeysWithValues: segments.map { ($0.id, $0) })
+        let groups = MinutesEngine.groupedByTopic(notes.content.actions, summary: notes.content.summary, known: known)
+        try Self.check(
+            groups.map(\.topic) == [0, 1, nil] && groups.map { $0.items.map(\.id) } == [["x2", "x4"], ["x1"], ["x3"]],
+            "a named topic, or the talk an action's evidence falls in, places it; the rest come last: \(groups)")
+        let markdown = MinutesEngine.render(notes, segments: segments)
+        let actions = markdown.components(separatedBy: "## アクションアイテム\n")[1].components(separatedBy: "\n## ")[0]
+        try Self.check(
+            actions.hasPrefix("**1. SES案件の扱い**\n- [ ] SES案件の候補に")
+                && actions.contains("\n\n**2. 資生堂の案件**\n- [ ] 資生堂の案件について")
+                && actions.contains("\n\n**その他**\n- [ ] 別件を確認する"),
+            "議事録.md lists the actions under their topics")
+        let ungrouped = MinutesEngine.groupedByTopic(
+            [NoteItem(id: "u", text: "手で足した作業", evidence: [])], summary: notes.content.summary, known: known)
+        try Self.check(ungrouped.map(\.topic) == [nil], "an action with no evidence and no topic is in その他")
+        let kept = MinutesEngine.grounded(
+            NoteItem(id: "", text: "t", evidence: [], topic: " 資生堂の案件 "), known: known, summary: false)
+        let dropped = MinutesEngine.grounded(
+            NoteItem(id: "", text: "t", evidence: [], topic: "話題"), known: known, summary: true)
+        try Self.check(
+            kept.topic == "資生堂の案件" && dropped.topic == nil, "an item's topic is kept trimmed, not on a summary")
+    }
     func testReviewCannotRollBackLaterEvidence() throws {
         let before = Segment(id: "before", time: 0, source: "マイク", text: "A案にします")
         let after = Segment(id: "after", time: 30, source: "マイク", text: "費用のためB案に変更。担当の田中さんと金曜の期限は取り消しです")
@@ -150,7 +193,8 @@ extension ProcessingTests {
         let item = decisions?["items"] as? [String: Any]
         let required = item?["required"] as? [String] ?? []
         try Self.check(
-            ["reason", "nextStep", "changeSummary", "points", "opinions"].allSatisfy(required.contains)
+            ["reason", "nextStep", "changeSummary", "points", "opinions", "topic"].allSatisfy(required.contains)
+                && instructions.contains("それだけ読んで何の件か分かるように")
                 && properties?["agendaTopic"] == nil && instructions.contains("主な論点") && instructions.contains("主な意見"),
             "quality fields and a topic's points and opinions are in the strict API contract, without the live agenda fields"
         )

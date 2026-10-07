@@ -1229,7 +1229,8 @@ struct MinutesSections: View {
             }
             NoteSection(
                 title: "アクションアイテム", tone: .actions, items: content.actions.filter { $0.state != .cancelled },
-                known: known, latest: latest, editing: edit(.actions), current: current, revised: revised)
+                known: known, latest: latest, editing: edit(.actions), current: current, revised: revised,
+                topics: content.summary.filter { $0.state != .cancelled })
         }
         .padding(.top, 26)
     }
@@ -1280,6 +1281,7 @@ struct NoteSection: View {
     var editing: NoteEditing?
     var current: String?
     var revised: Set<String> = []  // Items citing transcript lines corrected since the minutes were written.
+    var topics: [NoteItem] = []  // The summary's topics, for the actions listed under the topic each came from.
     var body: some View {
         // A folded section opens while the find bar's current match is in it.
         let folded = store.foldedSections.contains(title) && !items.contains { $0.id == current }
@@ -1293,23 +1295,71 @@ struct NoteSection: View {
         if items.isEmpty {
             Text("まだありません").font(.callout).foregroundStyle(.secondary).padding(.vertical, 8)
         }
-        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-            let fresh = !Set(item.evidence).isDisjoint(with: latest)
-            Group {
-                if let editing {
-                    EditableNoteRow(
-                        editing: editing, item: item, known: known, fresh: fresh, tone: tone, number: index + 1,
-                        current: item.id == current, revised: revised.contains(item.id))
-                } else {
-                    NoteRow(
-                        item: item, known: known, fresh: fresh, tone: tone, number: index + 1,
-                        current: item.id == current, revised: revised.contains(item.id))
-                }
+        ForEach(TopicGroup.of(items, topics: topics, known: known)) { group in
+            if let heading = group.heading { TopicGroupHeading(heading: heading) }
+            ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
+                row(item, number: index + 1)
+                if item.id != group.items.last?.id { Rectangle().fill(Palette.rule.opacity(0.5)).frame(height: 0.5) }
             }
-            .id("note-" + item.id)
-            if item.id != items.last?.id { Rectangle().fill(Palette.rule.opacity(0.5)).frame(height: 0.5) }
         }
         if let editing { AddNoteItem(editing: editing) }
+    }
+    @ViewBuilder private func row(_ item: NoteItem, number: Int) -> some View {
+        let fresh = !Set(item.evidence).isDisjoint(with: latest)
+        Group {
+            if let editing {
+                EditableNoteRow(
+                    editing: editing, item: item, known: known, fresh: fresh, tone: tone, number: number,
+                    current: item.id == current, revised: revised.contains(item.id))
+            } else {
+                NoteRow(
+                    item: item, known: known, fresh: fresh, tone: tone, number: number,
+                    current: item.id == current, revised: revised.contains(item.id))
+            }
+        }
+        .id("note-" + item.id)
+    }
+}
+/// A run of items under one summary topic, or all of them when they are not grouped.
+struct TopicGroup: Identifiable {
+    let id: String
+    let heading: (number: Int?, name: String)?  // None when the items are not grouped by topic.
+    let items: [NoteItem]
+    /// The items under the summary topic each came from, in the summary's order, those of no topic under その他
+    /// last; all together when there are no topics to group by or none of the items belongs to one.
+    static func of(_ items: [NoteItem], topics: [NoteItem], known: [String: Segment]) -> [TopicGroup] {
+        guard !topics.isEmpty else { return [TopicGroup(id: "all", heading: nil, items: items)] }
+        let groups = MinutesEngine.groupedByTopic(items, summary: topics, known: known)
+        guard groups.contains(where: { $0.topic != nil }) else {
+            return [TopicGroup(id: "all", heading: nil, items: items)]
+        }
+        return groups.map { group in
+            guard let index = group.topic else {
+                return TopicGroup(id: "rest", heading: (nil, "その他"), items: group.items)
+            }
+            let parts = MinutesEngine.summaryParts(topics[index].text)
+            return TopicGroup(
+                id: topics[index].id, heading: (index + 1, parts.topic ?? parts.overview), items: group.items)
+        }
+    }
+}
+// The heading of a run of actions: the summary topic's number and name, as the summary shows them.
+struct TopicGroupHeading: View {
+    let heading: (number: Int?, name: String)
+    var compact = false
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            if let number = heading.number {
+                Text("\(number)").font(.system(size: compact ? 9.5 : 10, weight: .bold)).monospacedDigit()
+                    .foregroundStyle(.white)
+                    .frame(width: compact ? 15 : 16, height: compact ? 15 : 16)
+                    .background(Circle().fill(Palette.sumire))
+            }
+            Text(heading.name).font(.system(size: compact ? 12 : 13, weight: .semibold))
+                .foregroundStyle(heading.number == nil ? Color.secondary : Palette.sumire)
+                .lineLimit(1)
+        }
+        .padding(.top, compact ? 8 : 14).padding(.bottom, compact ? 2 : 4).padding(.horizontal, 8)
     }
 }
 // A section heading: its mark and count in the section's ink, the title in Mincho. Clicking it folds the section
@@ -3366,7 +3416,7 @@ struct LiveMinutes: View {
                 }
                 LiveSection(
                     title: "アクションアイテム", tone: .actions, items: content.actions.filter { $0.state != .cancelled },
-                    known: known, latest: latest)
+                    known: known, latest: latest, topics: content.summary.filter { $0.state != .cancelled })
             }
             .padding(16)
             .textSelection(.enabled)
@@ -3383,6 +3433,7 @@ struct LiveSection: View {
     let items: [NoteItem]
     let known: [String: Segment]
     let latest: Set<String>
+    var topics: [NoteItem] = []  // The summary's topics, for the actions listed under the topic each came from.
     var body: some View {
         let unassigned =
             tone == .actions ? items.filter { $0.state == .open && ($0.owner == nil || $0.due == nil) }.count : 0
@@ -3402,10 +3453,13 @@ struct LiveSection: View {
         if items.isEmpty {
             Text("まだありません").font(.caption).foregroundStyle(.secondary).padding(.vertical, 4)
         }
-        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-            NoteRow(
-                item: item, known: known, fresh: !Set(item.evidence).isDisjoint(with: latest), tone: tone,
-                number: index + 1, compact: true)
+        ForEach(TopicGroup.of(items, topics: topics, known: known)) { group in
+            if let heading = group.heading { TopicGroupHeading(heading: heading, compact: true) }
+            ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
+                NoteRow(
+                    item: item, known: known, fresh: !Set(item.evidence).isDisjoint(with: latest), tone: tone,
+                    number: index + 1, compact: true)
+            }
         }
     }
 }
