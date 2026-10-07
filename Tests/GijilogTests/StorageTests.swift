@@ -137,6 +137,17 @@ extension ProcessingTests {
         for _ in 0..<50 where !seen.changed { try await Task.sleep(nanoseconds: 100_000_000) }
         withExtendedLifetime(watcher) {}
         try Self.check(seen.changed, "the save location is watched for changes")
+
+        // The vocabulary list sits next to the meetings, to sync with them; a list kept before joins it once.
+        try Self.check(
+            VocabularyFile.merged("ギジログ\nモリバス", "モリバス、OKR\n高松") == "ギジログ\nモリバス\nOKR\n高松"
+                && VocabularyFile.merged("", "OKR") == "OKR" && VocabularyFile.merged("A, B", "") == "A, B",
+            "two lists become one without repeats, and one alone is kept as typed")
+        try Self.check(
+            VocabularyFile.read(in: watched) == nil && VocabularyFile.write("ギジログ\n高松", in: watched)
+                && VocabularyFile.read(in: watched) == "ギジログ\n高松"
+                && FileManager.default.fileExists(atPath: watched.appendingPathComponent("語句リスト.txt").path),
+            "the list is saved as 語句リスト.txt in the save location")
     }
     @MainActor func testSaveLocationMovesWithItsMeetings() async throws {
         let (root, _) = try fixture(seconds: 1, amplitude: 0)

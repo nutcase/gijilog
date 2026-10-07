@@ -42,8 +42,9 @@ import UniformTypeIdentifiers
     @Published var liveTab = "議事録"  // The compact window shows the minutes or the transcript.
     // Names and terms the transcription should spell this way, one per line or separated by commas.
     @Published var vocabulary = "" {
-        didSet { if persistsSettings { UserDefaults.standard.set(vocabulary, forKey: "vocabulary") } }
+        didSet { if persistsSettings && !readingVocabulary { VocabularyFile.write(vocabulary, in: root) } }
     }
+    private var readingVocabulary = false  // Taking the list from its file, which need not be written back.
     @Published var compactWindowOpen = false  // Alerts go to the compact window while it is open, else the full one.
     let player = ClipPlayer()  // Plays back one utterance of a finished meeting.
     // Sections of the minutes folded away, by title: the same in every meeting and in both windows, and kept.
@@ -155,7 +156,16 @@ import UniformTypeIdentifiers
             mcpEnabled = defaults.object(forKey: "mcpEnabled") as? Bool ?? true
             mcpIncludesTranscript = defaults.object(forKey: "mcpIncludesTranscript") as? Bool ?? true
             mcpHiddenTags = defaults.stringArray(forKey: "mcpHiddenTags") ?? []
-            vocabulary = defaults.string(forKey: "vocabulary") ?? ""
+            // The list moved from the app's settings to the save location, to be shared with the meetings: what was
+            // kept in the settings joins whatever the file has, once.
+            // (Observers do not run in an initializer, so the file is written here.)
+            let file = VocabularyFile.read(in: root) ?? ""
+            if let kept = defaults.string(forKey: "vocabulary") {
+                vocabulary = VocabularyFile.merged(file, kept)
+                if VocabularyFile.write(vocabulary, in: root) { defaults.removeObject(forKey: "vocabulary") }
+            } else {
+                vocabulary = file
+            }
             foldedSections = Set(defaults.stringArray(forKey: "foldedSections") ?? [])
             key = KeyStore.read()
             let savedModel = defaults.string(forKey: "summaryModel")
@@ -314,6 +324,10 @@ import UniformTypeIdentifiers
         do {
             let failures = try await repository.relocate(to: newRoot)
             root = newRoot
+            // The list goes along, joined with one the new location may already have.
+            if persistsSettings {
+                vocabulary = VocabularyFile.merged(VocabularyFile.read(in: newRoot) ?? "", vocabulary)
+            }
             if persistsSettings { UserDefaults.standard.set(newRoot.path, forKey: "storageFolder") }
             await recover()
             status = "保存先を変更しました"
@@ -430,9 +444,19 @@ import UniformTypeIdentifiers
         } catch { self.error = error.localizedDescription }
         if persistsSettings {
             folderWatcher = FolderWatcher(root) { [weak self] in
-                Task { @MainActor in await self?.loadAddedMeetings() }
+                Task { @MainActor in
+                    await self?.loadAddedMeetings()
+                    self?.readVocabularyFile()
+                }
             }
         }
+    }
+    /// Takes the vocabulary list from the save location when it changed there, as when another Mac edited it.
+    func readVocabularyFile() {
+        guard persistsSettings, let text = VocabularyFile.read(in: root), text != vocabulary else { return }
+        readingVocabulary = true
+        vocabulary = text
+        readingVocabulary = false
     }
     /// Lists meeting folders that appeared in the save location while the app runs, such as ones synced from another
     /// Mac or restored from a backup, without a restart. They are shown as they are: nothing is processed for them

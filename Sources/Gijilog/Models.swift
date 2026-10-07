@@ -714,6 +714,28 @@ enum DueDate {
         return calendar.date(from: components)
     }
 }
+/// The vocabulary list, kept in the save location as 語句リスト.txt next to the meeting folders, so that it travels
+/// with them: synced with iCloud Drive or the like, every Mac using that location shares it.
+enum VocabularyFile {
+    static let name = "語句リスト.txt"
+    static func read(in root: URL) -> String? {
+        try? String(contentsOf: root.appendingPathComponent(name), encoding: .utf8)
+    }
+    @discardableResult static func write(_ text: String, in root: URL) -> Bool {
+        do {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            try Data(text.utf8).write(to: root.appendingPathComponent(name), options: .atomic)
+            return true
+        } catch { return false }
+    }
+    /// Lists from two places as one, a term each per line, without repeats: the list kept in the app's settings
+    /// before it moved here, or the one already in a save location another Mac set up.
+    static func merged(_ first: String, _ second: String) -> String {
+        guard !first.isEmpty else { return second }
+        guard !second.isEmpty else { return first }
+        return TranscriptionHints.terms(first + "\n" + second).joined(separator: "\n")
+    }
+}
 /// Calls back when anything inside a folder changes, its subfolders included, at most about once a second: meeting
 /// folders copied, restored or synced into the save location while the app runs.
 final class FolderWatcher {

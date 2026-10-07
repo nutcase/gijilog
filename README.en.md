@@ -123,7 +123,7 @@ Click 読み込み (Import) in the toolbar (⌘O) or drop audio or video files o
 
 ## Where meetings are saved
 
-By default in `~/Documents/ギジログ`, one folder per meeting. You can choose another folder in Settings; existing meetings move with it. A meeting folder that appears there while the app runs (synced from another Mac through iCloud Drive or the like, restored from a backup, or put back from the Trash) is listed without a restart, once its meeting.json is complete; a copy of a listed meeting is not. Nothing is transcribed or written for such a meeting on this Mac, and a meeting should not be edited on two Macs at once.
+By default in `~/Documents/ギジログ`, one folder per meeting. You can choose another folder in Settings; existing meetings move with it. A meeting folder that appears there while the app runs (synced from another Mac through iCloud Drive or the like, restored from a backup, or put back from the Trash) is listed without a restart, once its meeting.json is complete; a copy of a listed meeting is not. Nothing is transcribed or written for such a meeting on this Mac, and a meeting should not be edited on two Macs at once. The vocabulary list is kept there too, as `語句リスト.txt`, so it is shared along with the meetings and is read again when another Mac changes it; a list kept in the settings of an earlier version moves into that file on the first launch, joined with the file's terms if it already exists.
 
 ```text
 ~/Documents/ギジログ/
