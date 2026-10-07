@@ -1284,6 +1284,7 @@ struct NoteSection: View {
     var current: String?
     var revised: Set<String> = []  // Items citing transcript lines corrected since the minutes were written.
     var topics: [NoteItem] = []  // The summary's topics, for decisions, open issues or actions listed by topic.
+    @StateObject private var dropTarget = TopicDropHighlight()
     var body: some View {
         // A folded section opens while the find bar's current match is in it.
         let folded = store.foldedSections.contains(title) && !items.contains { $0.id == current }
@@ -1298,11 +1299,16 @@ struct NoteSection: View {
             Text("まだありません").font(.callout).foregroundStyle(.secondary).padding(.vertical, 8)
         }
         ForEach(TopicGroup.of(items, topics: topics, known: known)) { group in
-            if let heading = group.heading { TopicGroupHeading(heading: heading) }
-            ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
-                row(item, number: index + 1)
-                if item.id != group.items.last?.id { Rectangle().fill(Palette.rule.opacity(0.5)).frame(height: 0.5) }
+            VStack(alignment: .leading, spacing: 0) {
+                if let heading = group.heading { TopicGroupHeading(heading: heading) }
+                ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
+                    row(item, number: index + 1)
+                    if item.id != group.items.last?.id {
+                        Rectangle().fill(Palette.rule.opacity(0.5)).frame(height: 0.5)
+                    }
+                }
             }
+            .modifier(TopicDrop(editing: editing, topic: group.topic, highlight: dropTarget))
         }
         if let editing { AddNoteItem(editing: editing) }
     }
@@ -1327,6 +1333,7 @@ struct TopicGroup: Identifiable {
     let id: String
     let heading: (number: Int?, name: String)?  // None when the items are not grouped by topic.
     let items: [NoteItem]
+    var topic: Int? = nil  // The summary topic's place, for a run under one.
     /// The items under the summary topic each came from, in the summary's order, those of no topic under その他
     /// last; all together when there are no topics to group by or none of the items belongs to one.
     static func of(_ items: [NoteItem], topics: [NoteItem], known: [String: Segment]) -> [TopicGroup] {
@@ -1341,7 +1348,50 @@ struct TopicGroup: Identifiable {
             }
             let parts = MinutesEngine.summaryParts(topics[index].text)
             return TopicGroup(
-                id: topics[index].id, heading: (index + 1, parts.topic ?? parts.overview), items: group.items)
+                id: topics[index].id, heading: (index + 1, parts.topic ?? parts.overview), items: group.items,
+                topic: index)
+        }
+    }
+}
+/// The topic a dragged item is over, outlined in its section.
+@MainActor final class TopicDropHighlight: ObservableObject {
+    @Published var topic: Int?
+}
+// A topic's heading and items take a decision, open issue or action dragged from another topic of the same section,
+// and move it there. Only where the minutes can be edited.
+struct TopicDrop: ViewModifier {
+    @EnvironmentObject var store: Store
+    let editing: NoteEditing?
+    let topic: Int?
+    @ObservedObject var highlight: TopicDropHighlight
+    @ViewBuilder func body(content: Content) -> some View {
+        if let editing, let topic, editing.part != .summary {
+            let over = highlight.topic == topic
+            content
+                .background(
+                    RoundedRectangle(cornerRadius: 8).fill(Palette.sumire.opacity(over ? 0.07 : 0)).padding(-4)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8).strokeBorder(
+                        Palette.sumire.opacity(over ? 0.5 : 0), lineWidth: 1.5
+                    )
+                    .padding(-4)
+                )
+                .dropDestination(for: String.self) { payloads, _ in
+                    guard let drag = payloads.lazy.compactMap(NoteItemDrag.init(payload:)).first,
+                        drag.meetingID == editing.meetingID, drag.part == editing.part
+                    else { return false }
+                    store.moveNoteItem(editing.meetingID, part: drag.part, id: drag.id, toTopic: topic)
+                    return true
+                } isTargeted: { inside in
+                    if inside {
+                        highlight.topic = topic
+                    } else if highlight.topic == topic {
+                        highlight.topic = nil
+                    }
+                }
+        } else {
+            content
         }
     }
 }
@@ -1515,6 +1565,9 @@ struct EditableNoteRow: View {
     var topics: [NoteItem] = []  // The summary's topics, which a decision, open issue or action can be moved under.
     private var action: Bool { tone == .actions }
     private var key: String { editing.part.rawValue + "/" + item.id }
+    // Decisions, open issues and actions can go under another summary topic: from the menu, or dragged there.
+    private var movable: Bool { editing.part != .summary && !topics.isEmpty }
+    private var drag: NoteItemDrag { NoteItemDrag(meetingID: editing.meetingID, part: editing.part, id: item.id) }
     var body: some View {
         let open = store.editingNoteItem == key
         Group {
@@ -1534,9 +1587,10 @@ struct EditableNoteRow: View {
                 )
                 .contextMenu {
                     Button("編集", systemImage: "pencil") { store.editingNoteItem = key }
-                    if editing.part != .summary && !topics.isEmpty { topicMenu }
+                    if movable { topicMenu }
                     Button("削除", systemImage: "trash", role: .destructive) { remove() }
                 }
+                .modifier(DraggableNoteItem(item: item, drag: movable ? drag : nil))
             }
         }
         .onChange(of: open, initial: true) { wasOpen, isOpen in
@@ -1629,13 +1683,9 @@ struct EditableNoteRow: View {
                     isOn: Binding(
                         get: { under == index },
                         set: { _ in
-                            guard under != index else { return }
-                            store.updateNoteItem(
-                                editing.meetingID, part: editing.part, id: item.id, offersCorrection: false
-                            ) {
-                                $0.topic = parts.topic ?? topic.text
-                            }
-                        }))
+                            store.moveNoteItem(editing.meetingID, part: editing.part, id: item.id, toTopic: index)
+                        }
+                    ))
             }
         }
     }
@@ -1666,6 +1716,23 @@ struct EditableNoteRow: View {
     private func remove() {
         draft.cancelled = true
         store.removeNoteItem(editing.meetingID, part: editing.part, id: item.id)
+    }
+}
+// An item picked up to drag to another topic shows its text, short, as it moves.
+struct DraggableNoteItem: ViewModifier {
+    let item: NoteItem
+    let drag: NoteItemDrag?
+    @ViewBuilder func body(content: Content) -> some View {
+        if let drag {
+            content.draggable(drag.payload) {
+                Text(item.text).font(.callout).lineLimit(2).frame(maxWidth: 360, alignment: .leading)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Palette.paper))
+                    .foregroundStyle(Palette.sumi)
+            }
+        } else {
+            content
+        }
     }
 }
 // A summary topic's points or opinions, one per line: Return starts the next one.

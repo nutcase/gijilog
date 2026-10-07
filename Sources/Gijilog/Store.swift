@@ -1453,6 +1453,18 @@ extension Store {
         }
         correctionOffer = offer
     }
+    /// Moves a decision, open issue or action under a summary topic by hand, where AI updates then keep it.
+    func moveNoteItem(_ meetingID: UUID, part: NotePart, id: String, toTopic index: Int) {
+        guard part != .summary, let meeting = meetings.first(where: { $0.id == meetingID }),
+            let summary = meeting.notes?.content.summary, summary.indices.contains(index),
+            let item = meeting.notes?.content[part].first(where: { $0.id == id })
+        else { return }
+        let known = Dictionary(meeting.segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        guard MinutesEngine.topicIndex(of: item, in: summary, known: known) != index else { return }
+        updateNoteItem(meetingID, part: part, id: id, offersCorrection: false) {
+            $0.topic = MinutesEngine.topicName(summary[index])
+        }
+    }
     /// The transcript can be corrected whenever it exists, also during the recording: transcription only adds
     /// lines, and the minutes refer to lines by ID.
     func canEditTranscript(_ meeting: Meeting) -> Bool { meeting.capture != .planned && !meeting.segments.isEmpty }
@@ -1667,4 +1679,24 @@ extension Store {
             mcpHiddenTags.append(tag)
         }
     }
+}
+/// What a decision, open issue or action carries when it is dragged to another topic: its meeting, section and id,
+/// as tab-separated text that dropped text from elsewhere does not match.
+struct NoteItemDrag: Equatable {
+    let meetingID: UUID
+    let part: NotePart
+    let id: String
+    init(meetingID: UUID, part: NotePart, id: String) {
+        self.meetingID = meetingID
+        self.part = part
+        self.id = id
+    }
+    init?(payload: String) {
+        let fields = payload.components(separatedBy: "\t")
+        guard fields.count == 4, fields[0] == "gijilog-item", let meetingID = UUID(uuidString: fields[1]),
+            let part = NotePart(rawValue: fields[2]), !fields[3].isEmpty
+        else { return nil }
+        self.init(meetingID: meetingID, part: part, id: fields[3])
+    }
+    var payload: String { ["gijilog-item", meetingID.uuidString, part.rawValue, id].joined(separator: "\t") }
 }

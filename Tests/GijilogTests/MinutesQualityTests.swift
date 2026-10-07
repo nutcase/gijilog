@@ -200,7 +200,8 @@ extension ProcessingTests {
             NoteItem(id: "s3", text: "QB：指摘への対応を確かめる", evidence: []),
         ]
         notes.content.actions = [
-            NoteItem(id: "x", text: "モリバス系で使っているモデルを整理する", evidence: ["b"], topic: "モリバス系")
+            NoteItem(id: "x", text: "モリバス系で使っているモデルを整理する", evidence: ["b"], topic: "モリバス系"),
+            NoteItem(id: "y", text: "デプロイの残件を聞く", evidence: ["c"]),
         ]
         meeting.notes = notes
         store.meetings = [meeting]
@@ -218,6 +219,24 @@ extension ProcessingTests {
         try Self.check(under() == 2, "an action can be moved to a topic chosen by hand")
         store.updateNoteItem(meeting.id, part: .actions, id: "x") { $0.owner = "中塩さん" }
         try Self.check(under() == 2, "editing something else leaves it under its topic")
+
+        // Dragged onto another topic, or chosen from the menu: both move it the same way.
+        let drag = NoteItemDrag(meetingID: meeting.id, part: .actions, id: "y")
+        try Self.check(
+            NoteItemDrag(payload: drag.payload) == drag && NoteItemDrag(payload: "y") == nil
+                && NoteItemDrag(payload: "gijilog-item\tnot-a-uuid\tactions\ty") == nil,
+            "a dragged item says which meeting, section and item it is, and other text is not taken for one")
+        func item(_ id: String) -> NoteItem? { store.meetings[0].notes?.content.actions.first { $0.id == id } }
+        store.moveNoteItem(meeting.id, part: .actions, id: "y", toTopic: 1)
+        try Self.check(item("y")?.edited == nil, "dropped on the topic it is under, an item is left as it was")
+        store.moveNoteItem(meeting.id, part: .actions, id: "y", toTopic: 0)
+        store.moveNoteItem(meeting.id, part: .actions, id: "y", toTopic: 9)
+        try Self.check(
+            item("y")?.topic == "モリバス系" && item("y")?.edited == true,
+            "an item dropped on another topic moves there and is kept there by AI updates")
+        store.moveNoteItem(meeting.id, part: .summary, id: "s3", toTopic: 0)
+        try Self.check(
+            store.meetings[0].notes?.content.summary[2].topic == nil, "a summary topic is not moved under another")
     }
     func testReviewCannotRollBackLaterEvidence() throws {
         let before = Segment(id: "before", time: 0, source: "マイク", text: "A案にします")

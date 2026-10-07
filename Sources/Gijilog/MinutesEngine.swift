@@ -538,6 +538,8 @@ enum MinutesEngine {
         guard whole.count == 1, let i = whole.first, i != current else { return nil }
         return summaryTopic(summary[i].text)
     }
+    /// The name an item is filed under for a summary topic: its short name, or all of it when it has none.
+    static func topicName(_ topic: NoteItem) -> String { summaryTopic(topic.text) ?? topic.text }
     /// The longest run of characters two texts share.
     static func sharedRun(_ first: String, _ second: String) -> String {
         let a = Array(first)
