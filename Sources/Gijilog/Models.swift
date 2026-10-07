@@ -126,13 +126,15 @@ struct Meeting: Codable, Identifiable {
     var corrections: [TermCorrection] = []  // Misheard words fixed across the meeting; see Corrections.swift.
     var clockStart: Date?  // Set when a recording continues the meeting: when its clock would have started.
     var stoppedForSilence: Date?  // When recording stopped by itself after a long silence; cleared on continuing.
+    var ignoredLearned: [String]?  // Learned right spellings undone in this meeting, so they are not applied again.
     init(title: String) { self.title = title }
     /// When the meeting's clock reads zero: the start of the recording, or, for a meeting recorded in parts, the
     /// moment that puts the latest part right after the earlier ones.
     var recordingOrigin: Date { clockStart ?? date }
     enum CodingKeys: String, CodingKey {
         case id, title, date, segments, minutes, status, capture, settings, jobs, notes, captureError, hasAudio,
-            revision, folderName, finalReviewPending, tags, agenda, corrections, clockStart, stoppedForSilence
+            revision, folderName, finalReviewPending, tags, agenda, corrections, clockStart, stoppedForSilence,
+            ignoredLearned
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -157,6 +159,7 @@ struct Meeting: Codable, Identifiable {
         corrections = try c.decodeIfPresent([TermCorrection].self, forKey: .corrections) ?? []
         clockStart = try c.decodeIfPresent(Date.self, forKey: .clockStart)
         stoppedForSilence = try c.decodeIfPresent(Date.self, forKey: .stoppedForSilence)
+        ignoredLearned = try c.decodeIfPresent([String].self, forKey: .ignoredLearned)
     }
 }
 
@@ -746,10 +749,10 @@ enum DueDate {
 /// with them: synced with iCloud Drive or the like, every Mac using that location shares it.
 enum VocabularyFile {
     static let name = "語句リスト.txt"
-    static func read(in root: URL) -> String? {
+    static func read(in root: URL, name: String = name) -> String? {
         try? String(contentsOf: root.appendingPathComponent(name), encoding: .utf8)
     }
-    @discardableResult static func write(_ text: String, in root: URL) -> Bool {
+    @discardableResult static func write(_ text: String, in root: URL, name: String = name) -> Bool {
         do {
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             try Data(text.utf8).write(to: root.appendingPathComponent(name), options: .atomic)

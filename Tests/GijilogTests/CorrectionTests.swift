@@ -217,6 +217,61 @@ extension ProcessingTests {
             store.meetings[1].notes?.content.actions[0].owner == "鈴木" && store.correctionOffer == nil,
             "picking someone else from the list does not offer to change the name across the meeting")
     }
+    // A word fixed once is learned: later meetings get it fixed by themselves, transcription is told its right
+    // spelling and the people named as owners, and the fix can be undone in one meeting.
+    @MainActor func testMisheardWordsAreLearnedFromFixes() async throws {
+        try Self.check(
+            LearnedWords.parse("森バス、もりばす → モリバス\nおかしな行\n高山 → 高松") == [
+                LearnedWord(variants: ["森バス", "もりばす"], to: "モリバス"), LearnedWord(variants: ["高山"], to: "高松"),
+            ]
+                && LearnedWords.learning(["モリ バス", "森バス"], to: "モリバス", in: "森バス → モリバス")
+                    == "森バス、モリ バス → モリバス",
+            "the list reads one right spelling a line, and a fix joins its line")
+
+        let (root, audio) = try fixture(seconds: 12, amplitude: 0.25)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = Store(root: root.appendingPathComponent("save"), loadSettings: false)
+        store.key = "TEST"
+        store.learnedWords = "森バス → モリバス"
+        var earlier = Meeting(title: "前回")
+        earlier.capture = .stopped
+        var notes = MinutesState()
+        notes.content.actions = [NoteItem(id: "x", text: "資料を作る", owner: "佐藤さん", evidence: [])]
+        earlier.notes = notes
+        store.meetings = [earlier]
+        final class Told: @unchecked Sendable { var terms: [String] = [] }
+        let told = Told()
+        store.pipeline = ProcessingPipeline(
+            store: store, review: MinutesEngine.stubReview,
+            recognize: { _, offset, source, _, hints in
+                told.terms = hints.terms
+                return [Segment(time: offset, source: source, text: "森バスの資料を確認します")]
+            },
+            summarize: MinutesEngine.stubSummary)
+        await store.importRecording(from: audio)
+        try await store.waitUntilIdle()
+        let meeting = try Self.require(store.meetings.first { $0.title != "前回" }, "imported meeting")
+        let learned = try Self.require(meeting.corrections.first, "the learned fix")
+        try Self.check(
+            meeting.segments.allSatisfy { $0.text == "モリバスの資料を確認します" } && learned.learned == true
+                && learned.to == "モリバス" && learned.changes.count == meeting.segments.count
+                && told.terms.contains("モリバス") && told.terms.contains("佐藤"),
+            "a learned word is fixed in new speech, and transcription is told it and the owners: \(told.terms) "
+                + "\(meeting.segments.map(\.text)) \(meeting.corrections.map { ($0.to, $0.learned, $0.changes.count) })"
+        )
+        store.undoCorrection(meeting.id, learned.id)
+        let undone = try Self.require(store.meetings.first { $0.id == meeting.id }, "undone meeting")
+        try Self.check(
+            undone.segments.allSatisfy { $0.text == "森バスの資料を確認します" } && undone.corrections.isEmpty
+                && undone.ignoredLearned == ["モリバス"]
+                && !store.hintVocabulary(for: undone).contains("モリバス")
+                && store.learned.map(\.to) == ["モリバス"],
+            "undone in one meeting, it stays undone there and is still learned for the others")
+        store.applyCorrection(
+            meeting.id, occurrences: undone.occurrences(of: "資料", correctedTo: "試料"), to: "試料", addToVocabulary: false)
+        try Self.check(
+            store.learned.contains(LearnedWord(variants: ["資料"], to: "試料")), "a new fix is learned")
+    }
     @MainActor func testEditingTheTranscriptByHand() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

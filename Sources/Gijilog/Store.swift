@@ -45,6 +45,26 @@ import UniformTypeIdentifiers
         didSet { if persistsSettings && !readingVocabulary { VocabularyFile.write(vocabulary, in: root) } }
     }
     private var readingVocabulary = false  // Taking the list from its file, which need not be written back.
+    // Misheard words learned from every fix ("森バス、もりばす → モリバス" a line), kept as 聞き間違い.txt in the save
+    // location: new speech is fixed with them, and their right spellings are transcription hints.
+    @Published var learnedWords = "" {
+        didSet {
+            if persistsSettings && !readingVocabulary {
+                VocabularyFile.write(learnedWords, in: root, name: LearnedWords.name)
+            }
+        }
+    }
+    var learned: [LearnedWord] { LearnedWords.parse(learnedWords) }
+    /// What transcription is told to spell this way for a meeting: the vocabulary list, the right spellings learned
+    /// from fixes (but those undone in this meeting), and the people named as owners, without honorifics.
+    func hintVocabulary(for meeting: Meeting) -> String {
+        let ignored = Set(meeting.ignoredLearned ?? [])
+        let people = knownOwners.map { name in
+            ["さん", "さま", "様", "氏", "くん", "君", "ちゃん"].first(where: { name.hasSuffix($0) && name.count > $0.count })
+                .map { String(name.dropLast($0.count)) } ?? name
+        }
+        return ([vocabulary] + learned.map(\.to).filter { !ignored.contains($0) } + people).joined(separator: "\n")
+    }
     @Published var compactWindowOpen = false  // Alerts go to the compact window while it is open, else the full one.
     let player = ClipPlayer()  // Plays back one utterance of a finished meeting.
     // Sections of the minutes folded away, by title: the same in every meeting and in both windows, and kept.
@@ -189,6 +209,7 @@ import UniformTypeIdentifiers
             // The list moved from the app's settings to the save location, to be shared with the meetings: what was
             // kept in the settings joins whatever the file has, once.
             // (Observers do not run in an initializer, so the file is written here.)
+            learnedWords = VocabularyFile.read(in: root, name: LearnedWords.name) ?? ""
             let file = VocabularyFile.read(in: root) ?? ""
             if let kept = defaults.string(forKey: "vocabulary") {
                 vocabulary = VocabularyFile.merged(file, kept)
@@ -358,6 +379,8 @@ import UniformTypeIdentifiers
             // The list goes along, joined with one the new location may already have.
             if persistsSettings {
                 vocabulary = VocabularyFile.merged(VocabularyFile.read(in: newRoot) ?? "", vocabulary)
+                let there = LearnedWords.parse(VocabularyFile.read(in: newRoot, name: LearnedWords.name) ?? "")
+                learnedWords = there.reduce(learnedWords) { LearnedWords.learning($1.variants, to: $1.to, in: $0) }
             }
             if persistsSettings { UserDefaults.standard.set(newRoot.path, forKey: "storageFolder") }
             await recover()
@@ -507,10 +530,13 @@ import UniformTypeIdentifiers
     }
     /// Takes the vocabulary list from the save location when it changed there, as when another Mac edited it.
     func readVocabularyFile() {
-        guard persistsSettings, let text = VocabularyFile.read(in: root), text != vocabulary else { return }
+        guard persistsSettings else { return }
         readingVocabulary = true
-        vocabulary = text
-        readingVocabulary = false
+        defer { readingVocabulary = false }
+        if let text = VocabularyFile.read(in: root), text != vocabulary { vocabulary = text }
+        if let text = VocabularyFile.read(in: root, name: LearnedWords.name), text != learnedWords {
+            learnedWords = text
+        }
     }
     /// Lists meeting folders that appeared in the save location while the app runs, such as ones synced from another
     /// Mac or restored from a backup, without a restart. They are shown as they are: nothing is processed for them
@@ -1472,10 +1498,13 @@ extension Store {
     ) {
         let replacement = replacement.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !occurrences.isEmpty, !replacement.isEmpty else { return }
+        var learnt: [String] = []
         change(meetingID) { m in
-            m.correct(occurrences, to: replacement)
+            learnt = m.correct(occurrences, to: replacement).variants
             if let notes = m.notes { m.minutes = MinutesEngine.render(notes, segments: m.segments) }
         }
+        // Fixed once, fixed in every meeting from now on: the misheard spellings are learned.
+        learnedWords = LearnedWords.learning(learnt, to: replacement, in: learnedWords)
         if addToVocabulary && !TranscriptionHints.terms(vocabulary).contains(replacement) {
             vocabulary += (vocabulary.isEmpty || vocabulary.hasSuffix("\n") ? "" : "\n") + replacement
         }
@@ -1492,6 +1521,10 @@ extension Store {
     }
     func undoCorrection(_ meetingID: UUID, _ id: UUID) {
         change(meetingID) { m in
+            // A learned word undone here is not applied to this meeting again; other meetings keep using it.
+            if let learned = m.corrections.first(where: { $0.id == id && $0.learned == true }) {
+                m.ignoredLearned = (m.ignoredLearned ?? []) + [learned.to]
+            }
             m.undo(id)
             if let notes = m.notes { m.minutes = MinutesEngine.render(notes, segments: m.segments) }
         }

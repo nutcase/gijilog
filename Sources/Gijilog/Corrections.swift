@@ -25,6 +25,42 @@ struct TermCorrection: Codable, Identifiable, Equatable, Sendable {
     var to: String
     var changes: [TextChange] = []  // What this correction changed, to undo it.
     var date = Date()
+    var learned: Bool?  // Applied by itself, from a word fixed in an earlier meeting.
+}
+/// A misheard word learned from the user's fixes: the spellings transcription produced, and the right one.
+struct LearnedWord: Equatable, Sendable {
+    var variants: [String]
+    var to: String
+}
+/// The misheard words learned from every fix, kept in the save location as 聞き間違い.txt next to the vocabulary list,
+/// one right spelling a line: "森バス、もりばす → モリバス". Shared like the meetings, and editable by hand.
+enum LearnedWords {
+    static let name = "聞き間違い.txt"
+    static func parse(_ text: String) -> [LearnedWord] {
+        text.components(separatedBy: .newlines).compactMap { line in
+            let sides = line.components(separatedBy: "→")
+            guard sides.count == 2 else { return nil }
+            let to = sides[1].trimmingCharacters(in: .whitespaces)
+            let variants = sides[0].components(separatedBy: CharacterSet(charactersIn: "、,，"))
+                .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty && $0 != to }
+            return to.isEmpty || variants.isEmpty ? nil : LearnedWord(variants: variants, to: to)
+        }
+    }
+    static func format(_ words: [LearnedWord]) -> String {
+        words.map { $0.variants.joined(separator: "、") + " → " + $0.to }.joined(separator: "\n")
+    }
+    /// The list with a fix added: its spellings join the right spelling's line, or start one.
+    static func learning(_ variants: [String], to: String, in text: String) -> String {
+        var words = parse(text)
+        let variants = variants.filter { $0 != to }
+        guard !variants.isEmpty else { return text }
+        if let i = words.firstIndex(where: { $0.to == to }) {
+            for variant in variants where !words[i].variants.contains(variant) { words[i].variants.append(variant) }
+        } else {
+            words.append(LearnedWord(variants: variants, to: to))
+        }
+        return format(words)
+    }
 }
 struct TermOccurrence: Identifiable, Hashable, Sendable {
     var place: TextPlace
@@ -307,17 +343,45 @@ extension Meeting {
         }
         corrections.removeAll { $0.id == id }
     }
-    /// Text written after a correction, by transcription or the AI, gets the same correction.
-    func corrected(_ text: String) -> String {
-        corrections.reduce(text) { TermMatcher.replacing($1.variants, with: $1.to, in: $0) }
+    /// New speech fixed with the misheard words learned in earlier meetings. Each word that changes something becomes
+    /// a correction of this meeting marked as learned, with what it changed, so it can be undone here; one undone in
+    /// this meeting, or fixed by hand here already, is left alone.
+    mutating func applyLearned(_ words: [LearnedWord], to segment: inout Segment) {
+        let ignored = Set(ignoredLearned ?? [])
+        for word in words where !ignored.contains(word.to) {
+            if corrections.contains(where: { $0.to == word.to && $0.learned != true }) { continue }
+            let fixed = TermMatcher.replacing(word.variants, with: word.to, in: segment.text)
+            guard fixed != segment.text else { continue }
+            let change = TextChange(place: .segment(segment.id), before: segment.text, after: fixed)
+            segment.text = fixed
+            if let i = corrections.firstIndex(where: { $0.to == word.to && $0.learned == true }) {
+                corrections[i].changes.append(change)
+                for variant in word.variants where !corrections[i].variants.contains(variant) {
+                    corrections[i].variants.append(variant)
+                }
+            } else {
+                corrections.append(
+                    TermCorrection(variants: word.variants, to: word.to, changes: [change], learned: true))
+            }
+        }
     }
+    /// Speech transcribed after a correction gets the same correction. Learned words are left to applyLearned, which
+    /// records what they change so they can be undone.
+    func corrected(_ text: String) -> String { corrected(text, learned: false) }
+    private func corrected(_ text: String, learned: Bool) -> String {
+        corrections.filter { learned || $0.learned != true }
+            .reduce(text) { TermMatcher.replacing($1.variants, with: $1.to, in: $0) }
+    }
+    /// Minutes the AI writes after a correction get it too, learned words included.
     func corrected(_ notes: MinutesState) -> MinutesState {
         guard !corrections.isEmpty else { return notes }
         var notes = notes
         for part in NotePart.allCases {
             for i in notes.content[part].indices {
                 for field in NoteField.allCases {
-                    if let text = notes.content[part][i][field] { notes.content[part][i][field] = corrected(text) }
+                    if let text = notes.content[part][i][field] {
+                        notes.content[part][i][field] = corrected(text, learned: true)
+                    }
                 }
             }
         }

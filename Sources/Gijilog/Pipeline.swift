@@ -109,7 +109,8 @@ import Foundation
             lastScheduledID = meeting.id
             let token = meeting.id.uuidString + "/" + job.id
             let key = keys[meeting.id] ?? ""
-            let hints = TranscriptionHints(meeting: meeting, before: job.offset, vocabulary: store.vocabulary)
+            let hints = TranscriptionHints(
+                meeting: meeting, before: job.offset, vocabulary: store.hintVocabulary(for: meeting))
             // Reserve synchronously so the next pump cannot schedule this job twice.
             // Job progress is persisted by the store's coalesced checkpoints; a crash re-runs only the latest jobs.
             store.change(meeting.id) { m in
@@ -128,13 +129,16 @@ import Foundation
                             id: job.id + ":" + String(index), time: segment.time, source: segment.source,
                             text: segment.text)
                     }
+                    let learned = store.learned
                     store.change(meeting.id) { m in
                         m.segments.removeAll { $0.id.hasPrefix(job.id + ":") }
-                        // Words the user corrected earlier in the meeting are corrected in new speech too.
+                        // Words the user corrected earlier in the meeting are corrected in new speech too, and so are
+                        // words learned from fixes in earlier meetings.
                         m.segments.append(
                             contentsOf: segments.map { segment in
                                 var segment = segment
                                 segment.text = m.corrected(segment.text)
+                                m.applyLearned(learned, to: &segment)
                                 return segment
                             })
                         m.segments.sort { $0.time < $1.time }

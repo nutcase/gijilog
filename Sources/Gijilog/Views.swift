@@ -1755,6 +1755,10 @@ struct CorrectionSheet: View {
                 ForEach(corrections) { correction in
                     HStack {
                         Text(correction.variants.joined(separator: "・") + " → " + correction.to)
+                        if correction.learned == true {
+                            Text("自動").font(.caption.weight(.semibold)).foregroundStyle(Palette.asagi)
+                                .help("これまでに直した語句から、自動で直しました")
+                        }
                         Text("\(correction.changes.count)か所").foregroundStyle(.secondary)
                         Spacer()
                         Button("取り消す") { store.undoCorrection(request.meetingID, correction.id) }
@@ -2770,7 +2774,7 @@ struct TranscriptionSettings: View {
                 TextEditor(text: $store.vocabulary)
                     .font(.body)
                     .scrollContentBackground(.hidden)
-                    .frame(minHeight: 260)
+                    .frame(minHeight: 200)
                     .overlay(alignment: .topLeading) {
                         if store.vocabulary.isEmpty {
                             Text("例：\nギジログ\n山田 花子\nOKR")
@@ -2785,9 +2789,28 @@ struct TranscriptionSettings: View {
                 )
                 .fixedSize(horizontal: false, vertical: true)
             }
+            Section {
+                TextEditor(text: $store.learnedWords)
+                    .font(.body)
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 140)
+                    .overlay(alignment: .topLeading) {
+                        if store.learnedWords.isEmpty {
+                            Text("まだありません。文字起こしや議事録で語句を直すと、ここに覚えていきます。")
+                                .foregroundStyle(.tertiary).padding(.leading, 5).allowsHitTesting(false)
+                        }
+                    }
+            } header: {
+                Text("覚えた聞き間違い")
+            } footer: {
+                Text(
+                    "語句を直すと「森バス、もりばす → モリバス」のように覚え、これからの会議では同じ聞き間違いを自動で直し、正しい語を文字起こしのヒントにも使います。会議の「語句をまとめて直す…」で、その会議の自動の直しだけを取り消せます。ここで行を消すと、覚えるのをやめます。保存先の「聞き間違い.txt」に保存します。担当者になった人の名前も、文字起こしのヒントに使います。"
+                )
+                .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .formStyle(.grouped)
-        .frame(width: 560, height: 520)
+        .frame(width: 560, height: 720)
     }
 }
 
