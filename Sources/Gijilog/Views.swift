@@ -874,9 +874,12 @@ struct MinutesDesk: View {
             .foregroundStyle(Palette.sumi)
             .padding(.horizontal, 48).padding(.vertical, 40)
             .frame(maxWidth: 760, alignment: .leading)
-            .background(Palette.paper, in: RoundedRectangle(cornerRadius: 4))
-            .compositingGroup()  // One shadow for the sheet, not one under each line on it.
-            .shadow(color: .black.opacity(0.35), radius: 24, y: 12)
+            // The shadow is the sheet shape's alone. On the whole view it fell under every line, and flattening
+            // the view into one layer to stop that drew some text upside down when part of it redrew.
+            .background(
+                RoundedRectangle(cornerRadius: 4).fill(Palette.paper)
+                    .shadow(color: .black.opacity(0.35), radius: 24, y: 12)
+            )
             .environment(\.colorScheme, .light)
             .padding(32)
             .frame(maxWidth: .infinity)
