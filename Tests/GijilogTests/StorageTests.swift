@@ -149,6 +149,53 @@ extension ProcessingTests {
                 && FileManager.default.fileExists(atPath: watched.appendingPathComponent("語句リスト.txt").path),
             "the list is saved as 語句リスト.txt in the save location")
     }
+    // A listed meeting changed in the save location by another Mac is read again; changes made here and not yet saved
+    // win, and this app's own saves are not taken for changes.
+    @MainActor func testMeetingsChangedElsewhereAreReloaded() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = Store(root: root, loadSettings: false)
+        var meeting = Meeting(title: "共有の会議")
+        meeting.capture = .stopped
+        meeting.folderName = "2026-10-07 18.00 共有の会議"
+        store.meetings = [meeting]
+        for _ in 0..<3 {
+            store.change(meeting.id) { $0.status = "完了" }
+            try await store.checkpoint(meeting.id)
+        }
+        let file = store.folder(meeting.id).appendingPathComponent("meeting.json")
+        var later = Date().addingTimeInterval(5)
+        func writeElsewhere(_ title: String) throws {
+            var other = try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: file))
+            other.title = title
+            other.revision = 1  // The other Mac counts its own saves.
+            try JSONEncoder().encode(other).write(to: file)
+            try FileManager.default.setAttributes([.modificationDate: later], ofItemAtPath: file.path)
+            later.addTimeInterval(5)
+        }
+        await store.reloadChangedMeetings()
+        try Self.check(store.meetings[0].title == "共有の会議", "this app's own saves are not read back")
+        try writeElsewhere("別の Mac で直した")
+        await store.reloadChangedMeetings()
+        try Self.check(store.meetings[0].title == "別の Mac で直した", "a meeting changed on another Mac is read again")
+        store.change(meeting.id) { $0.title = "こちらで直した" }
+        await store.flushCheckpoints()
+        func saved() throws -> String { try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: file)).title }
+        let afterReload = try saved()
+        try Self.check(afterReload == "こちらで直した", "a change made here afterwards is saved, not refused as stale")
+        store.change(meeting.id) { $0.title = "まだ保存していない" }
+        try writeElsewhere("同時に直した")
+        await store.reloadChangedMeetings()
+        await store.flushCheckpoints()
+        let together = try saved()
+        try Self.check(
+            store.meetings[0].title == "まだ保存していない" && together == "まだ保存していない",
+            "a change here not yet saved wins over one made elsewhere")
+        try writeElsewhere("録音中に直した")
+        store.activeID = meeting.id
+        await store.reloadChangedMeetings()
+        try Self.check(store.meetings[0].title == "まだ保存していない", "a meeting being recorded here is not replaced")
+    }
     @MainActor func testSaveLocationMovesWithItsMeetings() async throws {
         let (root, _) = try fixture(seconds: 1, amplitude: 0)
         defer { try? FileManager.default.removeItem(at: root) }

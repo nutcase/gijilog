@@ -532,6 +532,11 @@ actor MeetingRepository {
     private let discard: @Sendable (URL) throws -> Void
     private var savedRevisions: [UUID: UInt64] = [:]
     private var deleted: Set<UUID> = []
+    // When each meeting.json was last written or read here, to tell a change made elsewhere from this app's own.
+    private var seen: [UUID: Date] = [:]
+    private func modified(_ file: URL) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: file.path))?[.modificationDate] as? Date
+    }
     init(root: URL, discard: (@Sendable (URL) throws -> Void)? = nil) {
         self.root = root
         self.discard = discard ?? { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) }
@@ -547,7 +552,9 @@ actor MeetingRepository {
         let folder = folder(for: meeting)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let data = try JSONEncoder().encode(meeting)
-        try data.write(to: folder.appendingPathComponent("meeting.json"), options: .atomic)
+        let file = folder.appendingPathComponent("meeting.json")
+        try data.write(to: file, options: .atomic)
+        seen[meeting.id] = modified(file)
         // The readable minutes travel with the audio; they are rewritten whenever the meeting changes.
         if let document = MinutesEngine.document(meeting) {
             try Data(document.utf8).write(to: folder.appendingPathComponent(Self.documentName), options: .atomic)
@@ -565,6 +572,7 @@ actor MeetingRepository {
             do {
                 var meeting = try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: file))
                 meeting.folderName = folder.lastPathComponent
+                seen[meeting.id] = modified(file)
                 meetings.append(meeting)
             } catch {
                 errors.append("\(folder.lastPathComponent): \(error.localizedDescription)")
@@ -579,13 +587,30 @@ actor MeetingRepository {
         guard let folders = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
         else { return [] }
         return folders.compactMap { folder in
-            guard !known.contains(folder.lastPathComponent),
-                let data = try? Data(contentsOf: folder.appendingPathComponent("meeting.json")),
+            let file = folder.appendingPathComponent("meeting.json")
+            guard !known.contains(folder.lastPathComponent), let data = try? Data(contentsOf: file),
                 var meeting = try? JSONDecoder().decode(Meeting.self, from: data)
             else { return nil }
+            seen[meeting.id] = modified(file)
             // A deleted meeting's folder is only back when the user put it back, so it is saved again from now on.
             deleted.remove(meeting.id)
             meeting.folderName = folder.lastPathComponent
+            return meeting
+        }
+    }
+    /// Listed meetings whose meeting.json changed since this app last wrote or read it: changed by something else,
+    /// such as the same meeting edited on another Mac and synced. One still being written does not decode yet and is
+    /// read on the next change.
+    func loadChanged(_ listed: [(id: UUID, folder: String)]) -> [Meeting] {
+        listed.compactMap { id, name in
+            let file = root.appendingPathComponent(name).appendingPathComponent("meeting.json")
+            guard !deleted.contains(id), let date = modified(file), date != seen[id],
+                let data = try? Data(contentsOf: file),
+                var meeting = try? JSONDecoder().decode(Meeting.self, from: data),
+                meeting.id == id
+            else { return nil }
+            seen[id] = date
+            meeting.folderName = name
             return meeting
         }
     }

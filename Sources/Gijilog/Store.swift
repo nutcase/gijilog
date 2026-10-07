@@ -477,10 +477,33 @@ import UniformTypeIdentifiers
             folderWatcher = FolderWatcher(root) { [weak self] in
                 Task { @MainActor in
                     await self?.loadAddedMeetings()
+                    await self?.reloadChangedMeetings()
                     self?.readVocabularyFile()
                 }
             }
         }
+    }
+    /// Takes in listed meetings changed in the save location by something else, such as the same meeting edited on
+    /// another Mac and synced. A meeting being recorded, processed or edited here, or with changes not yet saved,
+    /// keeps this Mac's version, which its next save writes over the other.
+    func reloadChangedMeetings() async {
+        guard ready else { return }
+        let listed = meetings.map { (id: $0.id, folder: $0.folderName ?? $0.id.uuidString) }
+        var reloaded = 0
+        for meeting in await repository.loadChanged(listed) {
+            let id = meeting.id
+            let open = selected == id && (editingNoteItem != nil || editingSegment != nil || editingTitle == id)
+            guard id != activeID, !isProcessing(id), !dirtyIDs.contains(id), !open,
+                let i = meetings.firstIndex(where: { $0.id == id })
+            else { continue }
+            // Each Mac counts its own saves: the higher count goes on, so this Mac's next save is not taken as stale.
+            var meeting = meeting
+            meeting.revision = max(meeting.revision, meetings[i].revision, revisions[id] ?? 0)
+            meetings[i] = meeting
+            revisions[id] = meeting.revision
+            reloaded += 1
+        }
+        if reloaded > 0 { status = reloaded == 1 ? "ほかで更新された会議を読み込み直しました" : "ほかで更新された会議を\(reloaded)件読み込み直しました" }
     }
     /// Takes the vocabulary list from the save location when it changed there, as when another Mac edited it.
     func readVocabularyFile() {
