@@ -783,6 +783,8 @@ struct VocabularyFile: Equatable {
     var terms: [String] = []
     var corrections: [LearnedWord] = []
     static let name = "vocabulary.json"
+    // Terms kept and told to transcription: as many as it takes as keywords. Past this, terms are not saved.
+    static let termLimit = 100
     // Before, the lists were text files: a term, or a line like "森バス、もりばす → モリバス", a line.
     static let oldNames = (terms: "語句リスト.txt", corrections: "聞き間違い.txt")
     /// A file that is not JSON as this app reads it, with the line where reading stopped when JSON tells it.
@@ -800,9 +802,9 @@ struct VocabularyFile: Equatable {
         self.init(
             terms: terms.joined(separator: "\n"), corrections: LearnedWords.format(corrections))
     }
-    /// The lists as they are typed in the settings, without blanks or repeats.
+    /// The lists as they are typed in the settings, without blanks or repeats, within their limits.
     init(terms: String, corrections: String) {
-        self.terms = TranscriptionHints.terms(terms)
+        self.terms = Array(TranscriptionHints.terms(terms).prefix(Self.termLimit))
         self.corrections = LearnedWords.parse(LearnedWords.merged("", corrections))
     }
     init(json: Data) throws {

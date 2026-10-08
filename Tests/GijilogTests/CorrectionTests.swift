@@ -247,6 +247,16 @@ extension ProcessingTests {
                 && LearnedWords.learning(["モリ バス", "森バス"], to: "モリバス", in: "森バス → モリバス")
                     == "森バス、モリ バス → モリバス",
             "the list reads one right spelling a line, and a fix joins its line")
+        // The list keeps the words fixed latest: a fix renews its word, and past the limit the one fixed longest ago
+        // is forgotten. A word keeps its latest misheard spellings.
+        let full = (1...LearnedWords.limit).reduce("") { LearnedWords.learning(["誤\($1)"], to: "正\($1)", in: $0) }
+        let renewed = LearnedWords.learning(["誤1b"], to: "正1", in: full)
+        let over = LearnedWords.parse(LearnedWords.learning(["誤X"], to: "正X", in: renewed))
+        let spellings = LearnedWords.parse((1...15).reduce("") { LearnedWords.learning(["誤\($1)"], to: "正", in: $0) })
+        try Self.check(
+            over.count == LearnedWords.limit && over.first?.to == "正3" && over.dropLast().last?.to == "正1"
+                && over.last?.to == "正X" && spellings.first?.variants == (6...15).map { "誤\($0)" },
+            "the list keeps \(LearnedWords.limit) words, forgetting the one fixed longest ago: \(over.prefix(2))")
         var first = Meeting(title: "前々回")
         first.date = Date(timeIntervalSince1970: 0)
         first.corrections = [TermCorrection(variants: ["高山"], to: "高松")]

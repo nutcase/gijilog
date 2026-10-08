@@ -63,7 +63,7 @@ import UniformTypeIdentifiers
     // Misheard words learned from every fix ("森バス、もりばす → モリバス" a line): new speech is fixed with them, and
     // their right spellings are transcription hints. Both lists are kept in the save location's vocabulary.json.
     @Published var learnedWords = "" { didSet { saveVocabulary() } }
-    var learned: [LearnedWord] { LearnedWords.parse(learnedWords) }
+    var learned: [LearnedWord] { LearnedWords.capped(LearnedWords.parse(learnedWords)) }
     private var readingVocabulary = false  // Taking the lists from their file, which need not be written back.
     // vocabulary.json written wrong, as by hand: the lists are not saved until it is put right, so that nothing
     // written there is lost.
@@ -117,7 +117,8 @@ import UniformTypeIdentifiers
             ["さん", "さま", "様", "氏", "くん", "君", "ちゃん"].first(where: { name.hasSuffix($0) && name.count > $0.count })
                 .map { String(name.dropLast($0.count)) } ?? name
         }
-        return ([vocabulary] + learned.map(\.to).filter { !ignored.contains($0) } + people).joined(separator: "\n")
+        let terms = TranscriptionHints.terms(vocabulary).prefix(VocabularyFile.termLimit)
+        return (terms + learned.map(\.to).filter { !ignored.contains($0) } + people).joined(separator: "\n")
     }
     @Published var compactWindowOpen = false  // Alerts go to the compact window while it is open, else the full one.
     let player = ClipPlayer()  // Plays back one utterance of a finished meeting.
@@ -1176,6 +1177,8 @@ import UniformTypeIdentifiers
         pipeline.resume(id, key: key)
     }
     func isProcessing(_ id: UUID) -> Bool { preparingIDs.contains(id) || pipeline.isProcessing(id) }
+    /// The minutes are still being written: during the recording, and while its speech or minutes are processed.
+    func minutesChanging(_ meeting: Meeting) -> Bool { meeting.capture == .recording || isProcessing(meeting.id) }
     func canDelete(_ id: UUID) -> Bool { ready && id != activeID && !busy && !isProcessing(id) }
     /// Moves the meeting's audio, transcript and minutes to the Trash.
     func delete(_ id: UUID) async {

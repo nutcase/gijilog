@@ -1003,7 +1003,10 @@ struct MinutesDesk: View {
                     .font(.callout).foregroundStyle(.secondary).padding(.top, 24)
                 }
             }
-            .textSelection(.enabled)
+            // Selectable text is drawn by AppKit, and while the minutes keep changing (recording, processing) it
+            // came out upside down in places as rows redrew; it can be selected again once they settle, when the
+            // switch also draws it afresh.
+            .modifier(Selectable(enabled: !store.minutesChanging(meeting)))
             .foregroundStyle(Palette.sumi)
             .padding(.horizontal, 48).padding(.vertical, 40)
             .frame(maxWidth: 760, alignment: .leading)
@@ -3241,11 +3244,27 @@ struct TranscriptionSettings: View {
                         }
                     }
             } header: {
-                Text("用語集")
+                let count = TranscriptionHints.terms(store.vocabulary).count
+                HStack {
+                    Text("用語集")
+                    Spacer()
+                    Text("\(count) / \(VocabularyFile.termLimit)語").monospacedDigit()
+                        .foregroundStyle(count > VocabularyFile.termLimit ? Palette.yamabuki : .secondary)
+                }
             } footer: {
-                Text(
-                    "会議によく出る人名・社名・製品名・略語を、1行に1つ（または読点で区切って）入力してください。文字起こしでこの表記が使われやすくなります。会議名とアジェンダの議題、直前の発言も、文字起こしのヒントとして一緒に送ります。用語集は、覚えた聞き間違いと一緒に保存先の「vocabulary.json」に保存するので、保存先を iCloud Drive などで同期していれば、ほかの Mac とも共有されます。"
-                )
+                VStack(alignment: .leading, spacing: 6) {
+                    let over = TranscriptionHints.terms(store.vocabulary).count - VocabularyFile.termLimit
+                    if over > 0 {
+                        Label(
+                            "\(VocabularyFile.termLimit)語を超えています。後ろの\(over)語は保存せず、文字起こしにも使いません。",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .foregroundStyle(Palette.yamabuki)
+                    }
+                    Text(
+                        "会議によく出る人名・社名・製品名・略語を、1行に1つ（または読点で区切って）、\(VocabularyFile.termLimit)語まで入力できます。文字起こしでこの表記が使われやすくなります。会議名とアジェンダの議題、直前の発言も、文字起こしのヒントとして一緒に送ります。用語集は、覚えた聞き間違いと一緒に保存先の「vocabulary.json」に保存するので、保存先を iCloud Drive などで同期していれば、ほかの Mac とも共有されます。"
+                    )
+                }
                 .fixedSize(horizontal: false, vertical: true)
             }
             Section {
@@ -3260,10 +3279,15 @@ struct TranscriptionSettings: View {
                         }
                     }
             } header: {
-                Text("覚えた聞き間違い")
+                HStack {
+                    Text("覚えた聞き間違い")
+                    Spacer()
+                    Text("\(LearnedWords.parse(store.learnedWords).count) / \(LearnedWords.limit)件").monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
             } footer: {
                 Text(
-                    "語句を直すと「森バス、もりばす → モリバス」のように覚え、これからの会議では同じ聞き間違いを自動で直し、正しい語を文字起こしのヒントにも使います。会議の「語句をまとめて直す…」で、その会議の自動の直しだけを取り消せます。ここで行を消すと、覚えるのをやめます。担当者になった人の名前も、文字起こしのヒントに使います。"
+                    "語句を直すと「森バス、もりばす → モリバス」のように覚え、これからの会議では同じ聞き間違いを自動で直し、正しい語を文字起こしのヒントにも使います。会議の「語句をまとめて直す…」で、その会議の自動の直しだけを取り消せます。ここで行を消すと、覚えるのをやめます。覚えるのは\(LearnedWords.limit)件までで、超えると、いちばん長く直していないものから忘れます。担当者になった人の名前も、文字起こしのヒントに使います。"
                 )
                 .fixedSize(horizontal: false, vertical: true)
             }
@@ -3904,7 +3928,7 @@ struct LiveMinutes: View {
                     known: known, latest: latest, topics: content.summary.filter { $0.state != .cancelled })
             }
             .padding(16)
-            .textSelection(.enabled)
+            .modifier(Selectable(enabled: !store.minutesChanging(meeting)))  // As in the full window.
         }
         .foregroundStyle(Palette.sumi)
         .background(Palette.paper)

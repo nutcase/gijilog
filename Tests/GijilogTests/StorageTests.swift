@@ -180,12 +180,12 @@ extension ProcessingTests {
                     "OKR"
                   ],
                   "corrections": [
-                    { "heard": ["森バス", "もりばす", "森 バス"], "correct": "モリバス" },
-                    { "heard": ["IQ"], "correct": "AIQ" }
+                    { "heard": ["IQ"], "correct": "AIQ" },
+                    { "heard": ["森バス", "もりばす", "森 バス"], "correct": "モリバス" }
                   ]
                 }
                 """ + "\n" && VocabularyFile().json == "{\n  \"terms\": [],\n  \"corrections\": []\n}\n",
-            "the file has a term or a correction a line, without repeats")
+            "the file has a term or a correction a line, without repeats, a word fixed again last")
         let reread = try VocabularyFile(json: Data(lists.json.utf8))
         try Self.check(reread == lists, "the file reads back as written")
         let typed = #"{"corrections": [{"heard": " 高山 ", "correct": "高松"}, {"heard": ["高松"], "correct": "高松"}]}"#
@@ -201,6 +201,11 @@ extension ProcessingTests {
         try Self.check(
             problem?.line == 4, "a file written wrong is not read, and says the line: \(String(describing: problem))")
 
+        // The vocabulary keeps as many terms as transcription takes as keywords; those past it are not saved.
+        let crowded = VocabularyFile(terms: (1...120).map { "語\($0)" }.joined(separator: "\n"), corrections: "")
+        try Self.check(
+            crowded.terms.count == VocabularyFile.termLimit && crowded.terms.last == "語\(VocabularyFile.termLimit)",
+            "the vocabulary keeps its first \(VocabularyFile.termLimit) terms")
         // When the file last changed is known without reading it, so a save reads it again only when it changed.
         try Self.check(
             VocabularyFile.modified(in: root) == nil, "a save location without the file has no time for it")
@@ -225,8 +230,8 @@ extension ProcessingTests {
         try Self.check(
             adopted?.terms == ["ギジログ", "モリバス", "OKR", "高松"]
                 && adopted?.corrections == [
-                    LearnedWord(variants: ["森バス", "もりばす", "森 バス"], to: "モリバス"),
                     LearnedWord(variants: ["IQ"], to: "AIQ"), LearnedWord(variants: ["高山"], to: "高松"),
+                    LearnedWord(variants: ["森バス", "もりばす", "森 バス"], to: "モリバス"),
                 ]
                 && !FileManager.default.fileExists(atPath: oldTerms.path)
                 && !FileManager.default.fileExists(atPath: oldCorrections.path),

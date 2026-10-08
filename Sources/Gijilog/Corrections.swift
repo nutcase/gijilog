@@ -35,6 +35,14 @@ struct LearnedWord: Equatable, Sendable {
 /// The misheard words learned from every fix, as the settings show them: one right spelling a line, after the
 /// spellings heard, "森バス、もりばす → モリバス". Kept in the save location's vocabulary.json, shared like the meetings.
 enum LearnedWords {
+    // So the list stays quick to save and to apply to every utterance: the right spellings kept, past which the one
+    // fixed longest ago is forgotten, and the misheard spellings kept for each, the latest.
+    static let limit = 100
+    static let variantLimit = 10
+    /// The list within its limits.
+    static func capped(_ words: [LearnedWord]) -> [LearnedWord] {
+        words.suffix(limit).map { LearnedWord(variants: Array($0.variants.suffix(variantLimit)), to: $0.to) }
+    }
     /// One list with another's words joined in.
     static func merged(_ list: String, _ other: String) -> String {
         parse(other).reduce(list) { learning($1.variants, to: $1.to, in: $0) }
@@ -58,16 +66,16 @@ enum LearnedWords {
             .reduce("") { learning($1.variants, to: $1.to, in: $0) }
     }
     /// The list with a fix added: its spellings join the right spelling's line, or start one.
+    /// A fix renews its word: it goes last, as the latest, so the words forgotten first are those fixed longest ago.
     static func learning(_ variants: [String], to: String, in text: String) -> String {
         var words = parse(text)
         let variants = variants.filter { $0 != to }
         guard !variants.isEmpty else { return text }
-        if let i = words.firstIndex(where: { $0.to == to }) {
-            for variant in variants where !words[i].variants.contains(variant) { words[i].variants.append(variant) }
-        } else {
-            words.append(LearnedWord(variants: variants, to: to))
-        }
-        return format(words)
+        var word = LearnedWord(variants: [], to: to)
+        if let i = words.firstIndex(where: { $0.to == to }) { word = words.remove(at: i) }
+        for variant in variants where !word.variants.contains(variant) { word.variants.append(variant) }
+        words.append(word)
+        return format(capped(words))
     }
 }
 struct TermOccurrence: Identifiable, Hashable, Sendable {
