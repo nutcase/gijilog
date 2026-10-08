@@ -154,7 +154,7 @@ Claude Code・Claude Desktop など MCP に対応した AI アプリから、ギ
    - Claude Code：`claude mcp add` で登録します。claude コマンドが見つからなければ、コマンドをコピーします。
    - Claude Desktop：拡張機能（`ギジログ.mcpb`）を開くので、Claude Desktop の画面で「インストール」を押します。
    - ほかの AI アプリには、表示されているコマンド（`ギジログ.app/Contents/MacOS/gijilog-mcp`）を MCP サーバーとして登録します。「ほかの AI アプリ用の設定（JSON）をコピー」も使えます。
-2. あとは AI アプリに聞くだけです。ギジログが起動していなければ自動で起動し、途中で終了しても次の質問でつなぎ直します。
+2. あとは AI アプリに聞くだけです。ギジログが起動していなければ、窓を出さずに起動し（メニューバーで待ちます）、途中で終了しても次の質問でつなぎ直します。
 
 Claude Desktop に追加した拡張機能は、Claude デスクトップアプリの Code タブ（Claude Code）でもそのまま使えます。登録を外すときは、Claude Desktop では設定の「拡張機能」から削除し、Claude Code では `claude mcp remove --scope user gijilog` を実行します。
 

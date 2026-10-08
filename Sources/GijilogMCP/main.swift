@@ -3,7 +3,8 @@ import Foundation
 
 // gijilog-mcp: the command an AI app (Claude Code, Claude Desktop, …) runs to reach ギジログ over MCP.
 // It relays newline-delimited JSON-RPC between stdio and the Unix socket ギジログ serves to this user only,
-// starts ギジログ when it is not running, and reconnects after it quits, so the AI app never loses the server.
+// starts ギジログ, hidden, when it is not running, and reconnects after it quits, so the AI app never loses the
+// server.
 // Nothing here listens on the network. Logs go to stderr; stdout carries only MCP messages.
 
 let bundleID = "io.github.nutcase.gijilog"
@@ -109,13 +110,16 @@ final class Bridge: @unchecked Sendable {
         }
         return fd
     }
-    /// Starts ギジログ in the background: the app this bridge is bundled in, or else the one Launch Services knows.
+    /// Starts ギジログ in the background and hidden: the app this bridge is bundled in, or else the one Launch
+    /// Services knows. Nobody asked to see it, so its window stays out of the way until they open it themselves;
+    /// launched only in the background, the window came up over the other apps' windows.
     private func launch() {
         log("ギジログを起動します")
         let bundle = Bundle.main.bundleURL
         let open = Process()
         open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        open.arguments = bundle.pathExtension == "app" ? ["-g", "-a", bundle.path] : ["-g", "-b", bundleID]
+        open.arguments =
+            bundle.pathExtension == "app" ? ["-g", "-j", "-a", bundle.path] : ["-g", "-j", "-b", bundleID]
         open.standardOutput = FileHandle.nullDevice
         open.standardError = FileHandle.nullDevice
         do {
