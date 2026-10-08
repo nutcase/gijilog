@@ -342,6 +342,7 @@ enum MinutesEngine {
         item.opinions = list(item.opinions)
         let topic = item.topic?.trimmingCharacters(in: .whitespacesAndNewlines)
         item.topic = summary || topic?.isEmpty != false ? nil : topic
+        item.topicID = nil  // Only a move by hand files an item by a topic's ID.
         let original = item.evidence.compactMap { known[$0]?.text }.joined(separator: "\n")
         func field(_ value: String?) -> String? {
             guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty,
@@ -488,10 +489,11 @@ enum MinutesEngine {
         return
             "# \(plain(title ?? "議事録"))\n\(tagLine(tags))\(agendaSection(agenda))\(notice)\n## 要約\n\n\(topics(state.content.summary.filter { $0.state != .cancelled }))\n\n## 決定事項と理由\(candidate)\n\(grouped(state.content.decisions.filter { $0.state != .cancelled }))\n\n## アクションアイテム\n\(grouped(state.content.actions.filter { $0.state != .cancelled }, actions: true))\n\n## 未決事項・次の確認\(candidate)\n\(grouped(state.content.unresolved.filter { $0.state == .open }))\(history)\(original)"
     }
-    /// The summary topic an item belongs to, by its place in the summary: the topic the AI named for it, or, when it
-    /// named none (or the item was written before topics were named), the topic whose talk the item's evidence falls
-    /// in, else the one closest to it within five minutes.
+    /// The summary topic an item belongs to, by its place in the summary: the one it was moved under by hand, the
+    /// topic the AI named for it, or, when it named none (or the item was written before topics were named), the
+    /// topic whose talk the item's evidence falls in, else the one closest to it within five minutes.
     static func topicIndex(of item: NoteItem, in summary: [NoteItem], known: [String: Segment]) -> Int? {
+        if let id = item.topicID, let index = summary.firstIndex(where: { $0.id == id }) { return index }
         let names = summary.map { summaryTopic($0.text).map(normalized) ?? normalized($0.text) }
         if let topic = item.topic.map(normalized), !topic.isEmpty {
             if let i = names.firstIndex(of: topic) { return i }

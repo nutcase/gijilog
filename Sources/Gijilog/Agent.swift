@@ -41,6 +41,8 @@ struct AskLink: Equatable {
 
 @MainActor enum MeetingAgent {
     static let maxRounds = 8  // Rounds of tool calls before the model must answer with what it has read.
+    // The conversation sent with a question: it and the five exchanges before it, so a long one stays within reach.
+    static let remembered = 11
 
     /// What the model is told: how to answer, today's date, and the meeting open in the window, so that "この会議"
     /// and "先週" are clear.
@@ -87,8 +89,8 @@ struct AskLink: Equatable {
         }
     }
 
-    /// Answers the last question of a conversation, calling tools until the model has what it needs. Earlier
-    /// questions and answers are context; what the tools returned for them is not kept. `send` posts one request and
+    /// Answers the last question of a conversation, calling tools until the model has what it needs. The last few
+    /// questions and answers before it are context; what the tools returned for them is not kept. `send` posts one request and
     /// returns the response, `run` performs a tool call, and `progress` hears what is being read.
     static func answer(
         _ conversation: [AskMessage], instructions: String, model: String,
@@ -97,7 +99,8 @@ struct AskLink: Equatable {
         progress: @MainActor (String) -> Void = { _ in },
         writing: @escaping @MainActor (String) -> Void = { _ in }
     ) async throws -> String {
-        var input: [Any] = conversation.compactMap { message -> [String: Any]? in
+        var input: [Any] = conversation.filter { $0.role != .failure }.suffix(remembered).compactMap {
+            message -> [String: Any]? in
             switch message.role {
             case .question: ["role": "user", "content": message.text]
             case .answer: ["role": "assistant", "content": message.text]

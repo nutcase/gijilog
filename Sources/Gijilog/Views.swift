@@ -318,6 +318,7 @@ struct ContentView: View {
 
 struct MeetingList: View {
     @EnvironmentObject var store: Store
+    @Environment(\.openSettings) private var openSettings
     @FocusState private var searchFocused: Bool
     @StateObject private var searchAsked = Flag()  // ⌘F asked for the search field since the list appeared.
     var body: some View {
@@ -393,9 +394,23 @@ struct MeetingList: View {
             .padding(.horizontal, 18).padding(.top, 8).padding(.bottom, 12)
         }
         .safeAreaInset(edge: .bottom) {
-            HStack {
-                SettingsLink { Label("設定", systemImage: "gearshape") }.buttonStyle(.plain).foregroundStyle(.secondary)
-                Spacer()
+            VStack(alignment: .leading, spacing: 10) {
+                // A vocabulary file that cannot be read stops the lists being saved: that stays in view until fixed.
+                if let problem = store.vocabularyProblem {
+                    Button {
+                        store.settingsTab = "文字起こし"
+                        openSettings()
+                    } label: {
+                        Label("用語集のファイルを読み込めません", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption.weight(.semibold)).foregroundStyle(Palette.yamabuki)
+                    }
+                    .buttonStyle(.plain).help(problem.message)
+                }
+                HStack {
+                    SettingsLink { Label("設定", systemImage: "gearshape") }.buttonStyle(.plain).foregroundStyle(
+                        .secondary)
+                    Spacer()
+                }
             }
             .padding(.horizontal, 18).padding(.vertical, 12)
         }
@@ -1445,7 +1460,7 @@ struct TopicGroup: Identifiable {
     let id: String
     let heading: (number: Int?, name: String)?  // None when the items are not grouped by topic.
     let items: [NoteItem]
-    var topic: String? = nil  // The summary topic's name, as items name it, for a run under one.
+    var topic: String? = nil  // The summary topic's ID, for a run under one.
     /// The items under the summary topic each came from, in the summary's order, those of no topic under その他
     /// last; all together when there are no topics to group by or none of the items belongs to one.
     static func of(_ items: [NoteItem], topics: [NoteItem], known: [String: Segment]) -> [TopicGroup] {
@@ -1461,11 +1476,11 @@ struct TopicGroup: Identifiable {
             let parts = MinutesEngine.summaryParts(topics[index].text)
             return TopicGroup(
                 id: topics[index].id, heading: (index + 1, parts.topic ?? parts.overview), items: group.items,
-                topic: MinutesEngine.topicName(topics[index]))
+                topic: topics[index].id)
         }
     }
 }
-/// The topic a dragged item is over, outlined in its section.
+/// The topic a dragged item is over, by its ID, outlined in its section.
 @MainActor final class TopicDropHighlight: ObservableObject {
     @Published var topic: String?
 }
@@ -1489,12 +1504,8 @@ struct TopicDrop: ViewModifier {
                     )
                     .padding(-4)
                 )
-                .dropDestination(for: String.self) { payloads, _ in
-                    guard let drag = payloads.lazy.compactMap(NoteItemDrag.init(payload:)).first,
-                        drag.meetingID == editing.meetingID, drag.part == editing.part
-                    else { return false }
-                    store.moveNoteItem(editing.meetingID, part: drag.part, id: drag.id, toTopic: topic)
-                    return true
+                .dropDestination(for: String.self) { texts, _ in
+                    store.dropNoteItem(texts, on: topic, in: editing.meetingID, part: editing.part)
                 } isTargeted: { inside in
                     if inside {
                         highlight.topic = topic
@@ -1795,9 +1806,7 @@ struct EditableNoteRow: View {
                     isOn: Binding(
                         get: { under == index },
                         set: { _ in
-                            store.moveNoteItem(
-                                editing.meetingID, part: editing.part, id: item.id,
-                                toTopic: MinutesEngine.topicName(topic))
+                            store.moveNoteItem(editing.meetingID, part: editing.part, id: item.id, toTopic: topic.id)
                         }
                     ))
             }
@@ -1834,11 +1843,17 @@ struct EditableNoteRow: View {
 }
 // An item picked up to drag to another topic shows its text, short, as it moves.
 struct DraggableNoteItem: ViewModifier {
+    @EnvironmentObject var store: Store
     let item: NoteItem
     let drag: NoteItemDrag?
     @ViewBuilder func body(content: Content) -> some View {
         if let drag {
-            content.draggable(drag.payload) {
+            // The drag carries the item's text, as a text field it is dropped on takes it; which item it is, the
+            // store keeps for a topic it is dropped on.
+            content.onDrag {
+                store.draggedNoteItem = drag
+                return NSItemProvider(object: item.text as NSString)
+            } preview: {
                 Text(item.text).font(.callout).lineLimit(2).frame(maxWidth: 360, alignment: .leading)
                     .padding(.horizontal, 10).padding(.vertical, 6)
                     .background(RoundedRectangle(cornerRadius: 6).fill(Palette.paper))
@@ -2665,9 +2680,10 @@ struct TranscriptPanel: View {
         // The find bar (full window only) takes over the highlighting from the meeting search while it has words.
         let find = showsHeader && store.transcriptFind.open ? store.transcriptFind : FindState()
         let found = MeetingSearch.lines(meeting, terms: find.terms)
-        // An answer's link marks the utterance it points to, unless the find bar is on a match.
-        let current =
-            find.current(in: found) ?? store.revealed.flatMap { $0.meetingID == meeting.id ? $0.segmentID : nil }
+        // An answer's link marks the utterance it points to in the full window, unless the find bar is on a match. The
+        // compact window keeps following the speech.
+        let revealed = showsHeader ? store.revealed.flatMap { $0.meetingID == meeting.id ? $0.segmentID : nil } : nil
+        let current = find.current(in: found) ?? revealed
         let shownTerms = find.terms.isEmpty ? terms : find.terms
         VStack(alignment: .leading, spacing: 0) {
             if showsHeader {
@@ -2801,7 +2817,6 @@ struct TranscriptPanel: View {
 struct AskDesk: View {
     @EnvironmentObject var store: Store
     @ObservedObject var stream: AskStream
-    @StateObject private var draft = TextDraft()
     @FocusState private var focused: Bool
     private static let width: CGFloat = 760
     private static let examples = ["先週決まったことは？", "終わっていないアクションは？", "最近の会議で多く話した話題は？"]
@@ -2891,7 +2906,7 @@ struct AskDesk: View {
     // The send button sits inside the field, at its right end, on the field's last line.
     private var composer: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            TextField(store.askScope.isEmpty ? "すべての会議について質問" : "対象の会議について質問", text: $draft.text, axis: .vertical)
+            TextField(store.askScope.isEmpty ? "すべての会議について質問" : "対象の会議について質問", text: $stream.question, axis: .vertical)
                 .lineLimit(1...8).textFieldStyle(.plain).font(.body).foregroundStyle(Palette.paper)
                 .focused($focused).onSubmit(send)
                 .padding(.vertical, 5)
@@ -2908,12 +2923,12 @@ struct AskDesk: View {
         .onTapGesture { focused = true }
     }
     private var canSend: Bool {
-        stream.progress == nil && !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        stream.progress == nil && !stream.question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     private func send() {
         guard canSend else { return }
-        store.ask(draft.text)
-        draft.text = ""
+        store.ask(stream.question)
+        stream.question = ""
     }
 }
 // Which meetings the AI reads, over the question field: every meeting, or those with any of the chosen tags. The

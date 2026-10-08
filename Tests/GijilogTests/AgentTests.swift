@@ -123,6 +123,25 @@ extension ProcessingTests {
             "the reasoning and the call go back with what the tool returned: \(second)")
         try Self.check(steps == ["「QB」で会議を探しています", "考えています"], "the tab says what is being read: \(steps)")
 
+        // A long conversation sends only its last exchanges with a question, so it never outgrows the model.
+        var sent: [[String: Any]] = []
+        let long =
+            (1...20).flatMap {
+                [AskMessage(role: .question, text: "質問\($0)"), AskMessage(role: .answer, text: "答え\($0)")]
+            } + [AskMessage(role: .question, text: "最後の質問")]
+        _ = try await MeetingAgent.answer(
+            long, instructions: "", model: "m",
+            send: { body, _ in
+                sent.append(body)
+                return replies[1]
+            },
+            run: { _, _ in "" })
+        let recent = sent.first?["input"] as? [[String: Any]] ?? []
+        try Self.check(
+            recent.count == MeetingAgent.remembered && recent.first?["content"] as? String == "質問16"
+                && recent.last?["content"] as? String == "最後の質問",
+            "a question goes with the five exchanges before it: \(recent.compactMap { $0["content"] as? String })")
+
         // A model that keeps calling tools is made to answer in the last round.
         var choices: [String?] = []
         do {

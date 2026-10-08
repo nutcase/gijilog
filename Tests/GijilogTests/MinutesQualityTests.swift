@@ -218,36 +218,54 @@ extension ProcessingTests {
         try Self.check(
             under() == 1 && action.topic == "AIインタビュアー" && action.edited == true && store.correctionOffer == nil,
             "an action edited to name another topic is listed under it, with no offer to fix a word: \(action)")
-        store.updateNoteItem(meeting.id, part: .actions, id: "x", offersCorrection: false) { $0.topic = "QB" }
+        store.moveNoteItem(meeting.id, part: .actions, id: "x", toTopic: "s3")
         try Self.check(under() == 2, "an action can be moved to a topic chosen by hand")
         store.updateNoteItem(meeting.id, part: .actions, id: "x") { $0.owner = "中塩さん" }
         try Self.check(under() == 2, "editing something else leaves it under its topic")
 
-        // Dragged onto another topic, or chosen from the menu: both move it the same way.
-        let drag = NoteItemDrag(meetingID: meeting.id, part: .actions, id: "y")
-        try Self.check(
-            NoteItemDrag(payload: drag.payload) == drag && NoteItemDrag(payload: "y") == nil
-                && NoteItemDrag(payload: "gijilog-item\tnot-a-uuid\tactions\ty") == nil,
-            "a dragged item says which meeting, section and item it is, and other text is not taken for one")
+        // Dragged onto another topic, or chosen from the menu: both move it the same way, by the topic's ID.
         func item(_ id: String) -> NoteItem? { store.meetings[0].notes?.content.actions.first { $0.id == id } }
-        store.moveNoteItem(meeting.id, part: .actions, id: "y", toTopic: "AIインタビュアー")
+        store.moveNoteItem(meeting.id, part: .actions, id: "y", toTopic: "s2")
         try Self.check(item("y")?.edited == nil, "dropped on the topic it is under, an item is left as it was")
-        store.moveNoteItem(meeting.id, part: .actions, id: "y", toTopic: "モリバス系")
+        store.moveNoteItem(meeting.id, part: .actions, id: "y", toTopic: "s1")
         store.moveNoteItem(meeting.id, part: .actions, id: "y", toTopic: "ない話題")
         try Self.check(
-            item("y")?.topic == "モリバス系" && item("y")?.edited == true && under("y") == 0,
+            item("y")?.topic == "モリバス系" && item("y")?.topicID == "s1" && item("y")?.edited == true
+                && under("y") == 0,
             "an item dropped on another topic moves there and is kept there by AI updates")
-        // The minutes leave a cancelled topic out, so their numbering is not the summary's own: a move goes by name.
+        // A drop moves the item the drag started from, when what is dropped is its text; other text moves nothing.
+        store.draggedNoteItem = NoteItemDrag(meetingID: meeting.id, part: .actions, id: "y")
+        let foreign = store.dropNoteItem(["別の文"], on: "s2", in: meeting.id, part: .actions)
+        let otherSection = store.dropNoteItem(["デプロイの残件を聞く"], on: "s2", in: meeting.id, part: .decisions)
+        let dropped = store.dropNoteItem(["デプロイの残件を聞く"], on: "s2", in: meeting.id, part: .actions)
+        let again = store.dropNoteItem(["デプロイの残件を聞く"], on: "s1", in: meeting.id, part: .actions)
+        try Self.check(
+            !foreign && !otherSection && dropped && !again && under("y") == 1 && store.draggedNoteItem == nil,
+            "only the dragged item's own text, dropped in its section, moves it, once")
+        // The minutes leave a cancelled topic out, so their numbering is not the summary's own: a move goes by ID.
         store.change(meeting.id) {
             $0.notes?.content.summary.insert(
                 NoteItem(id: "s0", text: "取り消した話題：もう扱わない", evidence: [], state: .cancelled), at: 0)
         }
-        store.moveNoteItem(meeting.id, part: .actions, id: "y", toTopic: "QB")
+        store.moveNoteItem(meeting.id, part: .actions, id: "y", toTopic: "s3")
         try Self.check(
             item("y")?.topic == "QB" && under("y") == 2,
             "with a cancelled topic before it, an item goes under the topic it was dropped on: \(String(describing: item("y")))"
         )
-        store.moveNoteItem(meeting.id, part: .summary, id: "s3", toTopic: "モリバス系")
+        // An edit naming the cancelled topic does not move the item there: only topics the minutes show are places.
+        store.updateNoteItem(meeting.id, part: .actions, id: "y") { $0.text = "取り消した話題の残件を聞く" }
+        try Self.check(item("y")?.topic == "QB" && under("y") == 2, "a cancelled topic is no place to move to")
+        // Two topics of the same name stay apart: the one dropped on is the one the item is listed under.
+        store.change(meeting.id) {
+            $0.notes?.content.summary.append(NoteItem(id: "s4", text: "QB：別の論点を確かめる", evidence: []))
+        }
+        store.moveNoteItem(meeting.id, part: .actions, id: "y", toTopic: "s4")
+        try Self.check(under("y") == 3 && item("y")?.topicID == "s4", "a topic is told apart from another of its name")
+        // An edit naming another topic moves the item there, even one moved by hand before.
+        store.updateNoteItem(meeting.id, part: .actions, id: "y") { $0.text = "モリバス系の残件を聞く" }
+        try Self.check(
+            under("y") == 0 && item("y")?.topicID == "s1", "an edit moves an item moved by hand before as well")
+        store.moveNoteItem(meeting.id, part: .summary, id: "s3", toTopic: "s1")
         try Self.check(
             store.meetings[0].notes?.content.summary.first { $0.id == "s3" }?.topic == nil,
             "a summary topic is not moved under another")

@@ -201,6 +201,9 @@ extension ProcessingTests {
         try Self.check(
             problem?.line == 4, "a file written wrong is not read, and says the line: \(String(describing: problem))")
 
+        // When the file last changed is known without reading it, so a save reads it again only when it changed.
+        try Self.check(
+            VocabularyFile.modified(in: root) == nil, "a save location without the file has no time for it")
         // Writing the same lists again leaves the file alone, not to stir the sync.
         let file = root.appendingPathComponent("vocabulary.json")
         let past = Date(timeIntervalSince1970: 1_000_000_000)
@@ -209,7 +212,7 @@ extension ProcessingTests {
         lists.write(in: root)
         let modified = try FileManager.default.attributesOfItem(atPath: file.path)[.modificationDate] as? Date
         try Self.check(
-            modified == past,
+            modified == past && VocabularyFile.modified(in: root) == past,
             "the same lists are not written again")
 
         // The text files kept before join the file and go.

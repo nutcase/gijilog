@@ -53,6 +53,7 @@ import UniformTypeIdentifiers
     @Published var asked: [AskMessage] = []
     @Published var askTags: [String] = []  // Questions read only the meetings with any of these tags; none, all.
     let askStream = AskStream()
+    var draggedNoteItem: NoteItemDrag?  // The item a drag in the minutes started from, until it is dropped.
     private var askTask: Task<Void, Never>?
     private var askGeneration = 0  // Counts conversations, so an answer stopped by a new one is dropped.
     // The utterance an answer's link pointed to, marked in the transcript.
@@ -68,30 +69,38 @@ import UniformTypeIdentifiers
     // written there is lost.
     @Published private(set) var vocabularyProblem: VocabularyFile.Unreadable?
     private var vocabularyBase: VocabularyFile?  // The lists as last read from the file or written to it.
+    private var vocabularyDate: Date?  // When the file was last changed, as of then.
     /// Writes the lists. Another Mac may have changed the file since it was last read here, before this Mac took the
     /// change in: its changes are kept, and this Mac's join them.
     private func saveVocabulary() {
         guard persistsSettings && !readingVocabulary && vocabularyProblem == nil else { return }
         let mine = VocabularyFile(terms: vocabulary, corrections: learnedWords)
         var lists = mine
-        let theirs = readVocabulary(in: root)
-        guard vocabularyProblem == nil else { return }
-        // A file that was not there when the lists were last read has nothing removed from it, only added.
-        let base = vocabularyBase ?? VocabularyFile()
-        if let theirs, theirs != base {
-            lists = VocabularyFile.merged(base: base, mine: mine, theirs: theirs)
-            readingVocabulary = true
-            if lists.terms != mine.terms { vocabulary = lists.terms.joined(separator: "\n") }
-            if lists.corrections != mine.corrections { learnedWords = LearnedWords.format(lists.corrections) }
-            readingVocabulary = false
+        // The file is read again only when it changed since: saving runs at every keystroke in the settings.
+        if VocabularyFile.modified(in: root) != vocabularyDate {
+            let theirs = readVocabulary(in: root)
+            guard vocabularyProblem == nil else { return }
+            // A file that was not there when the lists were last read has nothing removed from it, only added.
+            let base = vocabularyBase ?? VocabularyFile()
+            if let theirs, theirs != base {
+                lists = VocabularyFile.merged(base: base, mine: mine, theirs: theirs)
+                readingVocabulary = true
+                if lists.terms != mine.terms { vocabulary = lists.terms.joined(separator: "\n") }
+                if lists.corrections != mine.corrections { learnedWords = LearnedWords.format(lists.corrections) }
+                readingVocabulary = false
+            }
         }
-        if lists.write(in: root) { vocabularyBase = lists }
+        if lists.write(in: root) {
+            vocabularyBase = lists
+            vocabularyDate = VocabularyFile.modified(in: root)
+        }
     }
     /// The lists in a save location's vocabulary.json; nil when it has none, or one written wrong, which is noted.
     private func readVocabulary(in root: URL) -> VocabularyFile? {
         do {
             let file = try VocabularyFile.read(in: root)
             vocabularyProblem = nil
+            vocabularyDate = VocabularyFile.modified(in: root)
             return file
         } catch {
             let problem = error as? VocabularyFile.Unreadable ?? VocabularyFile.Unreadable()
@@ -1461,13 +1470,16 @@ extension Store {
             else { return }
             let before = item
             update(&item)
-            if part != .summary, item.text != before.text, let summary = m.notes?.content.summary {
-                let known = m.segments.byID
-                let current = MinutesEngine.topicIndex(of: before, in: summary, known: known)
+            // Among the topics the minutes show: a cancelled one is no place to move to.
+            if part != .summary, item.text != before.text,
+                let summary = m.notes?.content.summary.filter({ $0.state != .cancelled })
+            {
+                let current = MinutesEngine.topicIndex(of: before, in: summary, known: m.segments.byID)
                 if let topic = MinutesEngine.topicNamedByEdit(
                     from: before.text, to: item.text, current: current, summary: summary)
                 {
                     item.topic = topic
+                    item.topicID = summary.first { MinutesEngine.summaryTopic($0.text) == topic }?.id
                     offersCorrection = false
                 }
             }
@@ -1603,16 +1615,34 @@ extension Store {
         }
         return true
     }
-    /// Moves a decision, open issue or action by hand under the summary topic of that name (as MinutesEngine.topicName
-    /// gives it), where AI updates then keep it. Topics are found among those the minutes show, not cancelled ones.
-    func moveNoteItem(_ meetingID: UUID, part: NotePart, id: String, toTopic name: String) {
+    /// Moves a decision, open issue or action by hand under the summary topic with that ID, where AI updates then keep
+    /// it. Topics are found among those the minutes show, not cancelled ones; two of the same name stay apart.
+    func moveNoteItem(_ meetingID: UUID, part: NotePart, id: String, toTopic topicID: String) {
         guard part != .summary, let meeting = meetings.first(where: { $0.id == meetingID }),
             let summary = meeting.notes?.content.summary.filter({ $0.state != .cancelled }),
-            let target = summary.firstIndex(where: { MinutesEngine.topicName($0) == name }),
+            let target = summary.firstIndex(where: { $0.id == topicID }),
             let item = meeting.notes?.content[part].first(where: { $0.id == id })
         else { return }
         guard MinutesEngine.topicIndex(of: item, in: summary, known: meeting.segments.byID) != target else { return }
-        updateNoteItem(meetingID, part: part, id: id, offersCorrection: false) { $0.topic = name }
+        updateNoteItem(meetingID, part: part, id: id, offersCorrection: false) {
+            $0.topic = MinutesEngine.topicName(summary[target])
+            $0.topicID = topicID
+        }
+    }
+    /// An item dropped on a topic after being dragged from the minutes: it moves when what was dropped is that item's
+    /// text, so text dragged in from elsewhere (or left from a drag that was given up) moves nothing.
+    @discardableResult func dropNoteItem(_ texts: [String], on topicID: String, in meetingID: UUID, part: NotePart)
+        -> Bool
+    {
+        guard let drag = draggedNoteItem, drag.meetingID == meetingID, drag.part == part,
+            let item = meetings.first(where: { $0.id == meetingID })?.notes?.content[part].first(where: {
+                $0.id == drag.id
+            }),
+            texts.contains(item.text)
+        else { return false }
+        draggedNoteItem = nil
+        moveNoteItem(meetingID, part: part, id: drag.id, toTopic: topicID)
+        return true
     }
     /// The transcript can be corrected whenever it exists, also during the recording: transcription only adds
     /// lines, and the minutes refer to lines by ID.
@@ -1829,29 +1859,17 @@ extension Store {
         }
     }
 }
-/// What a decision, open issue or action carries when it is dragged to another topic: its meeting, section and id,
-/// as tab-separated text that dropped text from elsewhere does not match.
+/// A decision, open issue or action being dragged to another topic: which meeting, section and item it is. What the
+/// drag carries is the item's own text, which is what a text field it is dropped on takes.
 struct NoteItemDrag: Equatable {
     let meetingID: UUID
     let part: NotePart
     let id: String
-    init(meetingID: UUID, part: NotePart, id: String) {
-        self.meetingID = meetingID
-        self.part = part
-        self.id = id
-    }
-    init?(payload: String) {
-        let fields = payload.components(separatedBy: "\t")
-        guard fields.count == 4, fields[0] == "gijilog-item", let meetingID = UUID(uuidString: fields[1]),
-            let part = NotePart(rawValue: fields[2]), !fields[3].isEmpty
-        else { return nil }
-        self.init(meetingID: meetingID, part: part, id: fields[3])
-    }
-    var payload: String { ["gijilog-item", meetingID.uuidString, part.rawValue, id].joined(separator: "\t") }
 }
 /// What ギジログAI is doing while it answers: what it reads, and the answer as it is written. Kept apart from the
 /// Store, so that each piece of a streamed answer redraws the conversation alone.
 @MainActor final class AskStream: ObservableObject {
     @Published var progress: String?
     @Published var draft = ""
+    @Published var question = ""  // Being typed, kept while a meeting is open in place of the conversation.
 }

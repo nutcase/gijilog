@@ -66,6 +66,9 @@ struct NoteItem: Codable, Identifiable, Sendable, Equatable {
     var points: [String]?
     var opinions: [String]?
     var topic: String?  // The summary topic of a decision, open issue or action, by its name ("話題" of "話題：概要").
+    // The summary topic the item was moved under by hand, by the topic's ID: it tells apart topics of the same name
+    // while that summary item lasts, and the name stands in once it is rewritten.
+    var topicID: String?
 }
 extension NoteItem {
     /// An action's owners: owner holds one name, or several separated by "、".
@@ -867,6 +870,11 @@ struct VocabularyFile: Equatable {
         let data: Data
         do { data = try Data(contentsOf: file) } catch { throw Unreadable(cannotOpen: true) }
         return try VocabularyFile(json: data)
+    }
+    /// When the file in a save location was last changed, without reading it (an iCloud file need not download).
+    static func modified(in root: URL) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: root.appendingPathComponent(name).path))?[.modificationDate]
+            as? Date
     }
     /// The changes made here since `base` was read or written, over `theirs`, the file as another Mac has left it
     /// since: terms and misheard spellings added here join, those removed here go, and the rest is the other Mac's.
