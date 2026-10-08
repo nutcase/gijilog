@@ -373,7 +373,8 @@ struct MeetingList: View {
                     Spacer()
                 }
                 .foregroundStyle(Palette.paper)
-                // Questions are about every meeting, so they open from the top of the list, not from a meeting.
+                // Two kinds of things sit above the meetings: ギジログAI, a page of its own like a meeting, and the
+                // tools for the meetings, under their heading.
                 Button {
                     store.openAsk()
                 } label: {
@@ -382,17 +383,12 @@ struct MeetingList: View {
                 }
                 .buttonStyle(QuietButtonStyle(selected: store.askOpen))
                 .help("すべての会議について、AIに質問する。答えのリンクから、その会議と発言を開ける")
-                SidebarSearchField(text: $store.searchText, focused: $searchFocused)
-                if !store.allTags.isEmpty { TagFilterBar() }
-                Button {
-                    store.planMeeting()
-                } label: {
-                    Label("アジェンダを準備", systemImage: "plus")
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                Rectangle().fill(PageTab.edge).frame(height: 1)
+                VStack(alignment: .leading, spacing: 8) {
+                    MeetingsHeading()
+                    SidebarSearchField(text: $store.searchText, focused: $searchFocused)
+                    if !store.tagFilter.isEmpty { ChosenTags() }
                 }
-                .buttonStyle(QuietButtonStyle())
-                .disabled(!store.ready)
-                .help("録音の前に会議を作って、議題を用意しておく（⌘N）。会議が始まったら、その会議のページで録音します")
             }
             .padding(.horizontal, 18).padding(.top, 8).padding(.bottom, 12)
         }
@@ -463,6 +459,64 @@ struct MeetingRow: View {
     }
 }
 // Narrows the sidebar to meetings that have every selected tag.
+// The heading over the meetings, with their tools: narrowing them by tag, and preparing a new one's agenda.
+struct MeetingsHeading: View {
+    @EnvironmentObject var store: Store
+    @StateObject private var tagsOpen = Flag()
+    var body: some View {
+        HStack(spacing: 12) {
+            Text("会議").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.paper.opacity(0.6))
+            Spacer()
+            if !store.allTags.isEmpty {
+                let narrowed = !store.tagFilter.isEmpty
+                Button {
+                    tagsOpen.on.toggle()
+                } label: {
+                    Image(
+                        systemName: narrowed
+                            ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle"
+                    )
+                    .foregroundStyle(narrowed ? Palette.asagi : Palette.paper.opacity(0.7))
+                }
+                .help("タグで絞り込む").accessibilityLabel("タグで絞り込む")
+                .popover(isPresented: $tagsOpen.on, arrowEdge: .bottom) {
+                    TagFilterBar().padding(14).frame(width: 300, alignment: .leading)
+                        .foregroundStyle(Color.primary).environment(\.colorScheme, .dark)
+                }
+            }
+            Button {
+                store.planMeeting()
+            } label: {
+                Image(systemName: "plus").foregroundStyle(Palette.paper.opacity(0.7))
+            }
+            .disabled(!store.ready)
+            .help("アジェンダを準備：録音の前に会議を作って、議題を用意しておく（⌘N）。会議が始まったら、その会議のページで録音します")
+            .accessibilityLabel("アジェンダを準備")
+        }
+        .buttonStyle(.plain).font(.system(size: 15))
+        .padding(.leading, 6)
+    }
+}
+// The tags the list is narrowed by, under the search: each one's × stops narrowing by it.
+struct ChosenTags: View {
+    @EnvironmentObject var store: Store
+    var body: some View {
+        FlowLayout(spacing: 6) {
+            ForEach(store.tagFilter, id: \.self) { tag in
+                Button {
+                    store.toggleTagFilter(tag)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(tag).lineLimit(1)
+                        Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                    }
+                }
+                .buttonStyle(FilterChipStyle(on: true))
+                .help("「\(tag)」での絞り込みをやめる")
+            }
+        }
+    }
+}
 struct TagFilterBar: View {
     @EnvironmentObject var store: Store
     @Environment(\.openSettings) private var openSettings
