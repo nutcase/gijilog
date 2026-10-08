@@ -587,10 +587,13 @@ import UniformTypeIdentifiers
     func loadAddedMeetings() async {
         guard ready else { return }  // Loading at launch or after a move reads every folder anyway.
         let known = Set(meetings.map { $0.folderName ?? $0.id.uuidString })
+        let found = await repository.loadAdded(skipping: known)
+        // Checked against the list as it is after the read, not before it. A sync arrives as a burst of changes and
+        // each starts a load of its own; one that began while another was reading found the same meeting unlisted,
+        // and both added it.
         let listed = Set(meetings.map(\.id))
         var added: [Meeting] = []
-        for meeting in await repository.loadAdded(skipping: known)
-        where !listed.contains(meeting.id) && !added.contains(where: { $0.id == meeting.id }) {
+        for meeting in found where !listed.contains(meeting.id) && !added.contains(where: { $0.id == meeting.id }) {
             added.append(meeting)
         }
         guard !added.isEmpty else { return }

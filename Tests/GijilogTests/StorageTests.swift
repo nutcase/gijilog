@@ -120,6 +120,19 @@ extension ProcessingTests {
         try Self.check(
             store.meetings.map(\.id) == [later.id, synced.id, here.id],
             "a meeting whose file finished writing is listed on the next change, and only once")
+        // A sync arrives as a burst of changes, and each starts a load of its own while the last is still reading the
+        // folders. Both used to find the meeting unlisted and both added it.
+        var burst = Meeting(title: "一度に届いた会議")
+        burst.date = later.date.addingTimeInterval(3600)
+        try write(burst, to: "2026-10-07 13.00 一度に届いた会議")
+        async let first: Void = store.loadAddedMeetings()
+        async let second: Void = store.loadAddedMeetings()
+        _ = await (first, second)
+        try Self.check(
+            store.meetings.filter { $0.id == burst.id }.count == 1,
+            "a meeting reached by two loads at once is listed once: \(store.meetings.map(\.title))")
+        store.meetings.removeAll { $0.id == burst.id }
+        try FileManager.default.removeItem(at: root.appendingPathComponent("2026-10-07 13.00 一度に届いた会議"))
         store.change(synced.id) { $0.title = "こちらで直した" }
         await store.flushCheckpoints()
         let saved = try JSONDecoder().decode(
