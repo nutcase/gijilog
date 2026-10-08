@@ -2725,6 +2725,9 @@ struct AskDesk: View {
                     VStack(alignment: .leading, spacing: 18) {
                         if store.asked.isEmpty { intro }
                         ForEach(store.asked) { AskBubble(message: $0).id($0.id) }
+                        if !store.askDraft.isEmpty {
+                            AskBubble(message: AskMessage(role: .answer, text: store.askDraft)).id("draft")
+                        }
                         if let progress = store.askProgress {
                             HStack(spacing: 8) {
                                 ProgressView().controlSize(.small)
@@ -2743,8 +2746,14 @@ struct AskDesk: View {
                     guard let last else { return }
                     withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last, anchor: .top) }
                 }
+                // While the AI reads, its progress is kept in view; once it writes, the answer is read from its start.
                 .onChange(of: store.askProgress) { _, progress in
-                    if progress != nil { proxy.scrollTo("progress", anchor: .bottom) }
+                    guard let progress else { return }
+                    if progress == "答えを書いています" {
+                        proxy.scrollTo("draft", anchor: .top)
+                    } else {
+                        proxy.scrollTo("progress", anchor: .bottom)
+                    }
                 }
             }
             composer.frame(maxWidth: Self.width).padding(.horizontal, 28).padding(.top, 12).padding(.bottom, 20)

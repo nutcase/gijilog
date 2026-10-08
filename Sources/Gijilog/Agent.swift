@@ -83,9 +83,10 @@ struct AskLink: Equatable {
     /// returns the response, `run` performs a tool call, and `progress` hears what is being read.
     static func answer(
         _ conversation: [AskMessage], instructions: String, model: String,
-        send: @MainActor ([String: Any]) async throws -> [String: Any],
+        send: @MainActor ([String: Any], @MainActor (String) -> Void) async throws -> [String: Any],
         run: @MainActor (String, [String: Any]) -> String,
-        progress: @MainActor (String) -> Void = { _ in }
+        progress: @MainActor (String) -> Void = { _ in },
+        writing: @escaping @MainActor (String) -> Void = { _ in }
     ) async throws -> String {
         var input: [Any] = conversation.compactMap { message -> [String: Any]? in
             switch message.role {
@@ -102,11 +103,17 @@ struct AskLink: Equatable {
                 "include": ["reasoning.encrypted_content"],
             ]
             if round == maxRounds - 1 { body["tool_choice"] = "none" }
-            let response = try await send(body)
+            // The answer is shown as it is written; text before a tool call is not the answer and goes again.
+            var written = ""
+            let response = try await send(body) { piece in
+                written += piece
+                writing(written)
+            }
             try Task.checkCancellation()
             let output = response["output"] as? [[String: Any]] ?? []
             let calls = output.filter { $0["type"] as? String == "function_call" }
             guard !calls.isEmpty else { return try text(of: output) }
+            if !written.isEmpty { writing("") }
             input += output
             for call in calls {
                 guard let id = call["call_id"] as? String, let name = call["name"] as? String else { continue }
@@ -153,18 +160,53 @@ struct AskLink: Equatable {
         }
     }
 
-    /// One request to the Responses API.
-    static func post(_ body: [String: Any], key: String) async throws -> [String: Any] {
+    /// One request to the Responses API, streamed: the answer's text is handed on as it arrives, and the whole
+    /// response, with any tool calls and the reasoning behind them, comes back when it is finished.
+    static func stream(_ body: [String: Any], key: String, text: @MainActor (String) -> Void) async throws
+        -> [String: Any]
+    {
+        var body = body
+        body["stream"] = true
         var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
         request.httpMethod = "POST"
-        request.timeoutInterval = 180
+        request.timeoutInterval = 180  // Without a word from the server, not for the whole answer.
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let data = try await Processor.send(request)
-        guard let response = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw AppError.message("答えを読み取れませんでした。")
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        let http = response as? HTTPURLResponse
+        guard let http, (200..<300).contains(http.statusCode) else {
+            var data = Data()
+            for try await byte in bytes { data.append(byte) }
+            throw CloudFailure(
+                code: http?.statusCode ?? 0, message: Processor.serverMessage(data),
+                retryAfter: http.flatMap(Processor.retryAfter))
         }
-        return response
+        for try await line in bytes.lines {
+            if let finished = try read(line, text: text) { return finished }
+        }
+        throw AppError.message("答えが途中で途切れました。もう一度聞いてください。")
+    }
+    /// One line of a streamed response's server-sent events: the whole response once it is finished, nil until
+    /// then. The answer's text goes to `text` as it arrives.
+    static func read(_ line: String, text: @MainActor (String) -> Void) throws -> [String: Any]? {
+        guard line.hasPrefix("data:"),
+            let event = try? JSONSerialization.jsonObject(
+                with: Data(line.dropFirst(5).trimmingCharacters(in: .whitespaces).utf8)) as? [String: Any]
+        else { return nil }
+        switch event["type"] as? String {
+        case "response.output_text.delta":
+            if let piece = event["delta"] as? String { text(piece) }
+            return nil
+        case "response.completed", "response.incomplete":
+            return event["response"] as? [String: Any] ?? [:]
+        case "response.failed":
+            let error = (event["response"] as? [String: Any])?["error"] as? [String: Any]
+            throw AppError.message(error?["message"] as? String ?? "答えを作れませんでした。")
+        case "error":
+            throw AppError.message(event["message"] as? String ?? "答えを作れませんでした。")
+        default:
+            return nil
+        }
     }
 }

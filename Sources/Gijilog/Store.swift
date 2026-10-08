@@ -48,6 +48,7 @@ import UniformTypeIdentifiers
     private var viewedBeforeAsking: UUID?  // "この会議" in a question.
     @Published var asked: [AskMessage] = []
     @Published private(set) var askProgress: String?
+    @Published private(set) var askDraft = ""  // The answer as it is being written.
     private var askTask: Task<Void, Never>?
     // The utterance an answer's link pointed to, marked in the transcript.
     @Published private(set) var revealed: (meetingID: UUID, segmentID: String)?
@@ -1487,18 +1488,30 @@ extension Store {
         let key = key
         let model = model
         askProgress = "考えています"
+        askDraft = ""
         askTask = Task {
             do {
                 let answer = try await MeetingAgent.answer(
                     conversation, instructions: instructions, model: model,
-                    send: { try await MeetingAgent.post($0, key: key) },
+                    send: { try await MeetingAgent.stream($0, key: key, text: $1) },
                     run: { MeetingAgent.text(ofTool: tools.callTool($0, arguments: $1)) },
-                    progress: { [weak self] in self?.askProgress = $0 })
+                    progress: { [weak self] in self?.askProgress = $0 },
+                    writing: { [weak self] text in
+                        self?.askDraft = text
+                        if !text.isEmpty { self?.askProgress = "答えを書いています" }
+                    })
                 asked.append(AskMessage(role: .answer, text: answer))
             } catch {
                 let stopped = Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled
-                asked.append(AskMessage(role: .failure, text: stopped ? "止めました。" : error.localizedDescription))
+                // What was written before it stopped stays, marked as unfinished.
+                if !askDraft.isEmpty {
+                    asked.append(AskMessage(role: .answer, text: askDraft + "\n\n（ここまでで止まりました）"))
+                }
+                if !stopped || askDraft.isEmpty {
+                    asked.append(AskMessage(role: .failure, text: stopped ? "止めました。" : error.localizedDescription))
+                }
             }
+            askDraft = ""
             askProgress = nil
             askTask = nil
         }

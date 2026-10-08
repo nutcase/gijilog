@@ -67,19 +67,30 @@ extension ProcessingTests {
         ]
         var requests: [[String: Any]] = []
         var steps: [String] = []
+        var drafts: [String] = []
         let conversation = [
             AskMessage(role: .question, text: "前の質問"), AskMessage(role: .answer, text: "前の答え"),
             AskMessage(role: .failure, text: "通信できませんでした"), AskMessage(role: .question, text: "QBはどうなった？"),
         ]
         let answer = try await MeetingAgent.answer(
             conversation, instructions: "指示", model: "gpt-test",
-            send: { body in
+            send: { body, text in
                 requests.append(body)
+                // Text before a tool call, then the answer in pieces as it streams.
+                if requests.count == 1 {
+                    text("調べます")
+                } else {
+                    text("来週までに")
+                    text("直します")
+                }
                 return replies[min(requests.count, replies.count) - 1]
             },
             run: { MeetingAgent.text(ofTool: inApp.callTool($0, arguments: $1)) },
-            progress: { steps.append($0) })
+            progress: { steps.append($0) }, writing: { drafts.append($0) })
         try Self.check(answer.hasPrefix("来週までに直します") && requests.count == 2, "the answer comes after the tool call")
+        try Self.check(
+            drafts == ["調べます", "", "来週までに", "来週までに直します"],
+            "the answer is shown as it is written, and text before a tool call goes again: \(drafts)")
         let first = requests[0]["input"] as? [[String: Any]] ?? []
         try Self.check(
             requests[0]["model"] as? String == "gpt-test" && requests[0]["store"] as? Bool == false
@@ -101,7 +112,7 @@ extension ProcessingTests {
         do {
             _ = try await MeetingAgent.answer(
                 [AskMessage(role: .question, text: "全部調べて")], instructions: "", model: "m",
-                send: { body in
+                send: { body, _ in
                     choices.append(body["tool_choice"] as? String)
                     return replies[0]
                 },
@@ -113,6 +124,27 @@ extension ProcessingTests {
                     && choices.dropLast().allSatisfy { $0 == nil },
                 "tool calls stop after \(MeetingAgent.maxRounds) rounds: \(choices)")
         }
+        // A streamed response, line by line: pieces of the answer, then the whole response once it is finished.
+        var pieces: [String] = []
+        let lines = [
+            "event: response.output_text.delta", #"data: {"type":"response.output_text.delta","delta":"来週"}"#, "",
+            #"data: {"type":"response.output_text.delta","delta":"まで"}"#, "data: not json",
+            #"data: {"type":"response.created","response":{"status":"in_progress"}}"#,
+            #"data: {"type":"response.completed","response":{"status":"completed","output":[]}}"#,
+        ]
+        var finished: [String: Any]?
+        for line in lines where finished == nil { finished = try MeetingAgent.read(line) { pieces.append($0) } }
+        try Self.check(
+            pieces == ["来週", "まで"] && finished?["status"] as? String == "completed",
+            "a streamed answer arrives in pieces, and the whole response at the end: \(pieces)")
+        var failures: [String] = []
+        for line in [
+            #"data: {"type":"response.failed","response":{"error":{"message":"上限に達しました"}}}"#,
+            #"data: {"type":"error","message":"混み合っています"}"#,
+        ] {
+            do { _ = try MeetingAgent.read(line) { _ in } } catch { failures.append(error.localizedDescription) }
+        }
+        try Self.check(failures == ["上限に達しました", "混み合っています"], "a failed stream says why: \(failures)")
         var refused = false
         do {
             _ = try MeetingAgent.text(of: [
