@@ -254,6 +254,9 @@ import Foundation
                                 notes.finalizedAt = Date()
                             }
                         }
+                        // Lines corrected by hand while this update was written are not in it: they stay marked to be
+                        // checked. Marks cleared meanwhile (このままにする) stay cleared.
+                        notes.keepMarks(madeSince: meeting.notes, now: store.meetings.first { $0.id == id }?.notes)
                         // Only this task updates notes for this meeting; transcription may append newer utterances meanwhile.
                         store.change(id) { m in
                             m.notes = m.corrected(notes)

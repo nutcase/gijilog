@@ -131,10 +131,16 @@ import UniformTypeIdentifiers
     func toggleFolded(_ section: String) {
         if foldedSections.contains(section) { foldedSections.remove(section) } else { foldedSections.insert(section) }
     }
-    @Published var editingTitle: UUID?  // The meeting whose title is open for renaming.
-    @Published var editingNoteItem: String?  // The minutes item open for editing, as "part/id".
+    @Published var editingTitle: UUID? {  // The meeting whose title is open for renaming.
+        didSet { if editingTitle == nil && oldValue != nil { takeInChangesLeftWhileEditing() } }
+    }
+    @Published var editingNoteItem: String? {  // The minutes item open for editing, as "part/id".
+        didSet { if editingNoteItem == nil && oldValue != nil { takeInChangesLeftWhileEditing() } }
+    }
     @Published var addingNoteItem: String?  // The section whose "add an item" field is open, as "meeting/part".
-    @Published var editingSegment: String?  // The transcript line open for editing.
+    @Published var editingSegment: String? {  // The transcript line open for editing.
+        didSet { if editingSegment == nil && oldValue != nil { takeInChangesLeftWhileEditing() } }
+    }
     @Published var minutesFind = FindState()  // Finding words in the open meeting's minutes.
     @Published var transcriptFind = FindState()  // Finding words in the open meeting's transcript.
     @Published var correctionOffer: CorrectionOffer?  // After an edit: fix the same word elsewhere too?
@@ -592,7 +598,7 @@ import UniformTypeIdentifiers
         guard ready else { return }
         let listed = meetings.map { (id: $0.id, folder: $0.folderName ?? $0.id.uuidString) }
         var reloaded = 0
-        for meeting in await repository.loadChanged(listed) {
+        for (meeting, date) in await repository.loadChanged(listed) {
             let id = meeting.id
             let open = selected == id && (editingNoteItem != nil || editingSegment != nil || editingTitle == id)
             guard id != activeID, !isProcessing(id), !dirtyIDs.contains(id), !open,
@@ -603,9 +609,16 @@ import UniformTypeIdentifiers
             meeting.revision = max(meeting.revision, meetings[i].revision, revisions[id] ?? 0)
             meetings[i] = meeting
             revisions[id] = meeting.revision
+            await repository.markSeen(id, at: date)
             reloaded += 1
         }
         if reloaded > 0 { status = reloaded == 1 ? "ほかで更新された会議を読み込み直しました" : "ほかで更新された会議を\(reloaded)件読み込み直しました" }
+    }
+    /// A meeting changed on another Mac while it was open for editing here was left as it was; once the edit closes,
+    /// unless it changed the meeting (whose next save then goes over the other), the change is taken in.
+    private func takeInChangesLeftWhileEditing() {
+        guard persistsSettings else { return }
+        Task { await reloadChangedMeetings() }
     }
     /// Takes the lists from the save location when they changed there, as when another Mac or a hand edited them.
     /// Lists that read the same are kept as typed.
@@ -1692,7 +1705,10 @@ extension Store {
     }
     /// Keeps the minutes as they are after lines they cite were corrected: the items are no longer marked.
     func keepMinutesDespiteRevisions(_ meetingID: UUID) {
-        change(meetingID) { $0.notes?.revisedSegmentIDs = nil }
+        change(meetingID) {
+            $0.notes?.revisedSegmentIDs = nil
+            $0.notes?.uncheckedItemIDs = nil
+        }
     }
     /// The meeting's 録音.m4a, for listening back, once recording is over and it has been made.
     func recordingFile(_ meeting: Meeting) -> URL? {

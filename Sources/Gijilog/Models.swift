@@ -118,19 +118,41 @@ struct MinutesState: Codable, Sendable {
     // Transcript lines corrected or deleted by hand since the minutes were written from the whole transcript: items
     // citing them may no longer hold, until the minutes are written again or the user keeps them as they are.
     var revisedSegmentIDs: Set<String>?
+    // Items edited by hand that the minutes written again kept as they were, though lines they cite had been
+    // corrected: still to check, until the user keeps the minutes as they are.
+    var uncheckedItemIDs: Set<String>?
     // Passed through a live update and never saved: the agenda goes in, the topic being discussed comes out.
     var agenda: [AgendaItem] = []
     var topic: AgendaTopic?
     var corrections: [TermCorrection] = []  // The user's spellings, for the AI to follow.
     enum CodingKeys: String, CodingKey {
         case content, appliedSegmentIDs, updatedAt, extractionOnly, rejectedItems, latestSegmentIDs,
-            reviewedSegmentIDs, finalizedAt, dismissed, revisedSegmentIDs
+            reviewedSegmentIDs, finalizedAt, dismissed, revisedSegmentIDs, uncheckedItemIDs
     }
-    /// The items shown in the minutes that cite a line corrected or deleted by hand, to check again.
+    /// The items shown in the minutes to check again: those citing a line corrected or deleted by hand, and those
+    /// edited by hand that were kept as they were when the minutes were written again.
     var itemsCitingRevisedLines: Set<String> {
-        guard let revised = revisedSegmentIDs, !revised.isEmpty else { return [] }
+        let revised = revisedSegmentIDs ?? []
+        let unchecked = uncheckedItemIDs ?? []
+        guard !revised.isEmpty || !unchecked.isEmpty else { return [] }
         let shown = content.summary + content.decisions + content.unresolved + content.actions
-        return Set(shown.filter { $0.state != .cancelled && !revised.isDisjoint(with: $0.evidence) }.map(\.id))
+        return Set(
+            shown.filter {
+                $0.state != .cancelled && (!revised.isDisjoint(with: $0.evidence) || unchecked.contains($0.id))
+            }.map(\.id))
+    }
+    /// Minutes written by the AI from `before`, with the marks for checking as they are now: those made since join,
+    /// and those cleared since (このままにする) stay cleared. A line corrected while the minutes were being written
+    /// is not in them.
+    mutating func keepMarks(madeSince before: MinutesState?, now: MinutesState?) {
+        func marks(_ written: Set<String>?, _ before: Set<String>?, _ now: Set<String>?) -> Set<String>? {
+            let before = before ?? []
+            let now = now ?? []
+            let result = (written ?? []).subtracting(before.subtracting(now)).union(now.subtracting(before))
+            return result.isEmpty ? nil : result
+        }
+        revisedSegmentIDs = marks(revisedSegmentIDs, before?.revisedSegmentIDs, now?.revisedSegmentIDs)
+        uncheckedItemIDs = marks(uncheckedItemIDs, before?.uncheckedItemIDs, now?.uncheckedItemIDs)
     }
 }
 struct Meeting: Codable, Identifiable {
@@ -634,8 +656,9 @@ actor MeetingRepository {
     }
     /// Listed meetings whose meeting.json changed since this app last wrote or read it: changed by something else,
     /// such as the same meeting edited on another Mac and synced. One still being written does not decode yet and is
-    /// read on the next change.
-    func loadChanged(_ listed: [(id: UUID, folder: String)]) -> [Meeting] {
+    /// read on the next change. A change counts as read only once it is taken in (markSeen), so one the store has to
+    /// leave for now, as while the meeting is being edited here, comes back the next time.
+    func loadChanged(_ listed: [(id: UUID, folder: String)]) -> [(meeting: Meeting, date: Date)] {
         listed.compactMap { id, name in
             let file = root.appendingPathComponent(name).appendingPathComponent("meeting.json")
             guard !deleted.contains(id), let date = modified(file), date != seen[id],
@@ -643,11 +666,11 @@ actor MeetingRepository {
                 var meeting = try? JSONDecoder().decode(Meeting.self, from: data),
                 meeting.id == id
             else { return nil }
-            seen[id] = date
             meeting.folderName = name
-            return meeting
+            return (meeting, date)
         }
     }
+    func markSeen(_ id: UUID, at date: Date) { seen[id] = date }
     // Meetings saved before 議事録.md existed get one when they are next loaded.
     func writeMissingDocuments(_ meetings: [Meeting]) {
         for meeting in meetings {

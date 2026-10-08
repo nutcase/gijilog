@@ -296,6 +296,18 @@ extension ProcessingTests {
         try writeElsewhere("別の Mac で直した")
         await store.reloadChangedMeetings()
         try Self.check(store.meetings[0].title == "別の Mac で直した", "a meeting changed on another Mac is read again")
+        // A change arriving while the meeting is open for editing here waits, and comes in once the edit closes
+        // without changing the meeting: it is not taken as read before it is taken in.
+        store.selected = meeting.id
+        store.editingTitle = meeting.id
+        try writeElsewhere("編集中に届いた")
+        await store.reloadChangedMeetings()
+        let whileEditing = store.meetings[0].title
+        store.editingTitle = nil
+        await store.reloadChangedMeetings()
+        try Self.check(
+            whileEditing == "別の Mac で直した" && store.meetings[0].title == "編集中に届いた",
+            "a change left while editing is taken in afterwards: \(whileEditing), \(store.meetings[0].title)")
         store.change(meeting.id) { $0.title = "こちらで直した" }
         await store.flushCheckpoints()
         func saved() throws -> String { try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: file)).title }

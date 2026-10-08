@@ -323,7 +323,15 @@ enum MinutesEngine {
         }
         var result = previous
         result.content = content
-        result.revisedSegmentIDs = nil  // Written from the transcript as it is now, corrections included.
+        // Written from the transcript as it is now, corrections included, but for the items edited by hand, kept as
+        // they were: those citing a corrected line (or still unchecked from before) stay to be checked.
+        let revised = previous.revisedSegmentIDs ?? []
+        let unchecked = NotePart.allCases.flatMap { content[$0] }.filter { item in
+            item.edited == true
+                && (!revised.isDisjoint(with: item.evidence) || previous.uncheckedItemIDs?.contains(item.id) == true)
+        }
+        result.revisedSegmentIDs = nil
+        result.uncheckedItemIDs = unchecked.isEmpty ? nil : Set(unchecked.map(\.id))
         if rejected > 0 { result.rejectedItems = (previous.rejectedItems ?? 0) + rejected }
         result.appliedSegmentIDs.formUnion(known.keys)
         result.latestSegmentIDs = nil

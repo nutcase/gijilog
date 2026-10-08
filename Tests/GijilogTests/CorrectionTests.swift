@@ -237,6 +237,52 @@ extension ProcessingTests {
             store.meetings[1].notes?.content.actions[0].owner == "鈴木" && store.correctionOffer == nil,
             "picking someone else from the list does not offer to change the name across the meeting")
     }
+    // A line corrected while a live update is being written is not in that update: the update must not clear its
+    // mark, or the items it fed would read as checked.
+    @MainActor func testCorrectionsDuringAnUpdateStayMarked() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = Store(root: root, loadSettings: false)
+        let gate = Gate()
+        store.pipeline = ProcessingPipeline(
+            store: store, review: MinutesEngine.stubReview,
+            summarize: { state, segments, _, _ in
+                await gate.wait()
+                let batch = MinutesEngine.batch(segments, state: state)
+                return MinutesEngine.merge(
+                    state, delta: MinutesEngine.extract(batch), batch: batch, segments: segments)
+            })
+        var meeting = Meeting(title: "定例")
+        meeting.settings = SessionSettings()
+        meeting.capture = .recording
+        meeting.segments = [
+            Segment(id: "a", time: 0, source: "マイク", text: "新しい案を採用することにします"),
+            Segment(id: "b", time: 30, source: "マイク", text: "次は日程の話です"),
+        ]
+        var notes = MinutesState()
+        notes.content.decisions = [NoteItem(id: "d1", text: "新しい案を採用する", evidence: ["a"])]
+        notes.appliedSegmentIDs = ["a"]
+        meeting.notes = notes
+        store.meetings = [meeting]
+        store.pipeline.resume(meeting.id, key: "")
+        store.pipeline.requestSummary(meeting.id, force: true)
+        for _ in 0..<50 where !store.pipeline.isSummarizing(meeting.id) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try Self.check(store.pipeline.isSummarizing(meeting.id), "an update is being written")
+        store.updateSegment(meeting.id, id: "a", text: "新しい案は採用しないことにします")
+        await gate.release()
+        for _ in 0..<200 where store.pipeline.isSummarizing(meeting.id) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let after = try Self.require(store.meetings[0].notes, "notes")
+        try Self.check(
+            after.appliedSegmentIDs.contains("b") && after.revisedSegmentIDs == ["a"]
+                && after.itemsCitingRevisedLines.contains("d1"),
+            "the update arrived, and the decision citing the corrected line is still to check: \(String(describing: after.revisedSegmentIDs))"
+        )
+        store.recording = false
+    }
     // A word fixed once is learned: later meetings get it fixed by themselves, transcription is told its right
     // spelling and the people named as owners, and the fix can be undone in one meeting.
     @MainActor func testMisheardWordsAreLearnedFromFixes() async throws {
@@ -349,6 +395,32 @@ extension ProcessingTests {
         try Self.check(
             rewritten.revisedSegmentIDs == nil && rewritten.itemsCitingRevisedLines.isEmpty,
             "minutes written again from the corrected transcript need no checking")
+        // An item edited by hand is kept as it was by the rewrite, so it still needs checking; the items written
+        // again from the corrected lines do not.
+        var withHandEdit = revised
+        withHandEdit.content.decisions = [NoteItem(id: "d1", text: "森バスの価格は来週決める", evidence: ["a"], edited: true)]
+        let keptAsEdited = try MinutesEngine.rewrite(
+            withHandEdit, delta: NotesDelta(summary: [NoteItem(id: "", text: "モリバス：価格を決める", evidence: ["a"])]),
+            transcript: store.meetings[0].segments)
+        try Self.check(
+            keptAsEdited.itemsCitingRevisedLines == ["d1"] && keptAsEdited.revisedSegmentIDs == nil,
+            "an item edited by hand and kept by the rewrite still needs checking: \(keptAsEdited.itemsCitingRevisedLines)"
+        )
+        let again = try MinutesEngine.rewrite(
+            keptAsEdited, delta: NotesDelta(summary: [NoteItem(id: "", text: "モリバス：価格を決める", evidence: ["a"])]),
+            transcript: store.meetings[0].segments)
+        try Self.check(again.itemsCitingRevisedLines == ["d1"], "until someone checks it, through another rewrite")
+        // Marks made while minutes were being written join them; marks cleared meanwhile stay cleared.
+        var written = MinutesState()
+        written.revisedSegmentIDs = ["old"]
+        var before = MinutesState()
+        before.revisedSegmentIDs = ["old"]
+        var now = MinutesState()
+        now.revisedSegmentIDs = ["new"]
+        written.keepMarks(madeSince: before, now: now)
+        try Self.check(
+            written.revisedSegmentIDs == ["new"],
+            "a line corrected meanwhile stays marked, and one kept as it is meanwhile does not come back")
         store.keepMinutesDespiteRevisions(meeting.id)
         try Self.check(
             store.meetings[0].notes?.itemsCitingRevisedLines.isEmpty == true, "the minutes can be kept as they are")
