@@ -963,14 +963,10 @@ import UniformTypeIdentifiers
                 meeting.finalReviewPending = true
                 if rebuild || meeting.settings == nil {
                     meeting.settings = settings
-                    // Items edited by hand, and those deleted, carry over; the AI writes the rest again.
-                    var kept = MinutesState()
-                    for part in NotePart.allCases {
-                        kept.content[part] = meeting.notes?.content[part].filter { $0.edited == true } ?? []
-                    }
-                    kept.dismissed = meeting.notes?.dismissed
-                    let edited = NotePart.allCases.contains { !kept.content[$0].isEmpty } || kept.dismissed != nil
-                    meeting.notes = edited ? kept : nil
+                    // Items edited by hand, and those deleted, carry over, an edited item still to check marked by
+                    // its own ID; the AI writes the rest again from a new transcript.
+                    meeting.notes = MinutesState.keptForReprocessing(meeting.notes)
+                    meeting.revisedBeforeMinutes = nil
                     meeting.segments = []
                     meeting.minutes = ""
                     for i in meeting.jobs.indices { meeting.jobs[i].state = .pending }
@@ -1699,7 +1695,11 @@ extension Store {
     }
     /// Remembers a line corrected or deleted by hand, so minutes citing it are shown to need checking.
     private static func markRevised(_ id: String, in meeting: inout Meeting) {
-        guard var notes = meeting.notes else { return }
+        guard var notes = meeting.notes else {
+            // No minutes yet: the first ones take the mark, if they were written from the line as it was.
+            meeting.revisedBeforeMinutes = (meeting.revisedBeforeMinutes ?? []).union([id])
+            return
+        }
         notes.revisedSegmentIDs = (notes.revisedSegmentIDs ?? []).union([id])
         meeting.notes = notes
     }

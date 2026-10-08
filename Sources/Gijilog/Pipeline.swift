@@ -256,10 +256,15 @@ import Foundation
                         }
                         // Lines corrected by hand while this update was written are not in it: they stay marked to be
                         // checked. Marks cleared meanwhile (このままにする) stay cleared.
-                        notes.keepMarks(madeSince: meeting.notes, now: store.meetings.first { $0.id == id }?.notes)
+                        let current = store.meetings.first { $0.id == id }
+                        notes.keepMarks(madeSince: meeting.notes, now: current?.notes)
+                        // So do lines corrected before there were minutes, but after these were asked for.
+                        let late = (current?.revisedBeforeMinutes ?? []).subtracting(meeting.revisedBeforeMinutes ?? [])
+                        if !late.isEmpty { notes.revisedSegmentIDs = (notes.revisedSegmentIDs ?? []).union(late) }
                         // Only this task updates notes for this meeting; transcription may append newer utterances meanwhile.
                         store.change(id) { m in
                             m.notes = m.corrected(notes)
+                            m.revisedBeforeMinutes = nil  // The minutes now hold the marks.
                             if reviewing { m.finalReviewPending = notes.finalizedAt == nil }
                             m.minutes = MinutesEngine.render(m.notes ?? notes, segments: m.segments)
                         }

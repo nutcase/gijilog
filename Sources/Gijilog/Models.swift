@@ -141,6 +141,19 @@ struct MinutesState: Codable, Sendable {
                 $0.state != .cancelled && (!revised.isDisjoint(with: $0.evidence) || unchecked.contains($0.id))
             }.map(\.id))
     }
+    /// What carries over when the whole recording is processed again: the items edited by hand, and those deleted.
+    /// The transcript is written again with new line IDs, so an edited item still to check is marked by its own ID.
+    /// Nil when nothing carries over.
+    static func keptForReprocessing(_ notes: MinutesState?) -> MinutesState? {
+        guard let notes else { return nil }
+        var kept = MinutesState()
+        for part in NotePart.allCases { kept.content[part] = notes.content[part].filter { $0.edited == true } }
+        kept.dismissed = notes.dismissed
+        let keptIDs = Set(NotePart.allCases.flatMap { kept.content[$0].map(\.id) })
+        let unchecked = notes.itemsCitingRevisedLines.intersection(keptIDs)
+        kept.uncheckedItemIDs = unchecked.isEmpty ? nil : unchecked
+        return keptIDs.isEmpty && kept.dismissed == nil ? nil : kept
+    }
     /// Minutes written by the AI from `before`, with the marks for checking as they are now: those made since join,
     /// and those cleared since (このままにする) stay cleared. A line corrected while the minutes were being written
     /// is not in them.
@@ -179,6 +192,9 @@ struct Meeting: Codable, Identifiable {
     var clockStart: Date?  // Set when a recording continues the meeting: when its clock would have started.
     var stoppedForSilence: Date?  // When recording stopped by itself after a long silence; cleared on continuing.
     var ignoredLearned: [String]?  // Learned right spellings undone in this meeting, so they are not applied again.
+    // Lines corrected by hand before there were minutes to mark: the first minutes take them, if they were written
+    // from the lines as they were.
+    var revisedBeforeMinutes: Set<String>?
     init(title: String) { self.title = title }
     /// When the meeting's clock reads zero: the start of the recording, or, for a meeting recorded in parts, the
     /// moment that puts the latest part right after the earlier ones.
@@ -186,7 +202,7 @@ struct Meeting: Codable, Identifiable {
     enum CodingKeys: String, CodingKey {
         case id, title, date, segments, minutes, status, capture, settings, jobs, notes, captureError, hasAudio,
             revision, folderName, finalReviewPending, tags, agenda, corrections, clockStart, stoppedForSilence,
-            ignoredLearned
+            ignoredLearned, revisedBeforeMinutes
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -212,6 +228,7 @@ struct Meeting: Codable, Identifiable {
         clockStart = try c.decodeIfPresent(Date.self, forKey: .clockStart)
         stoppedForSilence = try c.decodeIfPresent(Date.self, forKey: .stoppedForSilence)
         ignoredLearned = try c.decodeIfPresent([String].self, forKey: .ignoredLearned)
+        revisedBeforeMinutes = try c.decodeIfPresent(Set<String>.self, forKey: .revisedBeforeMinutes)
     }
 }
 

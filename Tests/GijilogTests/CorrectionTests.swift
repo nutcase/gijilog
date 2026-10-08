@@ -281,6 +281,38 @@ extension ProcessingTests {
                 && after.itemsCitingRevisedLines.contains("d1"),
             "the update arrived, and the decision citing the corrected line is still to check: \(String(describing: after.revisedSegmentIDs))"
         )
+
+        // Before the first minutes there is nothing to mark: a correction waits on the meeting, and the first minutes
+        // take it when they were written from the line as it was. One made before they were asked for is in them.
+        let firstGate = Gate()
+        let first = Store(root: root.appendingPathComponent("first"), loadSettings: false)
+        first.pipeline = ProcessingPipeline(
+            store: first, review: MinutesEngine.stubReview,
+            summarize: { state, segments, _, _ in
+                await firstGate.wait()
+                var written = state
+                written.content.decisions = [NoteItem(id: "d1", text: "新しい案を採用する", evidence: ["a"])]
+                written.content.actions = [NoteItem(id: "x1", text: "日程を決める", evidence: ["b"])]
+                written.appliedSegmentIDs = Set(segments.map(\.id))
+                return written
+            })
+        var fresh = meeting
+        fresh.notes = nil
+        first.meetings = [fresh]
+        first.updateSegment(fresh.id, id: "b", text: "次は日程を決めます")
+        first.pipeline.resume(fresh.id, key: "")
+        first.pipeline.requestSummary(fresh.id, force: true)
+        for _ in 0..<50 where !first.pipeline.isSummarizing(fresh.id) { try await Task.sleep(nanoseconds: 10_000_000) }
+        first.updateSegment(fresh.id, id: "a", text: "新しい案は採用しないことにします")
+        let waiting = first.meetings[0].revisedBeforeMinutes
+        await firstGate.release()
+        for _ in 0..<200 where first.pipeline.isSummarizing(fresh.id) { try await Task.sleep(nanoseconds: 10_000_000) }
+        let firstNotes = try Self.require(first.meetings[0].notes, "the first minutes")
+        try Self.check(
+            waiting == ["a", "b"] && firstNotes.itemsCitingRevisedLines == ["d1"]
+                && first.meetings[0].revisedBeforeMinutes == nil,
+            "a line corrected while the first minutes were written marks the decision citing it; one corrected before does not: \(firstNotes.itemsCitingRevisedLines)"
+        )
         store.recording = false
     }
     // A word fixed once is learned: later meetings get it fixed by themselves, transcription is told its right
@@ -410,6 +442,21 @@ extension ProcessingTests {
             keptAsEdited, delta: NotesDelta(summary: [NoteItem(id: "", text: "モリバス：価格を決める", evidence: ["a"])]),
             transcript: store.meetings[0].segments)
         try Self.check(again.itemsCitingRevisedLines == ["d1"], "until someone checks it, through another rewrite")
+        // Processing the whole recording again writes a new transcript with new line IDs: an edited item still to
+        // check carries over marked by its own ID, through the rewrite after it, and the rest is written again.
+        var beforeReprocess = withHandEdit
+        beforeReprocess.content.actions = [NoteItem(id: "x1", text: "見積もりを出す", evidence: ["b"], edited: true)]
+        let carried = try Self.require(MinutesState.keptForReprocessing(beforeReprocess), "what carries over")
+        let renumbered = [Segment(id: "n1", time: 0, source: "マイク", text: "モリバスの価格を決めます")]
+        let reprocessed = try MinutesEngine.rewrite(
+            carried, delta: NotesDelta(summary: [NoteItem(id: "", text: "モリバス：価格を決める", evidence: ["n1"])]),
+            transcript: renumbered)
+        try Self.check(
+            carried.content.summary.isEmpty && carried.content.decisions.map(\.id) == ["d1"]
+                && carried.itemsCitingRevisedLines == ["d1"] && reprocessed.itemsCitingRevisedLines == ["d1"]
+                && MinutesState.keptForReprocessing(MinutesState()) == nil,
+            "an edited item still to check stays so through processing the recording again: \(carried.itemsCitingRevisedLines)"
+        )
         // Marks made while minutes were being written join them; marks cleared meanwhile stay cleared.
         var written = MinutesState()
         written.revisedSegmentIDs = ["old"]
