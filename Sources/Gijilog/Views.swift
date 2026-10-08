@@ -347,10 +347,15 @@ struct MeetingList: View {
             }
         }
         .listStyle(.sidebar)
-        .searchable(text: $store.searchText, placement: .sidebar, prompt: "キーワードで検索")
-        .searchFocused($searchFocused)
         .onChange(of: store.focusesSearch, initial: true) {
-            guard store.focusesSearch else { return }
+            guard store.focusesSearch else {
+                // macOS hands a new window's first text field the keyboard; the search waits to be clicked or ⌘F.
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    if !store.focusesSearch && store.searchText.isEmpty { searchFocused = false }
+                }
+                return
+            }
             store.focusesSearch = false
             // A window that ⌘F just opened needs a moment before its search field can take focus.
             Task { @MainActor in
@@ -377,6 +382,8 @@ struct MeetingList: View {
                 }
                 .buttonStyle(QuietButtonStyle(selected: store.askOpen))
                 .help("すべての会議について、AIに質問する。答えのリンクから、その会議と発言を開ける")
+                SidebarSearchField(text: $store.searchText, focused: $searchFocused)
+                if !store.allTags.isEmpty { TagFilterBar() }
                 Button {
                     store.planMeeting()
                 } label: {
@@ -386,7 +393,6 @@ struct MeetingList: View {
                 .buttonStyle(QuietButtonStyle())
                 .disabled(!store.ready)
                 .help("録音の前に会議を作って、議題を用意しておく（⌘N）。会議が始まったら、その会議のページで録音します")
-                if !store.allTags.isEmpty { TagFilterBar() }
             }
             .padding(.horizontal, 18).padding(.top, 8).padding(.bottom, 12)
         }
@@ -796,6 +802,39 @@ struct QuietButtonStyle: ButtonStyle {
                 .opacity(isEnabled ? 1 : 0.4)
                 .contentShape(Rectangle())
         }
+    }
+}
+// The meeting search, under the app's name and ギジログAI: the list narrows as keywords are typed. Esc or the
+// clear button empties it; ⌘F comes here.
+struct SidebarSearchField: View {
+    @Binding var text: String
+    var focused: FocusState<Bool>.Binding
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundStyle(Palette.paper.opacity(0.5))
+            TextField("キーワードで検索", text: $text)
+                .textFieldStyle(.plain).foregroundStyle(Palette.paper)
+                .focused(focused)
+                .onEscape { text = "" }
+            if !text.isEmpty {
+                Button {
+                    text = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain).foregroundStyle(Palette.paper.opacity(0.5))
+                .help("検索をやめる").accessibilityLabel("検索をやめる")
+            }
+        }
+        .font(.system(size: 13))
+        .padding(.horizontal, 8).frame(height: 28)
+        .background(RoundedRectangle(cornerRadius: 7).fill(Palette.paper.opacity(0.07)))
+        .overlay(
+            RoundedRectangle(cornerRadius: 7).strokeBorder(
+                focused.wrappedValue ? Palette.asagi.opacity(0.7) : Palette.paper.opacity(0.14))
+        )
+        .contentShape(Rectangle())
+        .onTapGesture { focused.wrappedValue = true }
     }
 }
 // Red belongs to recording; other actions use the outline style in another tint.
