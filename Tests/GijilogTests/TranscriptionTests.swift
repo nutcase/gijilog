@@ -66,10 +66,20 @@ extension ProcessingTests {
             Segment(id: "a", time: 0, source: "マイク", text: "A案にしましょう。"),
             Segment(id: "b", time: 30, source: "Mac音声", text: "では次に。"),
         ]
-        let hints = TranscriptionHints(meeting: meeting, before: 30, vocabulary: "ギジログ\nOpenAI、MCP, ギジログ\n\n")
+        let hints = TranscriptionHints(meeting: meeting, before: 30, vocabulary: "ギジログ\nOpenAI、MCP，ギジログ\n\n")
         try Self.check(
             hints.terms == ["ギジログ", "OpenAI", "MCP"] && hints.preceding == "A案にしましょう。",
-            "terms are split and deduplicated, and only speech before the chunk is context")
+            "terms are split at line breaks and 読点 and deduplicated, and only speech before the chunk is context")
+        try Self.check(
+            TranscriptionHints.terms("Social Voice, Inc.、AIQ") == ["Social Voice, Inc.", "AIQ"],
+            "a plain comma belongs to the term")
+        var fixed = Meeting(title: "定例")
+        fixed.corrections = [TermCorrection(variants: ["森バス"], to: "モリバス")]
+        let crowded = TranscriptionHints(
+            meeting: fixed, before: 0, vocabulary: (1...150).map { "語\($0)" }.joined(separator: "\n"))
+        try Self.check(
+            crowded.keywords.first == "モリバス" && crowded.keywords.count == TranscriptionHints.keywordCount,
+            "the spellings fixed in this meeting come first, so a long vocabulary does not push them out")
         let prompt = hints.prompt
         try Self.check(
             prompt.contains("会議名: 週次定例") && prompt.contains("議題: リリース範囲、問い合わせ対応")

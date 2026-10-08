@@ -1,6 +1,10 @@
 import CoreServices
 import Foundation
 
+extension Array where Element == Segment {
+    /// The utterances by ID, for finding what an item cites; a repeated ID keeps its first.
+    var byID: [String: Segment] { Dictionary(map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }) }
+}
 struct Segment: Codable, Identifiable, Sendable, Equatable {
     var id: String = UUID().uuidString
     var time: Double
@@ -781,9 +785,12 @@ struct VocabularyFile: Equatable {
     /// A file that is not JSON as this app reads it, with the line where reading stopped when JSON tells it.
     struct Unreadable: Error, Equatable {
         var line: Int?
+        var cannotOpen = false  // There, but it could not be read at all, as an iCloud file that cannot download yet.
         var message: String {
-            "保存先の \(VocabularyFile.name) の書き方に誤りがあり、読み込めません"
-                + (line.map { "（\($0)行目あたり）" } ?? "") + "。直すまで、用語集と覚えた聞き間違いの変更は保存しません。"
+            cannotOpen
+                ? "保存先の \(VocabularyFile.name) を開けません。開けるようになるまで、用語集と覚えた聞き間違いの変更は保存しません。"
+                : "保存先の \(VocabularyFile.name) の書き方に誤りがあり、読み込めません"
+                    + (line.map { "（\($0)行目あたり）" } ?? "") + "。直すまで、用語集と覚えた聞き間違いの変更は保存しません。"
         }
     }
     init(terms: [String] = [], corrections: [LearnedWord] = []) {
@@ -852,10 +859,37 @@ struct VocabularyFile: Equatable {
             terms: Self.merged(self.terms.joined(separator: "\n"), terms),
             corrections: LearnedWords.merged(LearnedWords.format(self.corrections), corrections))
     }
-    /// The lists in a save location: nil when it has no file, and an error when the file is written wrong.
+    /// The lists in a save location: nil when it has no file, and an error when the file is written wrong or cannot be
+    /// read. Only a file that is not there counts as none: one that is but cannot be read must not be written over.
     static func read(in root: URL) throws -> VocabularyFile? {
-        guard let data = try? Data(contentsOf: root.appendingPathComponent(name)) else { return nil }
+        let file = root.appendingPathComponent(name)
+        guard FileManager.default.fileExists(atPath: file.path) else { return nil }
+        let data: Data
+        do { data = try Data(contentsOf: file) } catch { throw Unreadable(cannotOpen: true) }
         return try VocabularyFile(json: data)
+    }
+    /// The changes made here since `base` was read or written, over `theirs`, the file as another Mac has left it
+    /// since: terms and misheard spellings added here join, those removed here go, and the rest is the other Mac's.
+    static func merged(base: VocabularyFile, mine: VocabularyFile, theirs: VocabularyFile) -> VocabularyFile {
+        func merge<Element: Hashable>(_ base: [Element], _ mine: [Element], _ theirs: [Element]) -> [Element] {
+            let before = Set(base)
+            let removed = before.subtracting(mine)
+            let kept = theirs.filter { !removed.contains($0) }
+            let have = Set(kept)
+            return kept + mine.filter { !before.contains($0) && !have.contains($0) }
+        }
+        struct Heard: Hashable {
+            let spelling: String
+            let right: String
+        }
+        func heard(_ file: VocabularyFile) -> [Heard] {
+            file.corrections.flatMap { word in word.variants.map { Heard(spelling: $0, right: word.to) } }
+        }
+        let corrections = merge(heard(base), heard(mine), heard(theirs)).reduce("") {
+            LearnedWords.learning([$1.spelling], to: $1.right, in: $0)
+        }
+        return VocabularyFile(
+            terms: merge(base.terms, mine.terms, theirs.terms), corrections: LearnedWords.parse(corrections))
     }
     @discardableResult func write(in root: URL) -> Bool {
         let file = root.appendingPathComponent(Self.name)

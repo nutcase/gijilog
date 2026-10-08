@@ -44,7 +44,7 @@ enum LearnedWords {
             let sides = line.components(separatedBy: "→")
             guard sides.count == 2 else { return nil }
             let to = sides[1].trimmingCharacters(in: .whitespaces)
-            let variants = sides[0].components(separatedBy: CharacterSet(charactersIn: "、,，"))
+            let variants = sides[0].components(separatedBy: CharacterSet(charactersIn: "、，"))
                 .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty && $0 != to }
             return to.isEmpty || variants.isEmpty ? nil : LearnedWord(variants: variants, to: to)
         }

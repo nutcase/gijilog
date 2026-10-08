@@ -205,10 +205,13 @@ extension ProcessingTests {
         ]
         meeting.notes = notes
         store.meetings = [meeting]
-        func under() -> Int? {
-            guard let content = store.meetings[0].notes?.content else { return nil }
-            let known = Dictionary(uniqueKeysWithValues: store.meetings[0].segments.map { ($0.id, $0) })
-            return MinutesEngine.topicIndex(of: content.actions[0], in: content.summary, known: known)
+        // The place among the topics the minutes show, cancelled ones left out.
+        func under(_ id: String = "x") -> Int? {
+            guard let content = store.meetings[0].notes?.content,
+                let action = content.actions.first(where: { $0.id == id })
+            else { return nil }
+            let shown = content.summary.filter { $0.state != .cancelled }
+            return MinutesEngine.topicIndex(of: action, in: shown, known: store.meetings[0].segments.byID)
         }
         store.updateNoteItem(meeting.id, part: .actions, id: "x") { $0.text = "AIインタビュアーで使っているモデルを整理する" }
         let action = try Self.require(store.meetings[0].notes?.content.actions.first, "the edited action")
@@ -227,16 +230,27 @@ extension ProcessingTests {
                 && NoteItemDrag(payload: "gijilog-item\tnot-a-uuid\tactions\ty") == nil,
             "a dragged item says which meeting, section and item it is, and other text is not taken for one")
         func item(_ id: String) -> NoteItem? { store.meetings[0].notes?.content.actions.first { $0.id == id } }
-        store.moveNoteItem(meeting.id, part: .actions, id: "y", toTopic: 1)
+        store.moveNoteItem(meeting.id, part: .actions, id: "y", toTopic: "AIインタビュアー")
         try Self.check(item("y")?.edited == nil, "dropped on the topic it is under, an item is left as it was")
-        store.moveNoteItem(meeting.id, part: .actions, id: "y", toTopic: 0)
-        store.moveNoteItem(meeting.id, part: .actions, id: "y", toTopic: 9)
+        store.moveNoteItem(meeting.id, part: .actions, id: "y", toTopic: "モリバス系")
+        store.moveNoteItem(meeting.id, part: .actions, id: "y", toTopic: "ない話題")
         try Self.check(
-            item("y")?.topic == "モリバス系" && item("y")?.edited == true,
+            item("y")?.topic == "モリバス系" && item("y")?.edited == true && under("y") == 0,
             "an item dropped on another topic moves there and is kept there by AI updates")
-        store.moveNoteItem(meeting.id, part: .summary, id: "s3", toTopic: 0)
+        // The minutes leave a cancelled topic out, so their numbering is not the summary's own: a move goes by name.
+        store.change(meeting.id) {
+            $0.notes?.content.summary.insert(
+                NoteItem(id: "s0", text: "取り消した話題：もう扱わない", evidence: [], state: .cancelled), at: 0)
+        }
+        store.moveNoteItem(meeting.id, part: .actions, id: "y", toTopic: "QB")
         try Self.check(
-            store.meetings[0].notes?.content.summary[2].topic == nil, "a summary topic is not moved under another")
+            item("y")?.topic == "QB" && under("y") == 2,
+            "with a cancelled topic before it, an item goes under the topic it was dropped on: \(String(describing: item("y")))"
+        )
+        store.moveNoteItem(meeting.id, part: .summary, id: "s3", toTopic: "モリバス系")
+        try Self.check(
+            store.meetings[0].notes?.content.summary.first { $0.id == "s3" }?.topic == nil,
+            "a summary topic is not moved under another")
     }
     func testReviewCannotRollBackLaterEvidence() throws {
         let before = Segment(id: "before", time: 0, source: "マイク", text: "A案にします")

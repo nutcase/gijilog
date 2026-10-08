@@ -165,7 +165,7 @@ struct ContentView: View {
                 HStack(spacing: 0) {
                     Group {
                         if store.askOpen {
-                            AskDesk()
+                            AskDesk(stream: store.askStream)
                         } else if let meeting = store.selectedMeeting {
                             MinutesDesk(meeting: meeting)
                         } else {
@@ -319,6 +319,7 @@ struct ContentView: View {
 struct MeetingList: View {
     @EnvironmentObject var store: Store
     @FocusState private var searchFocused: Bool
+    @StateObject private var searchAsked = Flag()  // ⌘F asked for the search field since the list appeared.
     var body: some View {
         List(selection: $store.selected) {
             if days.isEmpty && !store.searchedTerms.isEmpty {
@@ -348,20 +349,19 @@ struct MeetingList: View {
         }
         .listStyle(.sidebar)
         .onChange(of: store.focusesSearch, initial: true) {
-            guard store.focusesSearch else {
-                // macOS hands a new window's first text field the keyboard; the search waits to be clicked or ⌘F.
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 100_000_000)
-                    if !store.focusesSearch && store.searchText.isEmpty { searchFocused = false }
-                }
-                return
-            }
+            guard store.focusesSearch else { return }
+            searchAsked.on = true
             store.focusesSearch = false
             // A window that ⌘F just opened needs a moment before its search field can take focus.
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 100_000_000)
                 searchFocused = true
             }
+        }
+        // macOS hands a new window's first text field the keyboard; the search waits to be clicked or asked for with ⌘F.
+        .task {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            if !searchAsked.on && store.searchText.isEmpty { searchFocused = false }
         }
         .scrollContentBackground(.hidden)
         .background(Palette.deepAi)
@@ -1313,7 +1313,7 @@ struct MinutesSections: View {
     var editable = false
     var current: String?  // The find bar's current match.
     var body: some View {
-        let known = Dictionary(segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let known = segments.byID
         let latest = notes.latestSegmentIDs ?? []
         let content = notes.content
         let revised = editable ? notes.itemsCitingRevisedLines : []
@@ -1445,7 +1445,7 @@ struct TopicGroup: Identifiable {
     let id: String
     let heading: (number: Int?, name: String)?  // None when the items are not grouped by topic.
     let items: [NoteItem]
-    var topic: Int? = nil  // The summary topic's place, for a run under one.
+    var topic: String? = nil  // The summary topic's name, as items name it, for a run under one.
     /// The items under the summary topic each came from, in the summary's order, those of no topic under その他
     /// last; all together when there are no topics to group by or none of the items belongs to one.
     static func of(_ items: [NoteItem], topics: [NoteItem], known: [String: Segment]) -> [TopicGroup] {
@@ -1461,20 +1461,20 @@ struct TopicGroup: Identifiable {
             let parts = MinutesEngine.summaryParts(topics[index].text)
             return TopicGroup(
                 id: topics[index].id, heading: (index + 1, parts.topic ?? parts.overview), items: group.items,
-                topic: index)
+                topic: MinutesEngine.topicName(topics[index]))
         }
     }
 }
 /// The topic a dragged item is over, outlined in its section.
 @MainActor final class TopicDropHighlight: ObservableObject {
-    @Published var topic: Int?
+    @Published var topic: String?
 }
 // A topic's heading and items take a decision, open issue or action dragged from another topic of the same section,
 // and move it there. Only where the minutes can be edited.
 struct TopicDrop: ViewModifier {
     @EnvironmentObject var store: Store
     let editing: NoteEditing?
-    let topic: Int?
+    let topic: String?
     @ObservedObject var highlight: TopicDropHighlight
     @ViewBuilder func body(content: Content) -> some View {
         if let editing, let topic, editing.part != .summary {
@@ -1795,7 +1795,9 @@ struct EditableNoteRow: View {
                     isOn: Binding(
                         get: { under == index },
                         set: { _ in
-                            store.moveNoteItem(editing.meetingID, part: editing.part, id: item.id, toTopic: index)
+                            store.moveNoteItem(
+                                editing.meetingID, part: editing.part, id: item.id,
+                                toTopic: MinutesEngine.topicName(topic))
                         }
                     ))
             }
@@ -2798,6 +2800,7 @@ struct TranscriptPanel: View {
 // meeting at that utterance, and the conversation stays for the next visit until the app quits.
 struct AskDesk: View {
     @EnvironmentObject var store: Store
+    @ObservedObject var stream: AskStream
     @StateObject private var draft = TextDraft()
     @FocusState private var focused: Bool
     private static let width: CGFloat = 760
@@ -2818,10 +2821,10 @@ struct AskDesk: View {
                     VStack(alignment: .leading, spacing: 18) {
                         if store.asked.isEmpty { intro }
                         ForEach(store.asked) { AskBubble(message: $0).id($0.id) }
-                        if !store.askDraft.isEmpty {
-                            AskBubble(message: AskMessage(role: .answer, text: store.askDraft)).id("draft")
+                        if !stream.draft.isEmpty {
+                            AskBubble(message: AskMessage(role: .answer, text: stream.draft)).id("draft")
                         }
-                        if let progress = store.askProgress {
+                        if let progress = stream.progress {
                             HStack(spacing: 8) {
                                 ProgressView().controlSize(.small)
                                 Text(progress + "…").font(.callout).foregroundStyle(Palette.paper.opacity(0.7))
@@ -2840,7 +2843,7 @@ struct AskDesk: View {
                     withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last, anchor: .top) }
                 }
                 // While the AI reads, its progress is kept in view; once it writes, the answer is read from its start.
-                .onChange(of: store.askProgress) { _, progress in
+                .onChange(of: stream.progress) { _, progress in
                     guard let progress else { return }
                     if progress == "答えを書いています" {
                         proxy.scrollTo("draft", anchor: .top)
@@ -2857,7 +2860,13 @@ struct AskDesk: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Palette.kon)
-        .environment(\.openURL, OpenURLAction { url in store.openAskLink(url) ? .handled : .systemAction })
+        // A link opens its meeting here; one the AI wrote to elsewhere opens only on the web, as nothing else is cited.
+        .environment(
+            \.openURL,
+            OpenURLAction { url in
+                store.openAskLink(url) ? .handled : AskLink.opensOnTheWeb(url) ? .systemAction : .discarded
+            }
+        )
         .onAppear { Task { @MainActor in focused = true } }
     }
     private var intro: some View {
@@ -2899,7 +2908,7 @@ struct AskDesk: View {
         .onTapGesture { focused = true }
     }
     private var canSend: Bool {
-        store.askProgress == nil && !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        stream.progress == nil && !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     private func send() {
         guard canSend else { return }
@@ -3826,7 +3835,7 @@ struct LiveMinutes: View {
     let meeting: Meeting
     var body: some View {
         let notes = meeting.notes ?? MinutesState()
-        let known = Dictionary(meeting.segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let known = meeting.segments.byID
         let latest = notes.latestSegmentIDs ?? []
         let content = notes.content
         ScrollView {

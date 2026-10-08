@@ -191,7 +191,67 @@ extension ProcessingTests {
             store.openAskLink(atClock) && store.selected == id && !store.askOpen && store.revealed?.segmentID == "a"
                 && !store.openAskLink(web),
             "a link opens its meeting and shows the utterance under way at that moment")
+        store.selected = interview.id
+        let leftThatMeeting = store.revealed == nil
+        _ = store.openAskLink(atClock)
+        _ = store.openAskLink(whole)
+        try Self.check(
+            leftThatMeeting && store.revealed == nil,
+            "the utterance is marked only until another meeting is shown, and a link to a whole meeting marks none")
+        // Only a web page opens outside the app: a link to a file or another app's scheme can only come from text in a
+        // meeting telling the AI to write it.
+        let file = try Self.require(URL(string: "file:///Applications/Calculator.app"), "a file link")
+        let scheme = try Self.require(URL(string: "x-apple.systempreferences:com.apple.preference"), "an app link")
+        try Self.check(
+            AskLink.opensOnTheWeb(web) && !AskLink.opensOnTheWeb(file) && !AskLink.opensOnTheWeb(scheme),
+            "only web links in an answer open outside the app")
+
+        // An answer cut short by the length limit says so; a tool call with no ID cannot be answered, so it fails.
+        let cut = try await MeetingAgent.answer(
+            [AskMessage(role: .question, text: "まとめて")], instructions: "", model: "m",
+            send: { _, _ in
+                [
+                    "status": "incomplete",
+                    "output": [["type": "message", "content": [["type": "output_text", "text": "途中まで"]]]],
+                ]
+            },
+            run: { _, _ in "" })
+        var unanswerable = false
+        do {
+            _ = try await MeetingAgent.answer(
+                [AskMessage(role: .question, text: "探して")], instructions: "", model: "m",
+                send: { _, _ in ["status": "completed", "output": [["type": "function_call", "name": "list_tags"]]] },
+                run: { _, _ in "" })
+        } catch { unanswerable = true }
+        try Self.check(
+            cut.hasPrefix("途中まで") && cut.contains("打ち切られました") && unanswerable,
+            "a cut-off answer is marked, and a call with no ID ends the answer: \(cut)")
+
+        // A new conversation started while an answer is on its way gets nothing from it, and can be asked at once.
+        try Self.check(URLProtocol.registerClass(SilentResponsesProtocol.self), "register the silent server")
+        defer { URLProtocol.unregisterClass(SilentResponsesProtocol.self) }
+        store.key = "TEST"
+        store.asked = []
+        store.ask("QBはどうなった？")
+        try await Task.sleep(nanoseconds: 100_000_000)
+        try Self.check(store.askStream.progress != nil, "the answer is on its way")
+        store.clearAsked()
+        store.ask("次の質問")
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let afterClearing = store.asked.map(\.text)
+        store.clearAsked()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        try Self.check(
+            afterClearing == ["次の質問"] && store.asked.isEmpty && store.askStream.progress == nil,
+            "the stopped answer leaves nothing in the new conversation: \(afterClearing)")
     }
+}
+/// Takes a request to the Responses API and never answers, like a model still thinking.
+final class SilentResponsesProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.path == "/v1/responses" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {}
+    override func stopLoading() {}
 }
 private enum AskSecondsCheck {
     static var ok: Bool {

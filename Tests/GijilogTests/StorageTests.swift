@@ -235,6 +235,29 @@ extension ProcessingTests {
         try Self.check(
             left == broken && FileManager.default.fileExists(atPath: oldTerms.path),
             "a file written wrong is left as it is, and the old ones with it")
+
+        // A file that is there but cannot be read (as an iCloud file not yet downloaded) is not taken for none, which
+        // the next save would write over.
+        let elsewhere = root.appendingPathComponent("unreadable")
+        try FileManager.default.createDirectory(
+            at: elsewhere.appendingPathComponent(VocabularyFile.name), withIntermediateDirectories: true)
+        var unopened: VocabularyFile.Unreadable?
+        do { _ = try VocabularyFile.read(in: elsewhere) } catch { unopened = error as? VocabularyFile.Unreadable }
+        try Self.check(
+            unopened?.cannotOpen == true && unopened?.message.contains("開けません") == true,
+            "a file that cannot be read is an error, not a missing file: \(String(describing: unopened))")
+
+        // Changes made here since the file was last read join another Mac's changes to it, rather than replacing them.
+        let base = VocabularyFile(terms: "ギジログ\n高松\nOKR", corrections: "森バス → モリバス\n高山 → 高松")
+        let mine = VocabularyFile(terms: "ギジログ\nOKR\nAIQ", corrections: "森バス → モリバス\n高山 → 高松\nIQ → AIQ")
+        let theirs = VocabularyFile(terms: "ギジログ\n高松\nOKR\nやるナビ", corrections: "森バス、もりばす → モリバス")
+        let joined = VocabularyFile.merged(base: base, mine: mine, theirs: theirs)
+        try Self.check(
+            joined.terms == ["ギジログ", "OKR", "やるナビ", "AIQ"]
+                && joined.corrections == [
+                    LearnedWord(variants: ["森バス", "もりばす"], to: "モリバス"), LearnedWord(variants: ["IQ"], to: "AIQ"),
+                ],
+            "terms and spellings added on either Mac stay, and those removed on either go: \(joined)")
     }
     // A listed meeting changed in the save location by another Mac is read again; changes made here and not yet saved
     // win, and this app's own saves are not taken for changes.

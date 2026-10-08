@@ -27,6 +27,9 @@ struct AskLink: Equatable {
         let time = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "t" }?.value
         self.init(meetingID: id, seconds: time.flatMap(Self.seconds))
     }
+    /// Whether a link in an answer that is not to a meeting may open, in the browser: web pages only. The AI cites
+    /// meetings, so another kind (a file, another app's scheme) can only come from text in a meeting telling it to.
+    static func opensOnTheWeb(_ url: URL) -> Bool { ["http", "https"].contains(url.scheme?.lowercased() ?? "") }
     /// Seconds written as a number or as a clock ("12:34", "1:02:03").
     static func seconds(_ text: String) -> Double? {
         if let seconds = Double(text) { return seconds >= 0 ? seconds : nil }
@@ -118,11 +121,23 @@ struct AskLink: Equatable {
             try Task.checkCancellation()
             let output = response["output"] as? [[String: Any]] ?? []
             let calls = output.filter { $0["type"] as? String == "function_call" }
-            guard !calls.isEmpty else { return try text(of: output) }
+            guard !calls.isEmpty else {
+                // An answer cut short (by the length limit) is shown as such, not as a whole one.
+                let answer = try text(of: output)
+                return response["status"] as? String == "incomplete" ? answer + "\n\n（答えが途中で打ち切られました）" : answer
+            }
+            // Every call goes back with what it returned, or the next request is refused; one with no ID cannot.
+            guard calls.allSatisfy({ $0["call_id"] is String }) else {
+                throw AppError.message("AIの応答を読み取れませんでした。もう一度聞いてください。")
+            }
             if !written.isEmpty { writing("") }
             input += output
             for call in calls {
-                guard let id = call["call_id"] as? String, let name = call["name"] as? String else { continue }
+                guard let id = call["call_id"] as? String else { continue }
+                guard let name = call["name"] as? String else {
+                    input.append(["type": "function_call_output", "call_id": id, "output": "エラー: ツールの名前がありません。"])
+                    continue
+                }
                 let arguments =
                     (call["arguments"] as? String).flatMap {
                         try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]

@@ -276,7 +276,7 @@ enum MinutesEngine {
     /// The minutes written afresh: each item is checked against the transcript the model was given, as in merge,
     /// and the result replaces the draft. An empty answer keeps the draft instead.
     static func rewrite(_ previous: MinutesState, delta: NotesDelta, transcript: [Segment]) throws -> MinutesState {
-        let known = Dictionary(transcript.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let known = transcript.byID
         let dismissed = Set(previous.dismissed ?? [])
         var rejected = 0
         func items(_ written: [NoteItem], section: String, kept: [NoteItem]) -> [NoteItem] {
@@ -362,7 +362,7 @@ enum MinutesEngine {
     static func merge(_ previous: MinutesState, delta: NotesDelta, batch: [Segment], segments: [Segment])
         -> MinutesState
     {
-        let known = Dictionary(segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let known = segments.byID
         let newIDs = Set(batch.map(\.id))
         let dismissed = Set(previous.dismissed ?? [])
         var rejected = 0
@@ -432,7 +432,7 @@ enum MinutesEngine {
         tags: [String] = [],
         agenda: [AgendaItem] = []
     ) -> String {
-        let known = Dictionary(segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let known = segments.byID
         func plain(_ text: String) -> String {
             text.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\r", with: " ")
         }

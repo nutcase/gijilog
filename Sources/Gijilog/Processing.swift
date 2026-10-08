@@ -298,17 +298,18 @@ struct TranscriptionHints: Sendable, Equatable {
         self.preceding = Self.tail(preceding)
     }
     /// Hints for the chunk of a meeting that starts at `offset`: the title unless it is the automatic one, the
-    /// agenda, the user's terms with the spellings corrected in this meeting, and the end of the transcript so far.
+    /// agenda, the spellings corrected in this meeting and then the user's terms, and the end of the transcript so far.
     init(meeting: Meeting, before offset: Double, vocabulary: String) {
         self.init(
             title: isUntitledMeeting(meeting.title) ? "" : meeting.title, agenda: meeting.agenda.map(\.title),
-            terms: Self.terms(vocabulary + "\n" + meeting.corrections.map(\.to).joined(separator: "\n")),
+            terms: Self.terms(meeting.corrections.map(\.to).joined(separator: "\n") + "\n" + vocabulary),
             preceding: meeting.segments.filter { $0.time < offset }.suffix(8).map(\.text).joined())
     }
-    /// The terms in the user's vocabulary, one per line or separated by commas.
+    /// The terms in the user's vocabulary, one per line or separated by 読点 (、 or ，). A plain comma belongs to a term,
+    /// as in "Social Voice, Inc.".
     static func terms(_ text: String) -> [String] {
         var seen: Set<String> = []
-        return text.components(separatedBy: CharacterSet(charactersIn: "\n,、，"))
+        return text.components(separatedBy: CharacterSet(charactersIn: "\n、，"))
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty && seen.insert($0).inserted }
     }
@@ -316,7 +317,7 @@ struct TranscriptionHints: Sendable, Equatable {
         String(text.trimmingCharacters(in: .whitespacesAndNewlines).suffix(precedingLength))
     }
     // The API documents no limit on the keywords, but refuses the whole request for one it cannot take: a long list
-    // keeps its first terms (the vocabulary's come first), and a sentence is no keyword.
+    // keeps its first terms (this meeting's own fixes come first), and a sentence is no keyword.
     static let keywordCount = 100
     static let keywordLength = 40
     /// The terms as the words to listen for, spelled as they should be written. A term written with its reading,

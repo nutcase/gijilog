@@ -26,7 +26,11 @@ import UniformTypeIdentifiers
 @MainActor final class Store: ObservableObject {
     @Published var meetings: [Meeting] = []
     @Published var selected: UUID? {
-        didSet { if selected != nil && askOpen { askOpen = false } }  // Choosing a meeting leaves the questions.
+        didSet {
+            if selected != nil && askOpen { askOpen = false }  // Choosing a meeting leaves the questions.
+            // An utterance a link pointed to is marked only until another meeting is shown.
+            if let revealed, revealed.meetingID != selected { self.revealed = nil }
+        }
     }
     @Published var recording = false
     @Published var busy = false  // Only capture setup/flush; AI processing does not block another meeting.
@@ -48,9 +52,9 @@ import UniformTypeIdentifiers
     private var viewedBeforeAsking: UUID?  // "この会議" in a question.
     @Published var asked: [AskMessage] = []
     @Published var askTags: [String] = []  // Questions read only the meetings with any of these tags; none, all.
-    @Published private(set) var askProgress: String?
-    @Published private(set) var askDraft = ""  // The answer as it is being written.
+    let askStream = AskStream()
     private var askTask: Task<Void, Never>?
+    private var askGeneration = 0  // Counts conversations, so an answer stopped by a new one is dropped.
     // The utterance an answer's link pointed to, marked in the transcript.
     @Published private(set) var revealed: (meetingID: UUID, segmentID: String)?
     // Names and terms the transcription should spell this way, one per line or separated by commas.
@@ -63,9 +67,25 @@ import UniformTypeIdentifiers
     // vocabulary.json written wrong, as by hand: the lists are not saved until it is put right, so that nothing
     // written there is lost.
     @Published private(set) var vocabularyProblem: VocabularyFile.Unreadable?
+    private var vocabularyBase: VocabularyFile?  // The lists as last read from the file or written to it.
+    /// Writes the lists. Another Mac may have changed the file since it was last read here, before this Mac took the
+    /// change in: its changes are kept, and this Mac's join them.
     private func saveVocabulary() {
         guard persistsSettings && !readingVocabulary && vocabularyProblem == nil else { return }
-        VocabularyFile(terms: vocabulary, corrections: learnedWords).write(in: root)
+        let mine = VocabularyFile(terms: vocabulary, corrections: learnedWords)
+        var lists = mine
+        let theirs = readVocabulary(in: root)
+        guard vocabularyProblem == nil else { return }
+        // A file that was not there when the lists were last read has nothing removed from it, only added.
+        let base = vocabularyBase ?? VocabularyFile()
+        if let theirs, theirs != base {
+            lists = VocabularyFile.merged(base: base, mine: mine, theirs: theirs)
+            readingVocabulary = true
+            if lists.terms != mine.terms { vocabulary = lists.terms.joined(separator: "\n") }
+            if lists.corrections != mine.corrections { learnedWords = LearnedWords.format(lists.corrections) }
+            readingVocabulary = false
+        }
+        if lists.write(in: root) { vocabularyBase = lists }
     }
     /// The lists in a save location's vocabulary.json; nil when it has none, or one written wrong, which is noted.
     private func readVocabulary(in root: URL) -> VocabularyFile? {
@@ -235,14 +255,19 @@ import UniformTypeIdentifiers
             // properties do run here, and an empty list read before its file exists would create it empty).
             readingVocabulary = true
             VocabularyFile.adoptOldFiles(in: root)
-            let file = readVocabulary(in: root) ?? VocabularyFile()
+            let read = readVocabulary(in: root)
+            vocabularyBase = read
+            let file = read ?? VocabularyFile()
             learnedWords = LearnedWords.format(file.corrections)
             // The vocabulary moved from the app's settings to the save location, to be shared with the meetings:
             // what was kept in the settings joins whatever the file has, once.
             if let kept = defaults.string(forKey: "vocabulary"), vocabularyProblem == nil {
                 let joined = file.merging(terms: kept, corrections: "")
                 vocabulary = joined.terms.joined(separator: "\n")
-                if joined.write(in: root) { defaults.removeObject(forKey: "vocabulary") }
+                if joined.write(in: root) {
+                    vocabularyBase = joined
+                    defaults.removeObject(forKey: "vocabulary")
+                }
             } else {
                 vocabulary = file.terms.joined(separator: "\n")
             }
@@ -416,7 +441,7 @@ import UniformTypeIdentifiers
                     vocabulary = joined.terms.joined(separator: "\n")
                     learnedWords = LearnedWords.format(joined.corrections)
                     readingVocabulary = false
-                    joined.write(in: newRoot)
+                    vocabularyBase = joined.write(in: newRoot) ? joined : there
                 }
             }
             if persistsSettings { UserDefaults.standard.set(newRoot.path, forKey: "storageFolder") }
@@ -576,6 +601,7 @@ import UniformTypeIdentifiers
     /// Lists that read the same are kept as typed.
     func readVocabularyFile() {
         guard persistsSettings, let file = readVocabulary(in: root) else { return }
+        vocabularyBase = file
         readingVocabulary = true
         defer { readingVocabulary = false }
         let here = VocabularyFile(terms: vocabulary, corrections: learnedWords)
@@ -1436,7 +1462,7 @@ extension Store {
             let before = item
             update(&item)
             if part != .summary, item.text != before.text, let summary = m.notes?.content.summary {
-                let known = Dictionary(m.segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                let known = m.segments.byID
                 let current = MinutesEngine.topicIndex(of: before, in: summary, known: known)
                 if let topic = MinutesEngine.topicNamedByEdit(
                     from: before.text, to: item.text, current: current, summary: summary)
@@ -1495,32 +1521,40 @@ extension Store {
         let tools = MCPHandler(store: self, everything: true, tags: tags)
         let key = key
         let model = model
-        askProgress = "考えています"
-        askDraft = ""
+        askGeneration += 1
+        let generation = askGeneration
+        let stream = askStream
+        stream.progress = "考えています"
+        stream.draft = ""
         askTask = Task {
+            var outcome: [AskMessage] = []
             do {
                 let answer = try await MeetingAgent.answer(
                     conversation, instructions: instructions, model: model,
                     send: { try await MeetingAgent.stream($0, key: key, text: $1) },
                     run: { MeetingAgent.text(ofTool: tools.callTool($0, arguments: $1)) },
-                    progress: { [weak self] in self?.askProgress = $0 },
+                    progress: { [weak self] in if self?.askGeneration == generation { stream.progress = $0 } },
                     writing: { [weak self] text in
-                        self?.askDraft = text
-                        if !text.isEmpty { self?.askProgress = "答えを書いています" }
+                        guard self?.askGeneration == generation else { return }
+                        stream.draft = text
+                        if !text.isEmpty { stream.progress = "答えを書いています" }
                     })
-                asked.append(AskMessage(role: .answer, text: answer))
+                outcome = [AskMessage(role: .answer, text: answer)]
             } catch {
                 let stopped = Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled
                 // What was written before it stopped stays, marked as unfinished.
-                if !askDraft.isEmpty {
-                    asked.append(AskMessage(role: .answer, text: askDraft + "\n\n（ここまでで止まりました）"))
+                if !stream.draft.isEmpty {
+                    outcome.append(AskMessage(role: .answer, text: stream.draft + "\n\n（ここまでで止まりました）"))
                 }
-                if !stopped || askDraft.isEmpty {
-                    asked.append(AskMessage(role: .failure, text: stopped ? "止めました。" : error.localizedDescription))
+                if !stopped || stream.draft.isEmpty {
+                    outcome.append(AskMessage(role: .failure, text: stopped ? "止めました。" : error.localizedDescription))
                 }
             }
-            askDraft = ""
-            askProgress = nil
+            // A conversation started again meanwhile has nothing to do with this answer.
+            guard askGeneration == generation else { return }
+            asked += outcome
+            stream.draft = ""
+            stream.progress = nil
             askTask = nil
         }
     }
@@ -1542,9 +1576,13 @@ extension Store {
             askTags.append(tag)
         }
     }
-    /// Starts a new conversation.
+    /// Starts a new conversation. An answer still being written is stopped and dropped, not added to the new one.
     func clearAsked() {
-        stopAsking()
+        askTask?.cancel()
+        askTask = nil
+        askGeneration += 1
+        askStream.progress = nil
+        askStream.draft = ""
         asked = []
     }
     /// Follows a link in an answer: opens the meeting in place of the questions, and shows the utterance it points to
@@ -1555,27 +1593,26 @@ extension Store {
             return false
         }
         selected = meeting.id
-        if let seconds = link.seconds {
-            // The utterance under way at that moment, or the first one after it.
-            let ordered = meeting.segments.sorted { $0.time < $1.time }
-            if let segment = ordered.last(where: { $0.time <= seconds + 1 }) ?? ordered.first {
-                revealed = (meeting.id, segment.id)
-                showsTranscript = true
-            }
+        // The utterance under way at that moment, or the first one after it; a link to the whole meeting marks none.
+        let ordered = meeting.segments.sorted { $0.time < $1.time }
+        if let seconds = link.seconds, let segment = ordered.last(where: { $0.time <= seconds + 1 }) ?? ordered.first {
+            revealed = (meeting.id, segment.id)
+            showsTranscript = true
+        } else {
+            revealed = nil
         }
         return true
     }
-    /// Moves a decision, open issue or action under a summary topic by hand, where AI updates then keep it.
-    func moveNoteItem(_ meetingID: UUID, part: NotePart, id: String, toTopic index: Int) {
+    /// Moves a decision, open issue or action by hand under the summary topic of that name (as MinutesEngine.topicName
+    /// gives it), where AI updates then keep it. Topics are found among those the minutes show, not cancelled ones.
+    func moveNoteItem(_ meetingID: UUID, part: NotePart, id: String, toTopic name: String) {
         guard part != .summary, let meeting = meetings.first(where: { $0.id == meetingID }),
-            let summary = meeting.notes?.content.summary, summary.indices.contains(index),
+            let summary = meeting.notes?.content.summary.filter({ $0.state != .cancelled }),
+            let target = summary.firstIndex(where: { MinutesEngine.topicName($0) == name }),
             let item = meeting.notes?.content[part].first(where: { $0.id == id })
         else { return }
-        let known = Dictionary(meeting.segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        guard MinutesEngine.topicIndex(of: item, in: summary, known: known) != index else { return }
-        updateNoteItem(meetingID, part: part, id: id, offersCorrection: false) {
-            $0.topic = MinutesEngine.topicName(summary[index])
-        }
+        guard MinutesEngine.topicIndex(of: item, in: summary, known: meeting.segments.byID) != target else { return }
+        updateNoteItem(meetingID, part: part, id: id, offersCorrection: false) { $0.topic = name }
     }
     /// The transcript can be corrected whenever it exists, also during the recording: transcription only adds
     /// lines, and the minutes refer to lines by ID.
@@ -1811,4 +1848,10 @@ struct NoteItemDrag: Equatable {
         self.init(meetingID: meetingID, part: part, id: fields[3])
     }
     var payload: String { ["gijilog-item", meetingID.uuidString, part.rawValue, id].joined(separator: "\t") }
+}
+/// What ギジログAI is doing while it answers: what it reads, and the answer as it is written. Kept apart from the
+/// Store, so that each piece of a streamed answer redraws the conversation alone.
+@MainActor final class AskStream: ObservableObject {
+    @Published var progress: String?
+    @Published var draft = ""
 }

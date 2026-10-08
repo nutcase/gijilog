@@ -111,7 +111,8 @@ extension ProcessingTests {
                 meeting.corrections = spelled.corrections
                 return meeting
             }(), before: 0, vocabulary: "ギジログ")
-        try Self.check(hints.terms == ["ギジログ", "モリバス"], "transcription is told the corrected spellings")
+        try Self.check(
+            hints.terms == ["モリバス", "ギジログ"], "transcription is told the corrected spellings, this meeting's first")
     }
     @MainActor func testEditingMinutesByHand() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
