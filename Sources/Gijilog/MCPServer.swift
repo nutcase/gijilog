@@ -40,7 +40,8 @@ struct MCPAccess: Identifiable, Equatable {
         """
     private weak var store: Store?
     private(set) var client = "AI アプリ"
-    // The app's own 質問 tab: every meeting, transcripts included, and nothing added to the log of what AI apps read.
+    // The app's own questions (ギジログAI): every meeting, transcripts included, and nothing added to the log of what
+    // AI apps read.
     // What the settings keep from AI apps is about apps outside ギジログ.
     private let everything: Bool
     init(store: Store, everything: Bool = false) {
@@ -182,7 +183,7 @@ struct MCPAccess: Identifiable, Equatable {
         tool("get_current_meeting", "録音中の会議", "録音中の会議の、今の議題と最新の議事録を返します。録音中でなければその旨を返します。"),
         tool("list_tags", "タグ", "会議に付いているタグと件数を返します。"),
     ]
-    /// A tool called by the app's own 質問 tab; an unknown name answers with an error the model can read.
+    /// A tool called for the app's own questions; an unknown name answers with an error the model can read.
     func callTool(_ name: String, arguments: [String: Any]) -> [String: Any] {
         guard Self.tools.contains(where: { $0["name"] as? String == name }) else {
             return Self.failure("\(name) というツールはありません。")

@@ -164,7 +164,13 @@ struct ContentView: View {
                 // loops on layout and crashes the window (macOS 27 SDK).
                 HStack(spacing: 0) {
                     Group {
-                        if let meeting = store.selectedMeeting { MinutesDesk(meeting: meeting) } else { EmptyDesk() }
+                        if store.askOpen {
+                            AskDesk()
+                        } else if let meeting = store.selectedMeeting {
+                            MinutesDesk(meeting: meeting)
+                        } else {
+                            EmptyDesk()
+                        }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     if store.showsTranscript, let meeting = store.selectedMeeting {
@@ -362,6 +368,15 @@ struct MeetingList: View {
                     Spacer()
                 }
                 .foregroundStyle(Palette.paper)
+                // Questions are about every meeting, so they open from the top of the list, not from a meeting.
+                Button {
+                    store.openAsk()
+                } label: {
+                    Label("ギジログAI", systemImage: "bubble.left.and.text.bubble.right")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(QuietButtonStyle(selected: store.askOpen))
+                .help("すべての会議について、AIに質問する。答えのリンクから、その会議と発言を開ける")
                 Button {
                     store.planMeeting()
                 } label: {
@@ -763,17 +778,21 @@ final class WaveformView: NSView {
 }
 // A secondary action beside the record button: text only, so recording stays the obvious choice.
 struct QuietButtonStyle: ButtonStyle {
+    var selected = false  // Marked like a chosen row in the list, for the page it opens while that page is shown.
     func makeBody(configuration: Configuration) -> some View {
-        QuietLabel(configuration: configuration)
+        QuietLabel(configuration: configuration, selected: selected)
     }
     private struct QuietLabel: View {
         @Environment(\.isEnabled) private var isEnabled
         let configuration: ButtonStyle.Configuration
+        let selected: Bool
         var body: some View {
             configuration.label
                 .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Palette.paper.opacity(configuration.isPressed ? 0.45 : 0.7))
-                .padding(.horizontal, 6).frame(height: 40)
+                .foregroundStyle(Palette.paper.opacity(configuration.isPressed ? 0.45 : selected ? 1 : 0.7))
+                .padding(.horizontal, 6).frame(height: selected ? 34 : 40)
+                .background(RoundedRectangle(cornerRadius: 7).fill(Palette.ai).opacity(selected ? 1 : 0))
+                .padding(.vertical, selected ? 3 : 0)
                 .opacity(isEnabled ? 1 : 0.4)
                 .contentShape(Rectangle())
         }
@@ -2536,8 +2555,6 @@ struct FindBar: View {
 struct TranscriptPanel: View {
     @EnvironmentObject var store: Store
     @Environment(\.searchTerms) private var terms
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Namespace private var tabs
     @StateObject private var follow = TranscriptFollow()
     let meeting: Meeting
     var showsHeader = true  // The compact window shows the count in its tab bar instead.
@@ -2557,63 +2574,42 @@ struct TranscriptPanel: View {
         let current =
             find.current(in: found) ?? store.revealed.flatMap { $0.meetingID == meeting.id ? $0.segmentID : nil }
         let shownTerms = find.terms.isEmpty ? terms : find.terms
-        let asking = showsHeader && store.sideTab == "質問"
         VStack(alignment: .leading, spacing: 0) {
             if showsHeader {
-                // The same tabs as the compact window's, so the panel reads as the page of the one chosen.
-                HStack(alignment: .bottom, spacing: 2) {
-                    sideTab("文字起こし", systemImage: "text.quote", count: meeting.segments.count)
-                    sideTab("質問", systemImage: "bubble.left.and.text.bubble.right")
+                // The same tab as the compact window's, so the panel reads as the transcript's page.
+                HStack(alignment: .bottom, spacing: 8) {
+                    PageTab(
+                        title: "文字起こし", systemImage: "text.quote", count: meeting.segments.count,
+                        page: Palette.deepAi, ink: Palette.paper, outlined: true)
                     Spacer(minLength: 0)
                     let pending = meeting.jobs.filter { $0.state == .pending || $0.state == .running }.count
-                    if !asking {
-                        HStack(spacing: 8) {
-                            if !terms.isEmpty {
-                                Text("一致 \(matches.count)件").font(.caption.weight(.semibold)).foregroundStyle(
-                                    Palette.yamabuki)
-                            }
-                            if pending > 0 {
-                                Label("処理待ち \(pending)件", systemImage: "hourglass").font(.caption).foregroundStyle(
-                                    .secondary)
-                            }
-                            Button {
-                                store.transcriptFind.open = true
-                                store.transcriptFind.focus += 1
-                            } label: {
-                                Image(systemName: "magnifyingglass")
-                            }
-                            .buttonStyle(.borderless).foregroundStyle(.secondary)
-                            .help("文字起こしの中を検索（⇧⌘F）")
-                            .accessibilityLabel("文字起こしの中を検索")
+                    HStack(spacing: 8) {
+                        if !terms.isEmpty {
+                            Text("一致 \(matches.count)件").font(.caption.weight(.semibold)).foregroundStyle(
+                                Palette.yamabuki)
                         }
-                        .padding(.bottom, 9)
+                        if pending > 0 {
+                            Label("処理待ち \(pending)件", systemImage: "hourglass").font(.caption).foregroundStyle(
+                                .secondary)
+                        }
+                        Button {
+                            store.transcriptFind.open = true
+                            store.transcriptFind.focus += 1
+                        } label: {
+                            Image(systemName: "magnifyingglass")
+                        }
+                        .buttonStyle(.borderless).foregroundStyle(.secondary)
+                        .help("文字起こしの中を検索（⇧⌘F）")
+                        .accessibilityLabel("文字起こしの中を検索")
                     }
+                    .padding(.bottom, 9)
                 }
                 .padding(.top, 10)
                 .pageTabBar()
             }
-            if asking {
-                AskPanel()
-            } else {
-                transcript(live: live, matches: matches, found: found, current: current, shownTerms: shownTerms)
-            }
+            transcript(live: live, matches: matches, found: found, current: current, shownTerms: shownTerms)
         }
         .background(Palette.deepAi)
-    }
-    private func sideTab(_ title: String, systemImage: String, count: Int? = nil) -> some View {
-        let selected = store.sideTab == title
-        return Button {
-            withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) { store.sideTab = title }
-        } label: {
-            PageTab(
-                title: title, systemImage: systemImage, count: count, selected: selected, page: Palette.deepAi,
-                ink: Palette.paper, outlined: true, namespace: tabs
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(title == "質問" ? "すべての会議について、AIに質問する" : "この会議の文字起こし")
-        .accessibilityAddTraits(selected ? .isSelected : [])
     }
     @ViewBuilder private func transcript(
         live: Bool, matches: [Segment], found: [String], current: String?, shownTerms: [String]
@@ -2704,32 +2700,43 @@ struct TranscriptPanel: View {
         if !follow.atEnd { follow.atEnd = true }
     }
 }
-// The 質問 tab: ask anything about the meetings, in words. The AI reads every meeting as it needs and answers here,
-// with links to the meetings and utterances it read; a link opens the meeting at that utterance.
-struct AskPanel: View {
+// Questions about every meeting, in words, opened from the top of the list in place of a meeting. The AI reads the
+// meetings as it needs and answers here, with links to the meetings and utterances it read; a link opens the
+// meeting at that utterance, and the conversation stays for the next visit until the app quits.
+struct AskDesk: View {
     @EnvironmentObject var store: Store
     @StateObject private var draft = TextDraft()
     @FocusState private var focused: Bool
-    private static let examples = ["先週決まったことは？", "終わっていないアクションは？", "この会議の要点は？"]
+    private static let width: CGFloat = 760
+    private static let examples = ["先週決まったことは？", "終わっていないアクションは？", "最近の会議で多く話した話題は？"]
     var body: some View {
         VStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("ギジログAI", systemImage: "bubble.left.and.text.bubble.right").font(.mincho(20))
+                    .foregroundStyle(Palette.paper)
+                Spacer()
+                if !store.asked.isEmpty {
+                    Button("新しい会話") { store.clearAsked() }.buttonStyle(.borderless).foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: Self.width).padding(.horizontal, 28).padding(.top, 22).padding(.bottom, 12)
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 18) {
                         if store.asked.isEmpty { intro }
                         ForEach(store.asked) { AskBubble(message: $0).id($0.id) }
                         if let progress = store.askProgress {
                             HStack(spacing: 8) {
                                 ProgressView().controlSize(.small)
                                 Text(progress + "…").font(.callout).foregroundStyle(Palette.paper.opacity(0.7))
+                                Button("止める") { store.stopAsking() }.buttonStyle(.borderless).font(.callout)
                                 Spacer(minLength: 0)
-                                Button("止める") { store.stopAsking() }.buttonStyle(.borderless).font(.caption)
                             }
                             .id("progress")
                         }
                     }
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: Self.width, alignment: .leading).padding(.horizontal, 28).padding(.vertical, 8)
+                    .frame(maxWidth: .infinity)
                 }
                 // A new question or answer is shown from its start.
                 .onChange(of: store.asked.last?.id) { _, last in
@@ -2740,53 +2747,49 @@ struct AskPanel: View {
                     if progress != nil { proxy.scrollTo("progress", anchor: .bottom) }
                 }
             }
-            composer
+            composer.frame(maxWidth: Self.width).padding(.horizontal, 28).padding(.top, 12).padding(.bottom, 20)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Palette.kon)
         .environment(\.openURL, OpenURLAction { url in store.openAskLink(url) ? .handled : .systemAction })
         .onAppear { Task { @MainActor in focused = true } }
     }
     private var intro: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("会議について質問").font(.headline).foregroundStyle(Palette.paper)
-            Text("すべての会議の議事録と文字起こしから、AIが探して答えます。答えのリンクから、その会議と発言を開けます。")
-                .font(.callout).foregroundStyle(Palette.paper.opacity(0.65))
+        VStack(alignment: .leading, spacing: 12) {
+            Text("すべての会議の議事録と文字起こしから、AIが探して答えます。答えのリンクを押すと、その会議と発言を開きます。")
+                .font(.body).foregroundStyle(Palette.paper.opacity(0.7))
                 .fixedSize(horizontal: false, vertical: true)
-            ForEach(Self.examples, id: \.self) { example in
-                Button {
-                    store.ask(example)
-                } label: {
-                    Text(example).font(.callout).padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(Capsule().fill(Palette.ai))
-                        .overlay(Capsule().strokeBorder(PageTab.edge))
+            HStack(spacing: 8) {
+                ForEach(Self.examples, id: \.self) { example in
+                    Button {
+                        store.ask(example)
+                    } label: {
+                        Text(example).font(.callout).padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(Capsule().fill(Palette.ai))
+                            .overlay(Capsule().strokeBorder(PageTab.edge))
+                    }
+                    .buttonStyle(.plain).foregroundStyle(Palette.paper)
                 }
-                .buttonStyle(.plain).foregroundStyle(Palette.paper)
             }
         }
     }
     private var composer: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .bottom, spacing: 8) {
-                TextField("会議について質問", text: $draft.text, axis: .vertical)
-                    .lineLimit(1...6).textFieldStyle(.plain).font(.callout).foregroundStyle(Palette.paper)
-                    .focused($focused).onSubmit(send)
-                    .padding(.horizontal, 10).padding(.vertical, 7)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Palette.ai))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8).strokeBorder(
-                            focused ? Palette.asagi.opacity(0.7) : PageTab.edge))
-                Button(action: send) {
-                    Image(systemName: "arrow.up.circle.fill").font(.system(size: 22))
-                }
-                .buttonStyle(.plain).foregroundStyle(canSend ? Palette.asagi : Palette.paper.opacity(0.25))
-                .disabled(!canSend).help("質問する（Return）").accessibilityLabel("質問する")
+        HStack(alignment: .bottom, spacing: 10) {
+            TextField("すべての会議について質問", text: $draft.text, axis: .vertical)
+                .lineLimit(1...8).textFieldStyle(.plain).font(.body).foregroundStyle(Palette.paper)
+                .focused($focused).onSubmit(send)
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Palette.ai))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10).strokeBorder(focused ? Palette.asagi.opacity(0.7) : PageTab.edge)
+                )
+            Button(action: send) {
+                Image(systemName: "arrow.up.circle.fill").font(.system(size: 28))
             }
-            if !store.asked.isEmpty {
-                Button("新しい会話") { store.clearAsked() }
-                    .buttonStyle(.borderless).font(.caption).foregroundStyle(.secondary)
-            }
+            .buttonStyle(.plain).foregroundStyle(canSend ? Palette.asagi : Palette.paper.opacity(0.25))
+            .disabled(!canSend).help("質問する（Return）").accessibilityLabel("質問する")
+            .padding(.bottom, 4)
         }
-        .padding(12)
-        .background(alignment: .top) { Rectangle().fill(PageTab.edge).frame(height: 1) }
     }
     private var canSend: Bool {
         store.askProgress == nil && !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -2797,21 +2800,21 @@ struct AskPanel: View {
         draft.text = ""
     }
 }
-// One turn of the 質問 tab: a question on the right, an answer as text with links, a failure in yellow.
+// One turn of the conversation: a question on the right, an answer as text with links, a failure in yellow.
 struct AskBubble: View {
     let message: AskMessage
     var body: some View {
         switch message.role {
         case .question:
             HStack {
-                Spacer(minLength: 32)
-                Text(message.text).font(.callout).foregroundStyle(Palette.paper)
-                    .padding(.horizontal, 11).padding(.vertical, 7)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(Palette.ai))
+                Spacer(minLength: 120)
+                Text(message.text).font(.body).foregroundStyle(Palette.paper)
+                    .padding(.horizontal, 14).padding(.vertical, 9)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Palette.ai))
                     .textSelection(.enabled)
             }
         case .answer:
-            Text(Self.linked(message.text)).font(.system(size: 13)).lineSpacing(3).foregroundStyle(Palette.paper)
+            Text(Self.linked(message.text)).font(.system(size: 14)).lineSpacing(4).foregroundStyle(Palette.paper)
                 .tint(Palette.asagi).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
         case .failure:
             Label(message.text, systemImage: "exclamationmark.triangle.fill").font(.callout)

@@ -25,7 +25,9 @@ import UniformTypeIdentifiers
 
 @MainActor final class Store: ObservableObject {
     @Published var meetings: [Meeting] = []
-    @Published var selected: UUID?
+    @Published var selected: UUID? {
+        didSet { if selected != nil && askOpen { askOpen = false } }  // Choosing a meeting leaves the questions.
+    }
     @Published var recording = false
     @Published var busy = false  // Only capture setup/flush; AI processing does not block another meeting.
     @Published var ready = true
@@ -40,8 +42,10 @@ import UniformTypeIdentifiers
     @Published var tagEditor: UUID?  // The meeting whose tag field is open.
     @Published var settingsTab = "一般"
     @Published var liveTab = "議事録"  // The compact window shows the minutes or the transcript.
-    @Published var sideTab = "文字起こし"  // The panel beside the minutes shows the transcript or the 質問 tab.
-    // The 質問 tab's conversation, for as long as the app runs, and what the AI is reading while it answers.
+    // Questions about every meeting fill the main view in place of a meeting, opened from the top of the list. The
+    // conversation lasts as long as the app runs; while the AI answers, it says what it is reading.
+    @Published private(set) var askOpen = false
+    private var viewedBeforeAsking: UUID?  // "この会議" in a question.
     @Published var asked: [AskMessage] = []
     @Published private(set) var askProgress: String?
     private var askTask: Task<Void, Never>?
@@ -1460,7 +1464,13 @@ extension Store {
         }
         correctionOffer = offer
     }
-    /// Asks the AI about the meetings: it reads every meeting as it needs and answers in the 質問 tab.
+    func openAsk() {
+        guard !askOpen else { return }
+        viewedBeforeAsking = selected
+        selected = nil
+        askOpen = true
+    }
+    /// Asks the AI about the meetings: it reads every meeting as it needs and answers in the conversation.
     func ask(_ question: String) {
         let question = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty, askTask == nil else { return }
@@ -1471,7 +1481,7 @@ extension Store {
         }
         let conversation = asked
         let instructions = MeetingAgent.instructions(
-            today: Date(), open: meetings.first { $0.id == selected },
+            today: Date(), open: meetings.first { $0.id == (selected ?? viewedBeforeAsking) },
             recording: recording ? meetings.first { $0.id == activeID } : nil)
         let tools = MCPHandler(store: self, everything: true)
         let key = key
@@ -1499,7 +1509,8 @@ extension Store {
         stopAsking()
         asked = []
     }
-    /// Follows a link in an answer: opens the meeting, and shows the utterance it points to in the transcript.
+    /// Follows a link in an answer: opens the meeting in place of the questions, and shows the utterance it points to
+    /// in the transcript.
     /// False for a link that is not to a meeting here.
     func openAskLink(_ url: URL) -> Bool {
         guard let link = AskLink(url), let meeting = meetings.first(where: { $0.id == link.meetingID }) else {
@@ -1512,7 +1523,6 @@ extension Store {
             if let segment = ordered.last(where: { $0.time <= seconds + 1 }) ?? ordered.first {
                 revealed = (meeting.id, segment.id)
                 showsTranscript = true
-                sideTab = "文字起こし"
             }
         }
         return true

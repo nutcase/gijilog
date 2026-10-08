@@ -26,7 +26,7 @@ Keep its compact window next to the call to see what has been decided, what is s
 - **Agenda**: prepare the topics before the meeting; during it, the AI follows which topic is being discussed from the transcript and the compact window shows it with its time. The minutes record how long each topic took.
 - **Keyword search**: search titles, tags, minutes, and transcripts at once, with every match marked.
 - **Edit the minutes**: click an item to change it. Fixing a misheard name offers to fix it across the meeting, including other spellings that read the same (森バス and もりばす for モリバス).
-- **Ask about your meetings**: in the 質問 (Questions) tab beside the transcript, ask "What did we decide last week?" or "Which of 中塩's actions are still open?"; the AI looks through every meeting and answers, with links that open the meeting at the utterance.
+- **Ask about your meetings**: press ギジログAI (Gijilog AI) above the meeting list and ask "What did we decide last week?" or "Which of 中塩's actions are still open?"; the AI looks through every meeting and answers, with links that open the meeting at the utterance.
 - **Use from AI apps (MCP)**: ask Claude Code, Claude Desktop, or another MCP client "What did we decide in last week's sync?" or "Which actions are still open?" Everything stays on your Mac.
 
 ## Requirements
@@ -106,9 +106,9 @@ Type in the search field above the list (⌘F) to show only the meetings whose t
 
 Inside the open meeting, the minutes (the magnifier on the date line, or ⌥⌘F) and the transcript (the magnifier in its header, or ⇧⌘F) each have their own find bar. It shows how many items or utterances match and which one you are on (such as 3/12); Return or ↓ goes to the next match, ↑ to the previous one, and Esc closes it.
 
-## Ask about your meetings
+## Ask Gijilog AI about your meetings
 
-In the full window, open the 質問 (Questions) tab beside the transcript, type a question, and press Return; questions about the open meeting ("この会議の要点は？") work too. The AI searches and reads the minutes and transcripts of every meeting as it needs, shows what it is reading, and can be stopped with 止める. Answers link to the meetings and utterances they rest on: a link opens the meeting and outlines the utterance in its transcript. Follow-up questions build on the conversation until 新しい会話 (New conversation) or quitting the app. It only reads; nothing in a meeting is changed. It uses the minutes model from Settings, and it reads meetings and transcripts that the MCP settings keep from AI apps.
+In the full window, press ギジログAI (Gijilog AI) at the top of the meeting list: the main view becomes the conversation. Type a question and press Return; "この会議" (this meeting) means the meeting open just before. The AI searches and reads the minutes and transcripts of every meeting as it needs, shows what it is reading, and can be stopped with 止める. Answers link to the meetings and utterances they rest on: a link opens the meeting and outlines the utterance in its transcript, and ギジログAI brings the conversation back. Follow-up questions build on the conversation until 新しい会話 (New conversation) or quitting the app. It only reads; nothing in a meeting is changed. It uses the minutes model from Settings, and it reads meetings and transcripts that the MCP settings keep from AI apps.
 
 ## Use from AI apps (MCP)
 
@@ -158,7 +158,7 @@ While a meeting is recorded and processed, the working audio takes about 230 MB 
 
 ## Privacy and consent
 
-- **Sent to OpenAI**: audio cut at pauses (stretches without a voice are skipped), transcription hints (the meeting title, agenda topics, your vocabulary list, and the preceding speech), the transcript text, the minutes so far, and, while recording, the agenda (topics and goals). In the 質問 tab: the question, the conversation so far, and the minutes, transcripts and tags of the meetings the AI reads. Minutes and answers are requested with `store: false`.
+- **Sent to OpenAI**: audio cut at pauses (stretches without a voice are skipped), transcription hints (the meeting title, agenda topics, your vocabulary list, and the preceding speech), the transcript text, the minutes so far, and, while recording, the agenda (topics and goals). From ギジログAI: the question, the conversation so far, and the minutes, transcripts and tags of the meetings the AI reads. Minutes and answers are requested with `store: false`.
 - **Kept on your Mac**: recordings, transcripts, minutes, agendas, and tags.
 - **Given to AI apps over MCP**: the minutes, agendas, and transcripts the app asks for (transcripts and meetings with chosen tags can be withheld), which the app sends to its provider. The API key stays in the Keychain and is never written to meeting files.
 - **Consent**: tell participants and get their consent before recording or transcribing a meeting, and follow the laws and policies that apply to you.

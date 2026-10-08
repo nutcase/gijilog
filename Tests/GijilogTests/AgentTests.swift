@@ -1,7 +1,7 @@
 import Foundation
 
 extension ProcessingTests {
-    // The 質問 tab: the AI reads the meetings with the MCP tools, over every meeting, and answers with links to them.
+    // Questions about the meetings: the AI reads them with the MCP tools, over every meeting, and answers with links.
     @MainActor func testQuestionsAreAnsweredFromEveryMeeting() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -132,10 +132,16 @@ extension ProcessingTests {
                 && AskLink(atClock) == AskLink(meetingID: id, seconds: 760) && AskLink(whole) == AskLink(meetingID: id)
                 && AskLink(web) == nil && AskSecondsCheck.ok,
             "links name a meeting, and a moment in seconds or as a clock")
-        store.sideTab = "質問"
+        // The questions open in place of a meeting, and choosing a meeting, or following a link, leaves them.
+        store.selected = interview.id
+        store.openAsk()
+        try Self.check(store.askOpen && store.selected == nil, "the questions take the place of the meeting shown")
+        store.selected = weekly.id
+        try Self.check(!store.askOpen, "choosing a meeting in the list leaves the questions")
+        store.openAsk()
         try Self.check(
-            store.openAskLink(atClock) && store.selected == id && store.revealed?.segmentID == "a"
-                && store.sideTab == "文字起こし" && !store.openAskLink(web),
+            store.openAskLink(atClock) && store.selected == id && !store.askOpen && store.revealed?.segmentID == "a"
+                && !store.openAskLink(web),
             "a link opens its meeting and shows the utterance under way at that moment")
     }
 }
