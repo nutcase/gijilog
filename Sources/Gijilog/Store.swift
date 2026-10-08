@@ -47,6 +47,7 @@ import UniformTypeIdentifiers
     @Published private(set) var askOpen = false
     private var viewedBeforeAsking: UUID?  // "この会議" in a question.
     @Published var asked: [AskMessage] = []
+    @Published var askTags: [String] = []  // Questions read only the meetings with any of these tags; none, all.
     @Published private(set) var askProgress: String?
     @Published private(set) var askDraft = ""  // The answer as it is being written.
     private var askTask: Task<Void, Never>?
@@ -1484,10 +1485,14 @@ extension Store {
             return
         }
         let conversation = asked
+        let tags = askScope
+        let inScope = { (meeting: Meeting) in tags.isEmpty || tags.contains { MeetingTags.contains(meeting.tags, $0) } }
         let instructions = MeetingAgent.instructions(
-            today: Date(), open: meetings.first { $0.id == (selected ?? viewedBeforeAsking) },
-            recording: recording ? meetings.first { $0.id == activeID } : nil)
-        let tools = MCPHandler(store: self, everything: true)
+            today: Date(),
+            open: meetings.first { $0.id == (selected ?? viewedBeforeAsking) }.flatMap { inScope($0) ? $0 : nil },
+            recording: recording ? meetings.first { $0.id == activeID }.flatMap { inScope($0) ? $0 : nil } : nil,
+            tags: tags)
+        let tools = MCPHandler(store: self, everything: true, tags: tags)
         let key = key
         let model = model
         askProgress = "考えています"
@@ -1520,6 +1525,23 @@ extension Store {
         }
     }
     func stopAsking() { askTask?.cancel() }
+    /// The tags questions are narrowed to, as they are now: one renamed or removed since it was chosen no longer counts.
+    var askScope: [String] {
+        askTags.filter { tag in allTags.contains { MeetingTags.key($0.name) == MeetingTags.key(tag) } }
+    }
+    /// How many meetings questions read.
+    var askScopeCount: Int {
+        let tags = askScope
+        return meetings.filter { meeting in tags.isEmpty || tags.contains { MeetingTags.contains(meeting.tags, $0) } }
+            .count
+    }
+    func toggleAskTag(_ tag: String) {
+        if let i = askTags.firstIndex(where: { MeetingTags.key($0) == MeetingTags.key(tag) }) {
+            askTags.remove(at: i)
+        } else {
+            askTags.append(tag)
+        }
+    }
     /// Starts a new conversation.
     func clearAsked() {
         stopAsking()

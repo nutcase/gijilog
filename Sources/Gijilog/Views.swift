@@ -2849,7 +2849,11 @@ struct AskDesk: View {
                     }
                 }
             }
-            composer.frame(maxWidth: Self.width).padding(.horizontal, 28).padding(.top, 12).padding(.bottom, 20)
+            VStack(alignment: .leading, spacing: 8) {
+                AskScope()
+                composer
+            }
+            .frame(maxWidth: Self.width).padding(.horizontal, 28).padding(.top, 12).padding(.bottom, 20)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Palette.kon)
@@ -2875,23 +2879,24 @@ struct AskDesk: View {
             }
         }
     }
+    // The send button sits inside the field, at its right end, on the field's last line.
     private var composer: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            TextField("すべての会議について質問", text: $draft.text, axis: .vertical)
+        HStack(alignment: .bottom, spacing: 8) {
+            TextField(store.askScope.isEmpty ? "すべての会議について質問" : "対象の会議について質問", text: $draft.text, axis: .vertical)
                 .lineLimit(1...8).textFieldStyle(.plain).font(.body).foregroundStyle(Palette.paper)
                 .focused($focused).onSubmit(send)
-                .padding(.horizontal, 14).padding(.vertical, 10)
-                .background(RoundedRectangle(cornerRadius: 10).fill(Palette.ai))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10).strokeBorder(focused ? Palette.asagi.opacity(0.7) : PageTab.edge)
-                )
+                .padding(.vertical, 5)
             Button(action: send) {
-                Image(systemName: "arrow.up.circle.fill").font(.system(size: 28))
+                Image(systemName: "arrow.up.circle.fill").font(.system(size: 24))
             }
             .buttonStyle(.plain).foregroundStyle(canSend ? Palette.asagi : Palette.paper.opacity(0.25))
             .disabled(!canSend).help("質問する（Return）").accessibilityLabel("質問する")
-            .padding(.bottom, 4)
         }
+        .padding(.leading, 14).padding(.trailing, 7).padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Palette.ai))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(focused ? Palette.asagi.opacity(0.7) : PageTab.edge))
+        .contentShape(Rectangle())
+        .onTapGesture { focused = true }
     }
     private var canSend: Bool {
         store.askProgress == nil && !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -2900,6 +2905,51 @@ struct AskDesk: View {
         guard canSend else { return }
         store.ask(draft.text)
         draft.text = ""
+    }
+}
+// Which meetings the AI reads, over the question field: every meeting, or those with any of the chosen tags. The
+// chosen tags show as chips, each with an × to drop it.
+struct AskScope: View {
+    @EnvironmentObject var store: Store
+    var body: some View {
+        let scope = store.askScope
+        HStack(spacing: 8) {
+            Menu {
+                ForEach(store.allTags, id: \.name) { tag in
+                    Toggle(
+                        "\(tag.name)（\(tag.count)）",
+                        isOn: Binding(
+                            get: { MeetingTags.contains(scope, tag.name) }, set: { _ in store.toggleAskTag(tag.name) }))
+                }
+                if !scope.isEmpty {
+                    Divider()
+                    Button("すべての会議") { store.askTags = [] }
+                }
+            } label: {
+                Label(scope.isEmpty ? "対象：すべての会議" : "対象：", systemImage: "tag")
+            }
+            .menuStyle(.borderlessButton).fixedSize()
+            .disabled(store.allTags.isEmpty)
+            .help(store.allTags.isEmpty ? "会議にタグを付けると、タグで対象を絞れます" : "選んだタグのどれかが付いた会議だけから答える")
+            ForEach(scope, id: \.self) { tag in
+                Button {
+                    store.toggleAskTag(tag)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(tag).lineLimit(1)
+                        Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                    }
+                }
+                .buttonStyle(FilterChipStyle(on: true))
+                .help("「\(tag)」を対象から外す")
+            }
+            if !scope.isEmpty {
+                Text("の会議（\(store.askScopeCount)件）").font(.callout).foregroundStyle(Palette.paper.opacity(0.6))
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.callout)
+        .foregroundStyle(Palette.paper.opacity(0.75))
     }
 }
 // One turn of the conversation: a question on the right, an answer as text with links, a failure in yellow.

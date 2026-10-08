@@ -35,6 +35,22 @@ extension ProcessingTests {
             everyMeeting.contains("週次定例") && everyMeeting.contains("人事面談") && !shown.contains("人事面談")
                 && !shown.contains("週次定例"),
             "the app's questions read every meeting and its transcript; AI apps keep to the settings:\n\(everyMeeting)")
+        // Narrowed to tags, the questions read only the meetings with any of them.
+        let narrowed = MCPHandler(store: store, everything: true, tags: ["人事"])
+        let inScope = MeetingAgent.text(ofTool: narrowed.callTool("search_meetings", arguments: ["query": "QB"]))
+        let listed = MeetingAgent.text(ofTool: narrowed.callTool("list_meetings", arguments: [:]))
+        try Self.check(
+            inScope.contains("人事面談") && !inScope.contains("週次定例") && !listed.contains("週次定例"),
+            "questions narrowed to a tag read only its meetings:\n\(inScope)\n\(listed)")
+        store.askTags = ["人事", "消えたタグ"]
+        try Self.check(
+            store.askScope == ["人事"] && store.askScopeCount == 1
+                && MeetingAgent.instructions(today: Date(), open: nil, recording: nil, tags: store.askScope)
+                    .contains("タグ「人事」のどれかが付いた会議だけ"),
+            "a tag no meeting has any more does not count, and the AI is told what it reads")
+        store.toggleAskTag("人事")
+        store.toggleAskTag("消えたタグ")
+        try Self.check(store.askTags.isEmpty && store.askScopeCount == 2, "with no tags chosen, every meeting is read")
         let accesses = store.mcpAccesses.count
         _ = inApp.callTool("list_tags", arguments: [:])
         try Self.check(

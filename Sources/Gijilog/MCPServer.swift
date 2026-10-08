@@ -44,9 +44,12 @@ struct MCPAccess: Identifiable, Equatable {
     // AI apps read.
     // What the settings keep from AI apps is about apps outside ギジログ.
     private let everything: Bool
-    init(store: Store, everything: Bool = false) {
+    // The tags a question was narrowed to: only meetings with any of them are read. None, every meeting.
+    private let tags: [String]
+    init(store: Store, everything: Bool = false, tags: [String] = []) {
         self.store = store
         self.everything = everything
+        self.tags = tags
     }
 
     private struct RPCError: Error {
@@ -206,7 +209,8 @@ struct MCPAccess: Identifiable, Equatable {
     /// Meetings an AI app may see: not carrying a tag the user keeps from AI apps. The app itself sees every one.
     private func visible(_ store: Store) -> [Meeting] {
         store.meetings.filter { meeting in
-            everything || !store.mcpHiddenTags.contains { MeetingTags.contains(meeting.tags, $0) }
+            (everything || !store.mcpHiddenTags.contains { MeetingTags.contains(meeting.tags, $0) })
+                && (tags.isEmpty || tags.contains { MeetingTags.contains(meeting.tags, $0) })
         }
         .sorted { $0.date > $1.date }
     }
