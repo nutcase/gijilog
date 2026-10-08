@@ -90,8 +90,8 @@ struct AskLink: Equatable {
     }
 
     /// Answers the last question of a conversation, calling tools until the model has what it needs. The last few
-    /// questions and answers before it are context; what the tools returned for them is not kept. `send` posts one request and
-    /// returns the response, `run` performs a tool call, and `progress` hears what is being read.
+    /// questions and answers before it are context; what the tools returned for them is not kept. `send` posts one
+    /// request and returns the response, `run` performs a tool call, and `progress` hears what is being read.
     static func answer(
         _ conversation: [AskMessage], instructions: String, model: String,
         send: @MainActor ([String: Any], @MainActor (String) -> Void) async throws -> [String: Any],

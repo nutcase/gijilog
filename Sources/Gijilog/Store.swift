@@ -609,7 +609,11 @@ import UniformTypeIdentifiers
     /// Takes the lists from the save location when they changed there, as when another Mac or a hand edited them.
     /// Lists that read the same are kept as typed.
     func readVocabularyFile() {
-        guard persistsSettings, let file = readVocabulary(in: root) else { return }
+        // The watcher hears every change in the save location, most of them meetings being saved: a file unchanged
+        // since it was last read or written is not read again, unless it could not be read then.
+        guard persistsSettings, vocabularyProblem != nil || VocabularyFile.modified(in: root) != vocabularyDate,
+            let file = readVocabulary(in: root)
+        else { return }
         vocabularyBase = file
         readingVocabulary = true
         defer { readingVocabulary = false }
