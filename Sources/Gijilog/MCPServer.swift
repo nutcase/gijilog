@@ -40,7 +40,13 @@ struct MCPAccess: Identifiable, Equatable {
         """
     private weak var store: Store?
     private(set) var client = "AI アプリ"
-    init(store: Store) { self.store = store }
+    // The app's own 質問 tab: every meeting, transcripts included, and nothing added to the log of what AI apps read.
+    // What the settings keep from AI apps is about apps outside ギジログ.
+    private let everything: Bool
+    init(store: Store, everything: Bool = false) {
+        self.store = store
+        self.everything = everything
+    }
 
     private struct RPCError: Error {
         let code: Int
@@ -176,9 +182,16 @@ struct MCPAccess: Identifiable, Equatable {
         tool("get_current_meeting", "録音中の会議", "録音中の会議の、今の議題と最新の議事録を返します。録音中でなければその旨を返します。"),
         tool("list_tags", "タグ", "会議に付いているタグと件数を返します。"),
     ]
+    /// A tool called by the app's own 質問 tab; an unknown name answers with an error the model can read.
+    func callTool(_ name: String, arguments: [String: Any]) -> [String: Any] {
+        guard Self.tools.contains(where: { $0["name"] as? String == name }) else {
+            return Self.failure("\(name) というツールはありません。")
+        }
+        return call(name, arguments: arguments)
+    }
     private func call(_ name: String, arguments: [String: Any]) -> [String: Any] {
         guard let store else { return Self.failure("ギジログの準備ができていません。") }
-        store.recordMCPAccess(client: client, tool: name, detail: Self.summary(arguments))
+        if !everything { store.recordMCPAccess(client: client, tool: name, detail: Self.summary(arguments)) }
         switch name {
         case "list_meetings": return listMeetings(store, arguments)
         case "search_meetings": return searchMeetings(store, arguments)
@@ -189,11 +202,14 @@ struct MCPAccess: Identifiable, Equatable {
         default: return listTags(store)
         }
     }
-    /// Meetings an AI app may see: not carrying a tag the user keeps from AI apps.
+    /// Meetings an AI app may see: not carrying a tag the user keeps from AI apps. The app itself sees every one.
     private func visible(_ store: Store) -> [Meeting] {
-        store.meetings.filter { meeting in !store.mcpHiddenTags.contains { MeetingTags.contains(meeting.tags, $0) } }
-            .sorted { $0.date > $1.date }
+        store.meetings.filter { meeting in
+            everything || !store.mcpHiddenTags.contains { MeetingTags.contains(meeting.tags, $0) }
+        }
+        .sorted { $0.date > $1.date }
     }
+    private func includesTranscript(_ store: Store) -> Bool { everything || store.mcpIncludesTranscript }
     private func meeting(_ store: Store, _ arguments: [String: Any]) -> Meeting? {
         guard let id = (arguments["meeting_id"] as? String).flatMap(UUID.init(uuidString:)) else { return nil }
         return visible(store).first { $0.id == id }
@@ -210,7 +226,7 @@ struct MCPAccess: Identifiable, Equatable {
             var hit: SearchHit?
             if !terms.isEmpty {
                 var searched = meeting
-                if !store.mcpIncludesTranscript { searched.segments = [] }
+                if !includesTranscript(store) { searched.segments = [] }
                 guard let found = MeetingSearch.search(searched, terms: terms) else { continue }
                 hit = found
             }
@@ -242,7 +258,7 @@ struct MCPAccess: Identifiable, Equatable {
         for meeting in visible(store)
         where Self.matches(meeting, tag: arguments["tag"], from: arguments["from"], to: arguments["to"]) {
             var searched = meeting
-            if !store.mcpIncludesTranscript { searched.segments = [] }
+            if !includesTranscript(store) { searched.segments = [] }
             guard let passages = MeetingSearch.passages(searched, terms: terms, limit: perMeeting) else { continue }
             guard results.count < limit else { break }
             lines.append("## \(meeting.title)（\(Self.stamp(meeting.date))）　ID: \(meeting.id.uuidString)")
@@ -324,7 +340,7 @@ struct MCPAccess: Identifiable, Equatable {
             ])
     }
     private func getTranscript(_ store: Store, _ arguments: [String: Any]) -> [String: Any] {
-        guard store.mcpIncludesTranscript else {
+        guard includesTranscript(store) else {
             return Self.failure("ギジログの設定で、文字起こしは AI アプリに渡さないようになっています。議事録は get_meeting で取得できます。")
         }
         guard let meeting = meeting(store, arguments) else { return Self.notFound }

@@ -2536,6 +2536,8 @@ struct FindBar: View {
 struct TranscriptPanel: View {
     @EnvironmentObject var store: Store
     @Environment(\.searchTerms) private var terms
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var tabs
     @StateObject private var follow = TranscriptFollow()
     let meeting: Meeting
     var showsHeader = true  // The compact window shows the count in its tab bar instead.
@@ -2551,127 +2553,275 @@ struct TranscriptPanel: View {
         // The find bar (full window only) takes over the highlighting from the meeting search while it has words.
         let find = showsHeader && store.transcriptFind.open ? store.transcriptFind : FindState()
         let found = MeetingSearch.lines(meeting, terms: find.terms)
-        let current = find.current(in: found)
+        // An answer's link marks the utterance it points to, unless the find bar is on a match.
+        let current =
+            find.current(in: found) ?? store.revealed.flatMap { $0.meetingID == meeting.id ? $0.segmentID : nil }
         let shownTerms = find.terms.isEmpty ? terms : find.terms
+        let asking = showsHeader && store.sideTab == "質問"
         VStack(alignment: .leading, spacing: 0) {
             if showsHeader {
-                // The same tab as the compact window's, so the panel reads as the transcript's page.
-                HStack(alignment: .bottom, spacing: 8) {
-                    PageTab(
-                        title: "文字起こし", systemImage: "text.quote", count: meeting.segments.count,
-                        page: Palette.deepAi, ink: Palette.paper, outlined: true)
+                // The same tabs as the compact window's, so the panel reads as the page of the one chosen.
+                HStack(alignment: .bottom, spacing: 2) {
+                    sideTab("文字起こし", systemImage: "text.quote", count: meeting.segments.count)
+                    sideTab("質問", systemImage: "bubble.left.and.text.bubble.right")
                     Spacer(minLength: 0)
                     let pending = meeting.jobs.filter { $0.state == .pending || $0.state == .running }.count
-                    HStack(spacing: 8) {
-                        if !terms.isEmpty {
-                            Text("一致 \(matches.count)件").font(.caption.weight(.semibold)).foregroundStyle(
-                                Palette.yamabuki)
+                    if !asking {
+                        HStack(spacing: 8) {
+                            if !terms.isEmpty {
+                                Text("一致 \(matches.count)件").font(.caption.weight(.semibold)).foregroundStyle(
+                                    Palette.yamabuki)
+                            }
+                            if pending > 0 {
+                                Label("処理待ち \(pending)件", systemImage: "hourglass").font(.caption).foregroundStyle(
+                                    .secondary)
+                            }
+                            Button {
+                                store.transcriptFind.open = true
+                                store.transcriptFind.focus += 1
+                            } label: {
+                                Image(systemName: "magnifyingglass")
+                            }
+                            .buttonStyle(.borderless).foregroundStyle(.secondary)
+                            .help("文字起こしの中を検索（⇧⌘F）")
+                            .accessibilityLabel("文字起こしの中を検索")
                         }
-                        if pending > 0 {
-                            Label("処理待ち \(pending)件", systemImage: "hourglass").font(.caption).foregroundStyle(
-                                .secondary)
-                        }
-                        Button {
-                            store.transcriptFind.open = true
-                            store.transcriptFind.focus += 1
-                        } label: {
-                            Image(systemName: "magnifyingglass")
-                        }
-                        .buttonStyle(.borderless).foregroundStyle(.secondary)
-                        .help("文字起こしの中を検索（⇧⌘F）")
-                        .accessibilityLabel("文字起こしの中を検索")
+                        .padding(.bottom, 9)
                     }
-                    .padding(.bottom, 9)
                 }
                 .padding(.top, 10)
                 .pageTabBar()
             }
-            if showsHeader && store.transcriptFind.open {
-                FindBar(state: $store.transcriptFind, placeholder: "文字起こしを検索", count: found.count, dark: true)
-                    .padding(.horizontal, 12).padding(.top, 10)
-            }
-            if let offer = store.correctionOffer, offer.meetingID == meeting.id, offer.inTranscript, editable {
-                CorrectionOfferView(offer: offer, stacked: true).padding(.horizontal, 12).padding(.top, 10)
-            }
-            if meeting.segments.isEmpty {
-                Text(live ? "最初の発言は10秒ほどで表示されます。" : "文字起こしはまだありません。")
-                    .font(.callout).foregroundStyle(.secondary).padding(16)
-                Spacer()
+            if asking {
+                AskPanel()
             } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 16) {
-                            ForEach(meeting.segments) { segment in
-                                TranscriptRow(
-                                    segment: segment, meetingID: meeting.id, editable: editable,
-                                    current: segment.id == current
-                                ).id(segment.id)
-                            }
+                transcript(live: live, matches: matches, found: found, current: current, shownTerms: shownTerms)
+            }
+        }
+        .background(Palette.deepAi)
+    }
+    private func sideTab(_ title: String, systemImage: String, count: Int? = nil) -> some View {
+        let selected = store.sideTab == title
+        return Button {
+            withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) { store.sideTab = title }
+        } label: {
+            PageTab(
+                title: title, systemImage: systemImage, count: count, selected: selected, page: Palette.deepAi,
+                ink: Palette.paper, outlined: true, namespace: tabs
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(title == "質問" ? "すべての会議について、AIに質問する" : "この会議の文字起こし")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+    @ViewBuilder private func transcript(
+        live: Bool, matches: [Segment], found: [String], current: String?, shownTerms: [String]
+    ) -> some View {
+        if showsHeader && store.transcriptFind.open {
+            FindBar(state: $store.transcriptFind, placeholder: "文字起こしを検索", count: found.count, dark: true)
+                .padding(.horizontal, 12).padding(.top, 10)
+        }
+        if let offer = store.correctionOffer, offer.meetingID == meeting.id, offer.inTranscript, editable {
+            CorrectionOfferView(offer: offer, stacked: true).padding(.horizontal, 12).padding(.top, 10)
+        }
+        if meeting.segments.isEmpty {
+            Text(live ? "最初の発言は10秒ほどで表示されます。" : "文字起こしはまだありません。")
+                .font(.callout).foregroundStyle(.secondary).padding(16)
+            Spacer()
+        } else {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 16) {
+                        ForEach(meeting.segments) { segment in
+                            TranscriptRow(
+                                segment: segment, meetingID: meeting.id, editable: editable,
+                                current: segment.id == current
+                            ).id(segment.id)
                         }
-                        .padding(16)
-                        .textSelection(.enabled)
-                        .environment(\.searchTerms, shownTerms)
                     }
-                    // While recording, open at the latest speech and keep following it unless the user scrolled back.
-                    // A finished meeting opens at its beginning.
-                    .defaultScrollAnchor(live ? .bottom : .top)
-                    .id(meeting.id)
-                    .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
-                        ScrollMetrics(
-                            offset: geometry.contentOffset.y, content: geometry.contentSize.height,
-                            container: geometry.containerSize.height)
-                    } action: { old, new in
-                        // New speech growing the content is not the user scrolling away; only their own scroll
-                        // (same content size, different offset) stops following.
-                        // Publish only real changes, so the modifier does not update several times per frame.
-                        if new.content == old.content && new.container == old.container {
-                            if follow.atEnd != new.atEnd { follow.atEnd = new.atEnd }
-                        } else if new.atEnd && !follow.atEnd {
-                            follow.atEnd = true
-                        }
+                    .padding(16)
+                    .textSelection(.enabled)
+                    .environment(\.searchTerms, shownTerms)
+                }
+                // While recording, open at the latest speech and keep following it unless the user scrolled back.
+                // A finished meeting opens at its beginning.
+                .defaultScrollAnchor(live ? .bottom : .top)
+                .id(meeting.id)
+                .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
+                    ScrollMetrics(
+                        offset: geometry.contentOffset.y, content: geometry.contentSize.height,
+                        container: geometry.containerSize.height)
+                } action: { old, new in
+                    // New speech growing the content is not the user scrolling away; only their own scroll
+                    // (same content size, different offset) stops following.
+                    // Publish only real changes, so the modifier does not update several times per frame.
+                    if new.content == old.content && new.container == old.container {
+                        if follow.atEnd != new.atEnd { follow.atEnd = new.atEnd }
+                    } else if new.atEnd && !follow.atEnd {
+                        follow.atEnd = true
                     }
-                    .onChange(of: meeting.segments.last?.id) {
-                        // Not while a line is being corrected or found: following would scroll it away.
-                        if live && follow.atEnd && shownTerms.isEmpty && store.editingSegment == nil {
+                }
+                .onChange(of: meeting.segments.last?.id) {
+                    // Not while a line is being corrected or found: following would scroll it away.
+                    if live && follow.atEnd && shownTerms.isEmpty && store.editingSegment == nil {
+                        scrollToEnd(proxy)
+                    }
+                }
+                .task(id: current) {
+                    guard let current else { return }
+                    try? await Task.sleep(nanoseconds: 50_000_000)  // After the rows are laid out.
+                    proxy.scrollTo(current, anchor: .center)
+                }
+                // A new search, or another meeting while searching, opens at the first matching utterance.
+                .task(id: "\(meeting.id) \(terms.joined(separator: " "))") {
+                    guard let first = matches.first?.id else { return }
+                    try? await Task.sleep(nanoseconds: 100_000_000)  // After the rows are laid out.
+                    proxy.scrollTo(first, anchor: .center)
+                }
+                .overlay(alignment: .bottom) {
+                    if live && !follow.atEnd {
+                        Button {
                             scrollToEnd(proxy)
+                        } label: {
+                            Label("最新の発言へ", systemImage: "arrow.down")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 12).padding(.vertical, 6)
+                                .background(Capsule().fill(Palette.ai))
+                                .overlay(Capsule().strokeBorder(Palette.asagi.opacity(0.6)))
                         }
-                    }
-                    .task(id: current) {
-                        guard let current else { return }
-                        try? await Task.sleep(nanoseconds: 50_000_000)  // After the rows are laid out.
-                        proxy.scrollTo(current, anchor: .center)
-                    }
-                    // A new search, or another meeting while searching, opens at the first matching utterance.
-                    .task(id: "\(meeting.id) \(terms.joined(separator: " "))") {
-                        guard let first = matches.first?.id else { return }
-                        try? await Task.sleep(nanoseconds: 100_000_000)  // After the rows are laid out.
-                        proxy.scrollTo(first, anchor: .center)
-                    }
-                    .overlay(alignment: .bottom) {
-                        if live && !follow.atEnd {
-                            Button {
-                                scrollToEnd(proxy)
-                            } label: {
-                                Label("最新の発言へ", systemImage: "arrow.down")
-                                    .font(.caption.weight(.semibold))
-                                    .padding(.horizontal, 12).padding(.vertical, 6)
-                                    .background(Capsule().fill(Palette.ai))
-                                    .overlay(Capsule().strokeBorder(Palette.asagi.opacity(0.6)))
-                            }
-                            .buttonStyle(.plain)
-                            .padding(.bottom, 12)
-                        }
+                        .buttonStyle(.plain)
+                        .padding(.bottom, 12)
                     }
                 }
             }
         }
-        .background(Palette.deepAi)
     }
     // Jumps without animation, so no in-between offset is mistaken for the user scrolling back.
     private func scrollToEnd(_ proxy: ScrollViewProxy) {
         guard let last = meeting.segments.last?.id else { return }
         proxy.scrollTo(last, anchor: .bottom)
         if !follow.atEnd { follow.atEnd = true }
+    }
+}
+// The 質問 tab: ask anything about the meetings, in words. The AI reads every meeting as it needs and answers here,
+// with links to the meetings and utterances it read; a link opens the meeting at that utterance.
+struct AskPanel: View {
+    @EnvironmentObject var store: Store
+    @StateObject private var draft = TextDraft()
+    @FocusState private var focused: Bool
+    private static let examples = ["先週決まったことは？", "終わっていないアクションは？", "この会議の要点は？"]
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        if store.asked.isEmpty { intro }
+                        ForEach(store.asked) { AskBubble(message: $0).id($0.id) }
+                        if let progress = store.askProgress {
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.small)
+                                Text(progress + "…").font(.callout).foregroundStyle(Palette.paper.opacity(0.7))
+                                Spacer(minLength: 0)
+                                Button("止める") { store.stopAsking() }.buttonStyle(.borderless).font(.caption)
+                            }
+                            .id("progress")
+                        }
+                    }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                // A new question or answer is shown from its start.
+                .onChange(of: store.asked.last?.id) { _, last in
+                    guard let last else { return }
+                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last, anchor: .top) }
+                }
+                .onChange(of: store.askProgress) { _, progress in
+                    if progress != nil { proxy.scrollTo("progress", anchor: .bottom) }
+                }
+            }
+            composer
+        }
+        .environment(\.openURL, OpenURLAction { url in store.openAskLink(url) ? .handled : .systemAction })
+        .onAppear { Task { @MainActor in focused = true } }
+    }
+    private var intro: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("会議について質問").font(.headline).foregroundStyle(Palette.paper)
+            Text("すべての会議の議事録と文字起こしから、AIが探して答えます。答えのリンクから、その会議と発言を開けます。")
+                .font(.callout).foregroundStyle(Palette.paper.opacity(0.65))
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(Self.examples, id: \.self) { example in
+                Button {
+                    store.ask(example)
+                } label: {
+                    Text(example).font(.callout).padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(Capsule().fill(Palette.ai))
+                        .overlay(Capsule().strokeBorder(PageTab.edge))
+                }
+                .buttonStyle(.plain).foregroundStyle(Palette.paper)
+            }
+        }
+    }
+    private var composer: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .bottom, spacing: 8) {
+                TextField("会議について質問", text: $draft.text, axis: .vertical)
+                    .lineLimit(1...6).textFieldStyle(.plain).font(.callout).foregroundStyle(Palette.paper)
+                    .focused($focused).onSubmit(send)
+                    .padding(.horizontal, 10).padding(.vertical, 7)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Palette.ai))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8).strokeBorder(
+                            focused ? Palette.asagi.opacity(0.7) : PageTab.edge))
+                Button(action: send) {
+                    Image(systemName: "arrow.up.circle.fill").font(.system(size: 22))
+                }
+                .buttonStyle(.plain).foregroundStyle(canSend ? Palette.asagi : Palette.paper.opacity(0.25))
+                .disabled(!canSend).help("質問する（Return）").accessibilityLabel("質問する")
+            }
+            if !store.asked.isEmpty {
+                Button("新しい会話") { store.clearAsked() }
+                    .buttonStyle(.borderless).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .background(alignment: .top) { Rectangle().fill(PageTab.edge).frame(height: 1) }
+    }
+    private var canSend: Bool {
+        store.askProgress == nil && !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    private func send() {
+        guard canSend else { return }
+        store.ask(draft.text)
+        draft.text = ""
+    }
+}
+// One turn of the 質問 tab: a question on the right, an answer as text with links, a failure in yellow.
+struct AskBubble: View {
+    let message: AskMessage
+    var body: some View {
+        switch message.role {
+        case .question:
+            HStack {
+                Spacer(minLength: 32)
+                Text(message.text).font(.callout).foregroundStyle(Palette.paper)
+                    .padding(.horizontal, 11).padding(.vertical, 7)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Palette.ai))
+                    .textSelection(.enabled)
+            }
+        case .answer:
+            Text(Self.linked(message.text)).font(.system(size: 13)).lineSpacing(3).foregroundStyle(Palette.paper)
+                .tint(Palette.asagi).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+        case .failure:
+            Label(message.text, systemImage: "exclamationmark.triangle.fill").font(.callout)
+                .foregroundStyle(Palette.yamabuki).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+    /// The answer with its Markdown links and bold, keeping its line breaks.
+    static func linked(_ text: String) -> AttributedString {
+        (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(text)
     }
 }
 struct ScrollMetrics: Equatable {

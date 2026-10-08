@@ -40,6 +40,13 @@ import UniformTypeIdentifiers
     @Published var tagEditor: UUID?  // The meeting whose tag field is open.
     @Published var settingsTab = "一般"
     @Published var liveTab = "議事録"  // The compact window shows the minutes or the transcript.
+    @Published var sideTab = "文字起こし"  // The panel beside the minutes shows the transcript or the 質問 tab.
+    // The 質問 tab's conversation, for as long as the app runs, and what the AI is reading while it answers.
+    @Published var asked: [AskMessage] = []
+    @Published private(set) var askProgress: String?
+    private var askTask: Task<Void, Never>?
+    // The utterance an answer's link pointed to, marked in the transcript.
+    @Published private(set) var revealed: (meetingID: UUID, segmentID: String)?
     // Names and terms the transcription should spell this way, one per line or separated by commas.
     @Published var vocabulary = "" { didSet { saveVocabulary() } }
     // Misheard words learned from every fix ("森バス、もりばす → モリバス" a line): new speech is fixed with them, and
@@ -1452,6 +1459,63 @@ extension Store {
             }
         }
         correctionOffer = offer
+    }
+    /// Asks the AI about the meetings: it reads every meeting as it needs and answers in the 質問 tab.
+    func ask(_ question: String) {
+        let question = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !question.isEmpty, askTask == nil else { return }
+        asked.append(AskMessage(role: .question, text: question))
+        guard hasKey else {
+            asked.append(AskMessage(role: .failure, text: "設定で OpenAI の APIキーを入れると、質問できます。"))
+            return
+        }
+        let conversation = asked
+        let instructions = MeetingAgent.instructions(
+            today: Date(), open: meetings.first { $0.id == selected },
+            recording: recording ? meetings.first { $0.id == activeID } : nil)
+        let tools = MCPHandler(store: self, everything: true)
+        let key = key
+        let model = model
+        askProgress = "考えています"
+        askTask = Task {
+            do {
+                let answer = try await MeetingAgent.answer(
+                    conversation, instructions: instructions, model: model,
+                    send: { try await MeetingAgent.post($0, key: key) },
+                    run: { MeetingAgent.text(ofTool: tools.callTool($0, arguments: $1)) },
+                    progress: { [weak self] in self?.askProgress = $0 })
+                asked.append(AskMessage(role: .answer, text: answer))
+            } catch {
+                let stopped = Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled
+                asked.append(AskMessage(role: .failure, text: stopped ? "止めました。" : error.localizedDescription))
+            }
+            askProgress = nil
+            askTask = nil
+        }
+    }
+    func stopAsking() { askTask?.cancel() }
+    /// Starts a new conversation.
+    func clearAsked() {
+        stopAsking()
+        asked = []
+    }
+    /// Follows a link in an answer: opens the meeting, and shows the utterance it points to in the transcript.
+    /// False for a link that is not to a meeting here.
+    func openAskLink(_ url: URL) -> Bool {
+        guard let link = AskLink(url), let meeting = meetings.first(where: { $0.id == link.meetingID }) else {
+            return false
+        }
+        selected = meeting.id
+        if let seconds = link.seconds {
+            // The utterance under way at that moment, or the first one after it.
+            let ordered = meeting.segments.sorted { $0.time < $1.time }
+            if let segment = ordered.last(where: { $0.time <= seconds + 1 }) ?? ordered.first {
+                revealed = (meeting.id, segment.id)
+                showsTranscript = true
+                sideTab = "文字起こし"
+            }
+        }
+        return true
     }
     /// Moves a decision, open issue or action under a summary topic by hand, where AI updates then keep it.
     func moveNoteItem(_ meetingID: UUID, part: NotePart, id: String, toTopic index: Int) {
