@@ -779,7 +779,8 @@ struct TrackWaveform: View {
     let systemImage: String
     let levels: Published<[Float]>.Publisher
     let tint: Color
-    var width: CGFloat = 168
+    // nil: as wide as there is room for, following the window, up to a width where the bars still read as a wave.
+    var width: CGFloat? = 168
     var height: CGFloat = 30
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -787,6 +788,7 @@ struct TrackWaveform: View {
                 .accessibilityHidden(true)
             WaveformBars(label: label, levels: levels, tint: tint).frame(width: width, height: height)
         }
+        .frame(maxWidth: width == nil ? 360 : nil, alignment: .leading)
     }
 }
 struct WaveformBars: NSViewRepresentable {
@@ -3856,17 +3858,19 @@ struct LiveHeader: View {
         .help(store.pinsLiveWindow ? "手前への固定をやめる" : "ほかのウインドウより手前に固定する")
     }
 }
+// The two tracks share the compact window's width, so they grow and shrink with it.
 struct LiveMeters: View {
     let meter: LevelMeter
     var body: some View {
         HStack(spacing: 16) {
             TrackWaveform(
                 label: "Mac音声", systemImage: "speaker.wave.2.fill", levels: meter.$system, tint: Palette.paper,
-                width: 140, height: 20)
+                width: nil, height: 20)
             TrackWaveform(
-                label: "マイク", systemImage: "mic.fill", levels: meter.$microphone, tint: Palette.asagi, width: 140,
+                label: "マイク", systemImage: "mic.fill", levels: meter.$microphone, tint: Palette.asagi, width: nil,
                 height: 20)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 struct LiveMinutes: View {
