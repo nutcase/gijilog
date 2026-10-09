@@ -217,6 +217,27 @@ extension ProcessingTests {
         try Self.check(
             leftThatMeeting && store.revealed == nil,
             "the utterance is marked only until another meeting is shown, and a link to a whole meeting marks none")
+        // An item's evidence clicked in the minutes shows in the transcript of the window it was clicked in.
+        store.selected = weekly.id
+        store.showsTranscript = false
+        store.transcriptFind.open = true
+        store.reveal("a", in: weekly.id)
+        let firstReveal = store.revealed
+        store.reveal("a", in: weekly.id)
+        try Self.check(
+            store.showsTranscript && !store.transcriptFind.open && store.revealed?.segmentID == "a"
+                && store.revealed?.compact == false && store.revealed?.count != firstReveal?.count,
+            "evidence opens the transcript panel at its utterance, scrolled to again each time it is clicked")
+        store.forgetCompactReveal()
+        let keptInFullWindow = store.revealed != nil
+        store.liveTab = "議事録"
+        store.reveal("a", in: weekly.id, compact: true)
+        let onTab = store.liveTab == "文字起こし" && store.revealed?.compact == true
+        store.forgetCompactReveal()
+        try Self.check(
+            keptInFullWindow && onTab && store.revealed == nil,
+            "in the compact window it opens the transcript's tab, which follows the speech again once tabs are switched"
+        )
         // Only a web page opens outside the app: a link to a file or another app's scheme can only come from text in a
         // meeting telling the AI to write it.
         let file = try Self.require(URL(string: "file:///Applications/Calculator.app"), "a file link")

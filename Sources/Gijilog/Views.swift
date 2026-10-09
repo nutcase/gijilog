@@ -91,6 +91,10 @@ extension Store {
 private struct SearchTermsKey: EnvironmentKey { static let defaultValue: [String] = [] }
 // The meeting whose recording can be listened back to, once it is over and 録音.m4a has been made.
 private struct PlayableMeetingKey: EnvironmentKey { static let defaultValue: UUID? = nil }
+// Shows an utterance of the meeting in the transcript, for the minutes' evidence: set where the transcript is at hand.
+private struct RevealInTranscriptKey: EnvironmentKey {
+    static let defaultValue: (@MainActor (String) -> Void)? = nil
+}
 extension EnvironmentValues {
     var searchTerms: [String] {
         get { self[SearchTermsKey.self] }
@@ -99,6 +103,10 @@ extension EnvironmentValues {
     var playableMeeting: UUID? {
         get { self[PlayableMeetingKey.self] }
         set { self[PlayableMeetingKey.self] = newValue }
+    }
+    var revealInTranscript: (@MainActor (String) -> Void)? {
+        get { self[RevealInTranscriptKey.self] }
+        set { self[RevealInTranscriptKey.self] = newValue }
     }
 }
 /// The text with every keyword marked like a highlighter pen.
@@ -180,7 +188,9 @@ struct ContentView: View {
                 }
                 .environment(\.searchTerms, store.searchedTerms)
                 .environment(
-                    \.playableMeeting, store.selectedMeeting.flatMap { store.recordingFile($0) != nil ? $0.id : nil })
+                    \.playableMeeting, store.selectedMeeting.flatMap { store.recordingFile($0) != nil ? $0.id : nil }
+                )
+                .environment(\.revealInTranscript, store.selectedMeeting.map { meeting in reveal(in: meeting.id) })
             }
             .background(Palette.kon)
             // Dropping recordings on the window makes minutes from them.
@@ -311,6 +321,10 @@ struct ContentView: View {
                 .disabled(store.busy || !store.ready || !store.hasKey)
             }
         }
+    }
+    /// An item's evidence clicked in the minutes shows in the transcript panel beside them.
+    private func reveal(in meetingID: UUID) -> @MainActor (String) -> Void {
+        { [store] segmentID in store.reveal(segmentID, in: meetingID) }
     }
 }
 
@@ -2219,17 +2233,7 @@ struct NoteRow: View {
                 }
                 if let first = evidence.first {
                     DisclosureGroup {
-                        ForEach(evidence) { segment in
-                            VStack(alignment: .leading, spacing: 3) {
-                                HStack(spacing: 4) {
-                                    PlayButton(segment: segment)
-                                    Text("\(clock(segment.time)) \(segment.source)").foregroundStyle(.secondary)
-                                }
-                                Text(highlighted(segment.text, terms)).fixedSize(horizontal: false, vertical: true)
-                            }
-                            .padding(.vertical, 3)
-                            .frame(maxWidth: .infinity, alignment: .leading)  // Each line from the left edge.
-                        }
+                        ForEach(evidence) { segment in EvidenceLine(segment: segment) }
                     } label: {
                         Text("根拠 \(clock(first.time))〜（\(evidence.count)件）").foregroundStyle(.secondary)
                     }
@@ -2558,6 +2562,40 @@ extension View {
 // Plays an utterance from the meeting's recording, to check a name, a figure or how a decision was put; shown once
 // the recording is over. While it plays, it stops it. `shown` hides it until the pointer is over the line, keeping
 // its space so nothing moves.
+// One utterance an item of the minutes rests on. Its words can be clicked where the transcript is at hand, to read
+// it there with what was said around it.
+struct EvidenceLine: View {
+    @Environment(\.searchTerms) private var terms
+    @Environment(\.revealInTranscript) private var reveal
+    @StateObject private var hover = Flag()
+    let segment: Segment
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 4) {
+                PlayButton(segment: segment)
+                Text("\(clock(segment.time)) \(segment.source)").foregroundStyle(.secondary)
+            }
+            if let reveal {
+                Button {
+                    reveal(segment.id)
+                } label: {
+                    Text(highlighted(segment.text, terms)).underline(hover.on, color: Palette.asagi)
+                        .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.disabled)  // A selectable text would take the click.
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .onHover { hover.on = $0 }
+                .help("文字起こしでこの発言を見る")
+            } else {
+                Text(highlighted(segment.text, terms)).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 3)
+        .frame(maxWidth: .infinity, alignment: .leading)  // Each line from the left edge.
+    }
+}
 struct PlayButton: View {
     @EnvironmentObject var store: Store
     @Environment(\.playableMeeting) private var meetingID
@@ -2685,10 +2723,10 @@ struct TranscriptPanel: View {
         // The find bar (full window only) takes over the highlighting from the meeting search while it has words.
         let find = showsHeader && store.transcriptFind.open ? store.transcriptFind : FindState()
         let found = MeetingSearch.lines(meeting, terms: find.terms)
-        // An answer's link marks the utterance it points to in the full window, unless the find bar is on a match. The
-        // compact window keeps following the speech.
-        let revealed = showsHeader ? store.revealed.flatMap { $0.meetingID == meeting.id ? $0.segmentID : nil } : nil
-        let current = find.current(in: found) ?? revealed
+        // An answer's link or an item's evidence marks the utterance it points to, in the window it was clicked in,
+        // unless the find bar is on a match. Otherwise the compact window keeps following the speech.
+        let revealed = store.revealed.flatMap { $0.meetingID == meeting.id && $0.compact == !showsHeader ? $0 : nil }
+        let current = find.current(in: found) ?? revealed?.segmentID
         let shownTerms = find.terms.isEmpty ? terms : find.terms
         VStack(alignment: .leading, spacing: 0) {
             if showsHeader {
@@ -2723,12 +2761,14 @@ struct TranscriptPanel: View {
                 .padding(.top, 10)
                 .pageTabBar()
             }
-            transcript(live: live, matches: matches, found: found, current: current, shownTerms: shownTerms)
+            transcript(
+                live: live, matches: matches, found: found, current: current, reveals: revealed?.count ?? 0,
+                shownTerms: shownTerms)
         }
         .background(Palette.deepAi)
     }
     @ViewBuilder private func transcript(
-        live: Bool, matches: [Segment], found: [String], current: String?, shownTerms: [String]
+        live: Bool, matches: [Segment], found: [String], current: String?, reveals: Int, shownTerms: [String]
     ) -> some View {
         if showsHeader && store.transcriptFind.open {
             FindBar(state: $store.transcriptFind, placeholder: "文字起こしを検索", count: found.count, dark: true)
@@ -2780,7 +2820,8 @@ struct TranscriptPanel: View {
                         scrollToEnd(proxy)
                     }
                 }
-                .task(id: current) {
+                // Each time an utterance is asked for, even the same one again after scrolling away.
+                .task(id: "\(current ?? "") \(reveals)") {
                     guard let current else { return }
                     try? await Task.sleep(nanoseconds: 50_000_000)  // After the rows are laid out.
                     proxy.scrollTo(current, anchor: .center)
@@ -3933,6 +3974,8 @@ struct LiveMinutes: View {
             }
             .padding(16)
             .modifier(Selectable(enabled: !store.minutesChanging(meeting)))  // As in the full window.
+            // Evidence clicked here shows on the transcript's tab.
+            .environment(\.revealInTranscript) { [store] id in store.reveal(id, in: meeting.id, compact: true) }
         }
         .foregroundStyle(Palette.sumi)
         .background(Palette.paper)
@@ -4009,6 +4052,7 @@ struct LiveTabBar: View {
     ) -> some View {
         let selected = store.liveTab == title
         return Button {
+            store.forgetCompactReveal()  // Opened by hand, the transcript follows the speech again.
             withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) { store.liveTab = title }
         } label: {
             PageTab(

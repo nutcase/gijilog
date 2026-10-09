@@ -28,7 +28,7 @@ import UniformTypeIdentifiers
     @Published var selected: UUID? {
         didSet {
             if selected != nil && askOpen { askOpen = false }  // Choosing a meeting leaves the questions.
-            // An utterance a link pointed to is marked only until another meeting is shown.
+            // An utterance a link or an item's evidence pointed to is marked only until another meeting is shown.
             if let revealed, revealed.meetingID != selected { self.revealed = nil }
         }
     }
@@ -56,8 +56,8 @@ import UniformTypeIdentifiers
     var draggedNoteItem: NoteItemDrag?  // The item a drag in the minutes started from, until it is dropped.
     private var askTask: Task<Void, Never>?
     private var askGeneration = 0  // Counts conversations, so an answer stopped by a new one is dropped.
-    // The utterance an answer's link pointed to, marked in the transcript.
-    @Published private(set) var revealed: (meetingID: UUID, segmentID: String)?
+    // The utterance an answer's link or a minutes item's evidence pointed to, marked in the transcript.
+    @Published private(set) var revealed: Reveal?
     // Names and terms the transcription should spell this way, one per line or separated by commas.
     @Published var vocabulary = "" { didSet { saveVocabulary() } }
     // Misheard words learned from every fix ("森バス、もりばす → モリバス" a line): new speech is fixed with them, and
@@ -1624,12 +1624,27 @@ extension Store {
         // The utterance under way at that moment, or the first one after it; a link to the whole meeting marks none.
         let ordered = meeting.segments.sorted { $0.time < $1.time }
         if let seconds = link.seconds, let segment = ordered.last(where: { $0.time <= seconds + 1 }) ?? ordered.first {
-            revealed = (meeting.id, segment.id)
-            showsTranscript = true
+            reveal(segment.id, in: meeting.id)
         } else {
             revealed = nil
         }
         return true
+    }
+    /// Shows an utterance in the transcript and marks it: beside the minutes in the full window, or on the
+    /// transcript's tab in the compact one. Asked for again, even the same one, it is scrolled to again.
+    func reveal(_ segmentID: String, in meetingID: UUID, compact: Bool = false) {
+        revealed = Reveal(
+            meetingID: meetingID, segmentID: segmentID, compact: compact, count: (revealed?.count ?? 0) + 1)
+        if compact {
+            liveTab = "文字起こし"
+        } else {
+            showsTranscript = true
+            if transcriptFind.open { transcriptFind = FindState() }  // Its match would hold the panel where it is.
+        }
+    }
+    /// The compact window's transcript follows the speech again once its tabs are switched by hand.
+    func forgetCompactReveal() {
+        if revealed?.compact == true { revealed = nil }
     }
     /// Moves a decision, open issue or action by hand under the summary topic with that ID, where AI updates then keep
     /// it. Topics are found among those the minutes show, not cancelled ones; two of the same name stay apart.
@@ -1888,6 +1903,14 @@ struct NoteItemDrag: Equatable {
     let meetingID: UUID
     let part: NotePart
     let id: String
+}
+/// An utterance to show in the transcript, and in which window: the full window's panel, or the compact window's
+/// tab. `count` tells one request from the next, so the same utterance asked for twice is scrolled to twice.
+struct Reveal: Equatable {
+    let meetingID: UUID
+    let segmentID: String
+    let compact: Bool
+    let count: Int
 }
 /// What ギジログAI is doing while it answers: what it reads, and the answer as it is written. Kept apart from the
 /// Store, so that each piece of a streamed answer redraws the conversation alone.
