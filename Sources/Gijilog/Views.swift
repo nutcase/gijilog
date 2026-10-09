@@ -334,7 +334,7 @@ struct MeetingList: View {
     @EnvironmentObject var store: Store
     @Environment(\.openSettings) private var openSettings
     @FocusState private var searchFocused: Bool
-    @StateObject private var searchAsked = Flag()  // ⌘F asked for the search field since the list appeared.
+    @StateObject private var searchAsked = Flag()  // ⌥⌘F asked for the search field since the list appeared.
     var body: some View {
         List(selection: $store.selected) {
             if days.isEmpty && !store.searchedTerms.isEmpty {
@@ -367,13 +367,13 @@ struct MeetingList: View {
             guard store.focusesSearch else { return }
             searchAsked.on = true
             store.focusesSearch = false
-            // A window that ⌘F just opened needs a moment before its search field can take focus.
+            // A window that ⌥⌘F just opened needs a moment before its search field can take focus.
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 100_000_000)
                 searchFocused = true
             }
         }
-        // macOS hands a new window's first text field the keyboard; the search waits to be clicked or asked for with ⌘F.
+        // macOS hands a new window's first text field the keyboard; the search waits to be clicked or asked for with ⌥⌘F.
         .task {
             try? await Task.sleep(nanoseconds: 100_000_000)
             if !searchAsked.on && store.searchText.isEmpty { searchFocused = false }
@@ -890,7 +890,7 @@ struct QuietButtonStyle: ButtonStyle {
     }
 }
 // The meeting search, under the app's name and ギジログAI: the list narrows as keywords are typed. Esc or the
-// clear button empties it; ⌘F comes here.
+// clear button empties it; ⌥⌘F comes here, and ⌘F when no minutes are open.
 struct SidebarSearchField: View {
     @Binding var text: String
     var focused: FocusState<Bool>.Binding
@@ -1064,7 +1064,7 @@ struct MinutesDesk: View {
                         Image(systemName: "magnifyingglass")
                     }
                     .buttonStyle(.borderless).foregroundStyle(.secondary)
-                    .help("議事録の中を検索（⌥⌘F）")
+                    .help("議事録の中を検索（⌘F）")
                     .accessibilityLabel("議事録の中を検索")
                 }
                 recordButton
@@ -4182,24 +4182,30 @@ struct FloatingWindow: NSViewRepresentable {
 // MARK: - Menu bar
 
 // Start and stop from the menu bar and the app's 録音 menu, even with every window closed.
-// Edit > 検索 (⌘F): search lives in the full window's sidebar, so the compact view switches back to it.
+// Edit menu: ⌘F finds in what is open, the meeting's minutes, as in Notes or Mail; ⌥⌘F searches every meeting from
+// the sidebar. Both live in the full window, so the compact view switches back to it.
 struct FindMenuItem: View {
     @ObservedObject var store: Store
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
     var body: some View {
-        Button("検索") {
+        // With no minutes open (ギジログAI, a meeting still being prepared), ⌘F searches the meetings instead.
+        let inMinutes = !store.askOpen && store.selectedMeeting?.notes != nil
+        Button(inMinutes ? "議事録の中を検索" : "会議を検索") {
+            ViewSwitch(open: openWindow, dismiss: dismissWindow).full()
+            if inMinutes {
+                store.minutesFind.open = true
+                store.minutesFind.focus += 1
+            } else {
+                store.focusesSearch = true
+            }
+        }
+        .keyboardShortcut("f")
+        Button("会議を検索") {
             ViewSwitch(open: openWindow, dismiss: dismissWindow).full()
             store.focusesSearch = true
         }
-        .keyboardShortcut("f")
-        Button("議事録の中を検索") {
-            ViewSwitch(open: openWindow, dismiss: dismissWindow).full()
-            store.minutesFind.open = true
-            store.minutesFind.focus += 1
-        }
         .keyboardShortcut("f", modifiers: [.command, .option])
-        .disabled(store.selectedMeeting?.notes == nil)
         Button("文字起こしの中を検索") {
             ViewSwitch(open: openWindow, dismiss: dismissWindow).full()
             store.showsTranscript = true

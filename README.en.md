@@ -58,8 +58,9 @@ You can also start and stop from the menu bar icon (a waveform, or a record mark
 | ⌘⇧R | Start or stop recording |
 | ⌘N | Prepare an agenda (create a meeting before recording it) |
 | ⌘O | Import a recording file |
-| ⌘F | Search meetings |
-| ⌥⌘F / ⇧⌘F | Find in the open meeting's minutes / transcript |
+| ⌘F | Find in the open meeting's minutes (searches the meetings when no minutes are open) |
+| ⌥⌘F | Search meetings |
+| ⇧⌘F | Find in the open meeting's transcript |
 | ⌘1 / ⌘2 / ⌘3 | Compact window tabs: minutes, transcript, agenda |
 | ⌘, | Settings |
 
@@ -102,9 +103,9 @@ When the meeting starts, click この会議を録音 (Record this meeting) on th
 
 ## Keyword search
 
-Type in the search field above the list (⌘F) to show only the meetings whose title, tags, minutes, or transcript contain your keywords; each meeting shows an excerpt of the match. Separate keywords with spaces to find meetings that contain all of them. Letter case and full-width or half-width characters are ignored, and search combines with the tag filter. Opening a meeting marks the matches in its minutes and transcript and scrolls the transcript to the first one.
+Type in the search field above the list (⌥⌘F) to show only the meetings whose title, tags, minutes, or transcript contain your keywords; each meeting shows an excerpt of the match. Separate keywords with spaces to find meetings that contain all of them. Letter case and full-width or half-width characters are ignored, and search combines with the tag filter. Opening a meeting marks the matches in its minutes and transcript and scrolls the transcript to the first one.
 
-Inside the open meeting, the minutes (the magnifier on the date line, or ⌥⌘F) and the transcript (the magnifier in its header, or ⇧⌘F) each have their own find bar. It shows how many items or utterances match and which one you are on (such as 3/12); Return or ↓ goes to the next match, ↑ to the previous one, and Esc closes it.
+Inside the open meeting, the minutes (the magnifier on the date line, or ⌘F) and the transcript (the magnifier in its header, or ⇧⌘F) each have their own find bar. It shows how many items or utterances match and which one you are on (such as 3/12); Return or ↓ goes to the next match, ↑ to the previous one, and Esc closes it.
 
 ## Ask Gijilog AI about your meetings
 
