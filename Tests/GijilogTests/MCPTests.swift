@@ -220,6 +220,13 @@ extension ProcessingTests {
     @MainActor func testMCPAnswersOverItsSocket() async throws {
         let (store, root, _) = try mcpStore()
         defer { try? FileManager.default.removeItem(at: root) }
+        // A transcript many times the socket's 8 KB, for a reply that has to go in parts.
+        var long = Meeting(title: "長い会議")
+        long.capture = .stopped
+        long.segments = (0..<600).map {
+            Segment(id: "l\($0)", time: Double($0 * 6), source: "マイク", text: "発言\($0) 来期の予算と体制について、順に確認していきます。")
+        }
+        store.meetings.append(long)
         let path = FileManager.default.temporaryDirectory.appendingPathComponent(
             "mcp-\(UUID().uuidString.prefix(8)).sock"
         ).path
@@ -247,14 +254,18 @@ extension ProcessingTests {
         }
         try Self.check(connected == 0, "the bridge can connect")
         _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+        let transcript =
+            #"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_transcript","arguments":"#
+            + #"{"meeting_id":"\#(long.id.uuidString)","max_characters":30000}}}"#
         let request =
             Data(#"{"jsonrpc":"2.0","id":"a","method":"ping"}"#.utf8) + Data([0x0A])
             + Data(#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#.utf8) + Data([0x0A])
+            + Data(transcript.utf8) + Data([0x0A])
         _ = request.withUnsafeBytes { write(fd, $0.baseAddress, request.count) }
         var received = Data()
         var chunk = [UInt8](repeating: 0, count: 65_536)
         let deadline = Date().addingTimeInterval(5)
-        while received.filter({ $0 == 0x0A }).count < 2 && Date() < deadline {
+        while received.filter({ $0 == 0x0A }).count < 3 && Date() < deadline {
             try await Task.sleep(nanoseconds: 20_000_000)
             let count = read(fd, &chunk, chunk.count)
             if count > 0 { received.append(contentsOf: chunk[0..<count]) }
@@ -262,10 +273,14 @@ extension ProcessingTests {
         let lines = received.split(separator: 0x0A).compactMap {
             try? JSONSerialization.jsonObject(with: Data($0)) as? [String: Any]
         }
+        let rows = ((lines.last?["result"] as? [String: Any])?["structuredContent"] as? [String: Any])?["segments"]
         try Self.check(
-            lines.count == 2 && lines[0]["id"] as? String == "a"
+            lines.count == 3 && lines[0]["id"] as? String == "a"
                 && (lines[1]["result"] as? [String: Any])?["tools"] != nil,
-            "newline-delimited requests on the socket get their replies in order: \(lines)")
+            "newline-delimited requests on the socket get their replies in order: \(lines.count)")
+        try Self.check(
+            received.count > 100_000 && ((rows as? [Any])?.count ?? 0) > 400,
+            "a reply many times the socket's buffer arrives whole, in parts: \(received.count) bytes")
         try Self.check(connections == 1, "the open connection is counted for Settings")
         server.stop()
         try Self.check(access(path, F_OK) != 0, "stopping removes the socket")

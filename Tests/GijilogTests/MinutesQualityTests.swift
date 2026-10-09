@@ -393,6 +393,7 @@ extension ProcessingTests {
         let store = Store(root: root.appendingPathComponent("save"), loadSettings: false)
         store.key = "TEST"
         var meeting = Meeting(title: "複数バッチの仕上げ")
+        meeting.workingMac = store.thisMac
         meeting.capture = .stopped
         meeting.hasAudio = true
         meeting.settings = SessionSettings()

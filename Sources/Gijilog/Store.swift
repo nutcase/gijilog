@@ -1,6 +1,8 @@
 import AVFoundation
 import AppKit
 import Combine
+import CryptoKit
+import IOKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -194,6 +196,10 @@ import UniformTypeIdentifiers
     private var folderWatcher: FolderWatcher?  // New meeting folders in the save location, while the app runs.
     let repository: MeetingRepository
     private let persistsSettings: Bool
+    // Names this Mac in the meetings it records or processes (Meeting.workingMac). Stores that keep no settings, as
+    // in tests and previews, share one for the process: the same Mac.
+    let thisMac: String
+    static let unsavedMac = UUID().uuidString
     var activeID: UUID?
     lazy var pipeline = ProcessingPipeline(store: self)
     private var captureInputID: String?  // The microphone in use, so unrelated devices cannot stop a recording.
@@ -258,7 +264,16 @@ import UniformTypeIdentifiers
             ?? Self.defaultRoot
         self.root = root
         persistsSettings = loadSettings
-        repository = MeetingRepository(root: root, discard: discardFolder)
+        if loadSettings, let id = Self.machineID() {
+            thisMac = id
+        } else if loadSettings {
+            let saved = UserDefaults.standard.string(forKey: "thisMac")
+            thisMac = saved ?? UUID().uuidString
+            if saved == nil { UserDefaults.standard.set(thisMac, forKey: "thisMac") }
+        } else {
+            thisMac = Self.unsavedMac
+        }
+        repository = MeetingRepository(root: root, copies: loadSettings ? Self.copies : nil, discard: discardFolder)
         if loadSettings {
             let defaults = UserDefaults.standard
             microphone = defaults.string(forKey: "microphone") ?? ""
@@ -518,6 +533,10 @@ import UniformTypeIdentifiers
         defer { ready = true }
         do {
             let (saved, failures) = try await repository.load()
+            let restored = await repository.takeRestored()
+            if !restored.isEmpty {
+                status = "同期で古い版に戻っていた会議を、この Mac の版に戻しました：" + restored.map { "「\($0)」" }.joined()
+            }
             meetings = saved
             for meeting in saved { revisions[meeting.id] = meeting.revision }
             await repository.writeMissingDocuments(saved)
@@ -525,6 +544,9 @@ import UniformTypeIdentifiers
             if !failures.isEmpty { error = "一部の会議を読み込めませんでした。保存場所のデータは保持しています。\n" + failures.joined(separator: "\n") }
             for meeting in saved {
                 let id = meeting.id
+                // Work left unfinished elsewhere (a recording under way on another Mac, or its processing) is that
+                // Mac's to finish: taken up here, it would be written over from whatever copy sync had brought.
+                guard meeting.workingMac == thisMac else { continue }
                 let interrupted = meeting.capture == .recording
                 if interrupted || meeting.jobs.contains(where: { $0.state == .running }) {
                     change(id) { m in
@@ -579,7 +601,10 @@ import UniformTypeIdentifiers
                 UserDefaults.standard.set(true, forKey: "learnedWordsSeeded")
             }
             // Only now are interrupted recordings marked and their audio found, so they get 録音.m4a on this launch.
-            mixDown(meetings.filter { $0.capture != .recording && $0.hasAudio == true }.map(\.id), onlyMissing: true)
+            mixDown(
+                meetings.filter { $0.capture != .recording && $0.hasAudio == true && $0.workingMac == thisMac }.map(
+                    \.id),
+                onlyMissing: true)
         } catch { self.error = error.localizedDescription }
         if persistsSettings {
             folderWatcher = FolderWatcher(root) { [weak self] in
@@ -598,21 +623,36 @@ import UniformTypeIdentifiers
         guard ready else { return }
         let listed = meetings.map { (id: $0.id, folder: $0.folderName ?? $0.id.uuidString) }
         var reloaded = 0
+        var refused = 0
         for (meeting, date) in await repository.loadChanged(listed) {
             let id = meeting.id
             let open = selected == id && (editingNoteItem != nil || editingSegment != nil || editingTitle == id)
-            guard id != activeID, !isProcessing(id), !dirtyIDs.contains(id), !open,
-                let i = meetings.firstIndex(where: { $0.id == id })
-            else { continue }
-            // Each Mac counts its own saves: the higher count goes on, so this Mac's next save is not taken as stale.
-            var meeting = meeting
-            meeting.revision = max(meeting.revision, meetings[i].revision, revisions[id] ?? 0)
+            guard let i = meetings.firstIndex(where: { $0.id == id }) else { continue }
+            let here = max(meetings[i].revision, revisions[id] ?? 0)
+            guard id != activeID, !isProcessing(id), !dirtyIDs.contains(id), !open else {
+                // This Mac's version is kept and its next save goes over the other's: counted past it, so that the
+                // other Mac does not refuse that save as an older version.
+                revisions[id] = max(here, meeting.revision)
+                continue
+            }
+            // Saved fewer times than this Mac's, the version was written from a copy that was behind it, as on a Mac
+            // that had not synced yet: taken in, it would undo what was done since. This Mac's goes back over it.
+            guard meeting.revision >= here else {
+                await repository.markSeen(id, at: date)
+                try? await checkpoint(id)
+                refused += 1
+                continue
+            }
             meetings[i] = meeting
             revisions[id] = meeting.revision
             await repository.markSeen(id, at: date)
+            await repository.keepCopy(meeting)
             reloaded += 1
         }
-        if reloaded > 0 { status = reloaded == 1 ? "ほかで更新された会議を読み込み直しました" : "ほかで更新された会議を\(reloaded)件読み込み直しました" }
+        if refused > 0 { status = "ほかから届いた古い版の会議は取り込まず、この Mac の版を保存し直しました" }
+        if reloaded > 0 && refused == 0 {
+            status = reloaded == 1 ? "ほかで更新された会議を読み込み直しました" : "ほかで更新された会議を\(reloaded)件読み込み直しました"
+        }
     }
     /// A meeting changed on another Mac while it was open for editing here was left as it was; once the edit closes,
     /// unless it changed the meeting (whose next save then goes over the other), the change is taken in.
@@ -655,6 +695,30 @@ import UniformTypeIdentifiers
         meetings = (meetings + added).sorted { $0.date > $1.date }
         await repository.writeMissingDocuments(added)
         status = added.count == 1 ? "「\(added[0].title)」を読み込みました" : "会議を\(added.count)件読み込みました"
+    }
+    /// Marks the meeting as this Mac's to record or process, so that after a crash or a quit only this Mac takes up
+    /// what was left unfinished.
+    private func claim(_ id: UUID) {
+        guard meetings.first(where: { $0.id == id })?.workingMac != thisMac else { return }
+        change(id) { $0.workingMac = thisMac }
+    }
+    /// This Mac's name in the meetings, from its hardware ID: settings carried to another Mac (by Migration Assistant)
+    /// do not make the two the same Mac. Hashed, so the ID itself is not written into shared files.
+    private static func machineID() -> String? {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPlatformExpertDevice"))
+        guard service != 0 else { return nil }
+        defer { IOObjectRelease(service) }
+        guard
+            let uuid = IORegistryEntryCreateCFProperty(service, kIOPlatformUUIDKey as CFString, kCFAllocatorDefault, 0)?
+                .takeRetainedValue() as? String
+        else { return nil }
+        return SHA256.hash(data: Data(("ギジログ:" + uuid).utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+    /// Where this Mac keeps its own copy of each meeting, outside the save location (see MeetingRepository).
+    private static var copies: URL {
+        (FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support"))
+            .appendingPathComponent("Gijilog/Meetings")
     }
     func discoverJobs(_ id: UUID) async throws {
         let path = folder(id)
@@ -799,6 +863,7 @@ import UniformTypeIdentifiers
         selected = id
         activeID = id
         captureInputID = microphone.isEmpty ? AVCaptureDevice.default(for: .audio)?.uniqueID : microphone
+        claim(id)
         do {
             try await checkpoint(id)
             pipeline.resume(id, key: key)
@@ -934,6 +999,7 @@ import UniformTypeIdentifiers
                 meeting.finalReviewPending == true, !meeting.segments.isEmpty,
                 meeting.jobs.allSatisfy({ $0.state == .completed })
             {
+                claim(id)
                 try await checkpoint(id)
                 pipeline.resume(id, key: key)
                 pipeline.requestSummary(id, force: true)
@@ -979,6 +1045,7 @@ import UniformTypeIdentifiers
                 }
                 meeting.status = "録音済み・未処理を再開中"
             }
+            claim(id)
             try await checkpoint(id)
             pipeline.resume(id, key: key)
             pipeline.requestSummary(id, force: true)
@@ -1002,6 +1069,7 @@ import UniformTypeIdentifiers
             $0.settings = settings
             $0.status = "録音済み・議事録を仕上げ中"
         }
+        claim(id)
         do {
             try await checkpoint(id)
             pipeline.resume(id, key: key)
@@ -1058,6 +1126,7 @@ import UniformTypeIdentifiers
             return
         }
         var meeting = Meeting(title: title)
+        meeting.workingMac = thisMac
         meeting.date = date
         meeting.folderName = folderName
         meeting.settings = settings
@@ -1183,6 +1252,7 @@ import UniformTypeIdentifiers
                 meeting.jobs[i].retryAfter = nil
             }
         }
+        claim(id)
         pipeline.resume(id, key: key)
     }
     func isProcessing(_ id: UUID) -> Bool { preparingIDs.contains(id) || pipeline.isProcessing(id) }

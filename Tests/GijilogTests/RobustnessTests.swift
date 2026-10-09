@@ -105,6 +105,7 @@ extension ProcessingTests {
         let store = Store(root: root, loadSettings: false)
         var meeting = Meeting(title: "settled")
         meeting.settings = SessionSettings()
+        meeting.workingMac = store.thisMac
         meeting.capture = .stopped
         meeting.hasAudio = false
         meeting.status = "録音なし"
@@ -117,6 +118,24 @@ extension ProcessingTests {
         try Self.check(
             restarted.meetings[0].status == "録音なし" && saved.revision == 1,
             "a finished meeting without minutes is not recovered or rewritten on every launch")
+        // A recording under way on another Mac sharing the save location, as an old copy may show it, is that Mac's
+        // to finish: it is neither marked interrupted nor processed here, nor written.
+        var elsewhere = Meeting(title: "ほかの Mac で録音中")
+        elsewhere.settings = SessionSettings()
+        elsewhere.workingMac = "another Mac"
+        elsewhere.jobs = [TranscriptionJob(id: "j", filename: "chunks/a.caf", offset: 0, source: "マイク")]
+        let owner = Store(root: root.appendingPathComponent("shared"), loadSettings: false)
+        owner.meetings = [elsewhere]
+        try await owner.checkpoint(elsewhere.id)
+        let here = Store(root: owner.root, loadSettings: false)
+        here.key = "TEST"
+        await here.recover()
+        try await here.waitUntilIdle()
+        let left = try here.savedMeeting(elsewhere.id)
+        try Self.check(
+            here.meetings[0].capture == .recording && left.capture == .recording && left.revision == 1
+                && left.jobs.map(\.state) == [.pending],
+            "another Mac's unfinished recording is left to it")
     }
     func testExportHasOneTitleHeading() throws {
         var meeting = Meeting(title: "週次定例\n10/3")

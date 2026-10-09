@@ -94,6 +94,7 @@ extension ProcessingTests {
         let meter = QueueMeter()
         var meeting = Meeting(title: "budget")
         meeting.settings = SessionSettings()
+        meeting.workingMac = store.thisMac
         meeting.jobs = [
             TranscriptionJob(id: "transient", filename: "transient.caf", offset: 0, source: "マイク"),
             TranscriptionJob(id: "auth", filename: "auth.caf", offset: 1, source: "マイク"),
@@ -119,6 +120,7 @@ extension ProcessingTests {
         restored.key = "TEST"  // Recovery resumes cloud work only when a key is saved.
         var interrupted = Meeting(title: "missing")
         interrupted.settings = SessionSettings()
+        interrupted.workingMac = restored.thisMac
         restored.meetings = [interrupted]
         try await restored.checkpoint(interrupted.id)
         let folder = restored.folder(interrupted.id)
@@ -311,6 +313,7 @@ extension ProcessingTests {
         let store = Store(root: root.appendingPathComponent("meetings"), loadSettings: false)
         var meeting = Meeting(title: "recover")
         meeting.settings = SessionSettings()
+        meeting.workingMac = store.thisMac
         meeting.capture = .stopped
         meeting.jobs = [
             TranscriptionJob(id: "done", filename: "chunks/done.caf", offset: 0, source: "マイク", state: .completed),

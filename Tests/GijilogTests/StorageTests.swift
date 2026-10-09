@@ -283,10 +283,11 @@ extension ProcessingTests {
         }
         let file = store.folder(meeting.id).appendingPathComponent("meeting.json")
         var later = Date().addingTimeInterval(5)
-        func writeElsewhere(_ title: String) throws {
+        func writeElsewhere(_ title: String, behind: Bool = false) throws {
             var other = try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: file))
             other.title = title
-            other.revision = 1  // The other Mac counts its own saves.
+            // The other Mac's save counts on from the version it read; one that had not synced read an older one.
+            other.revision = behind ? 1 : other.revision + 1
             try JSONEncoder().encode(other).write(to: file)
             try FileManager.default.setAttributes([.modificationDate: later], ofItemAtPath: file.path)
             later.addTimeInterval(5)
@@ -315,16 +316,68 @@ extension ProcessingTests {
         try Self.check(afterReload == "こちらで直した", "a change made here afterwards is saved, not refused as stale")
         store.change(meeting.id) { $0.title = "まだ保存していない" }
         try writeElsewhere("同時に直した")
+        let theirs = try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: file)).revision
         await store.reloadChangedMeetings()
         await store.flushCheckpoints()
         let together = try saved()
         try Self.check(
             store.meetings[0].title == "まだ保存していない" && together == "まだ保存していない",
             "a change here not yet saved wins over one made elsewhere")
+        let ours = try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: file)).revision
+        try Self.check(ours > theirs, "and is saved as the later version, which the other Mac then takes in")
+        // A version written on a Mac whose copy was behind would undo what was done since: it is not taken in, and
+        // this Mac's goes back over it.
+        try writeElsewhere("同期の遅れた古い版", behind: true)
+        await store.reloadChangedMeetings()
+        let afterStale = try saved()
+        try Self.check(
+            store.meetings[0].title == "まだ保存していない" && afterStale == "まだ保存していない",
+            "an older version from another Mac is refused, and this Mac's saved over it")
         try writeElsewhere("録音中に直した")
         store.activeID = meeting.id
         await store.reloadChangedMeetings()
         try Self.check(store.meetings[0].title == "まだ保存していない", "a meeting being recorded here is not replaced")
+    }
+    // A sync can bring back an older meeting.json, written on a Mac whose copy was behind. This Mac's own copy, kept
+    // outside the save location, puts its version back on the next launch; a newer file is read as it is.
+    func testThisMacsCopyOutlastsAnOlderSync() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let save = root.appendingPathComponent("save")
+        let copies = root.appendingPathComponent("copies")
+        var meeting = Meeting(title: "中長期戦略会議")
+        meeting.folderName = "2026-10-09 16.00 会議"
+        meeting.capture = .stopped
+        meeting.revision = 754
+        try await MeetingRepository(root: save, copies: copies).save(meeting)
+        let file = save.appendingPathComponent("2026-10-09 16.00 会議/meeting.json")
+        var old = meeting
+        old.title = "会議 2026/10/9 16:00"
+        old.capture = .recording
+        old.revision = 623
+        try JSONEncoder().encode(old).write(to: file)
+        let relaunched = MeetingRepository(root: save, copies: copies)
+        let (loaded, _) = try await relaunched.load()
+        let restored = await relaunched.takeRestored()
+        let onDisk = try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: file))
+        try Self.check(
+            loaded.map(\.title) == ["中長期戦略会議"] && loaded.first?.capture == .stopped
+                && restored == ["中長期戦略会議"] && onDisk.revision == 754 && onDisk.title == "中長期戦略会議",
+            "an older version brought back by sync gives way to this Mac's copy: \(loaded.map(\.title))")
+        var newer = meeting
+        newer.title = "ほかの Mac で直した"
+        newer.revision = 755
+        try JSONEncoder().encode(newer).write(to: file)
+        let (again, _) = try await MeetingRepository(root: save, copies: copies).load()
+        let (third, _) = try await MeetingRepository(root: save, copies: copies).load()
+        try Self.check(
+            again.map(\.title) == ["ほかの Mac で直した"] && third.map(\.title) == ["ほかの Mac で直した"],
+            "a newer version made elsewhere is read as it is, and becomes this Mac's copy")
+        try await MeetingRepository(root: save, copies: copies).delete(newer)
+        try Self.check(
+            !FileManager.default.fileExists(
+                atPath: copies.appendingPathComponent(meeting.id.uuidString + ".json").path),
+            "deleting a meeting deletes this Mac's copy too")
     }
     @MainActor func testSaveLocationMovesWithItsMeetings() async throws {
         let (root, _) = try fixture(seconds: 1, amplitude: 0)

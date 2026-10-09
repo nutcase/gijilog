@@ -496,6 +496,8 @@ struct MCPAccess: Identifiable, Equatable {
         let source: DispatchSourceRead
         let handler: MCPHandler
         var buffer = Data()
+        var outgoing = Data()  // Replies not yet taken by the bridge.
+        var writer: DispatchSourceWrite?  // Set while replies wait for room in the socket.
         init(source: DispatchSourceRead, handler: MCPHandler) {
             self.source = source
             self.handler = handler
@@ -577,22 +579,45 @@ struct MCPAccess: Identifiable, Equatable {
             send(reply + Data([0x0A]), to: fd)
         }
     }
+    // The connection does not wait (it takes the listener's O_NONBLOCK), and the socket holds about 8 KB: a longer
+    // reply, such as a whole meeting, goes in parts as the bridge reads them.
     private func send(_ data: Data, to fd: Int32) {
-        var sent = 0
-        let ok = data.withUnsafeBytes { buffer -> Bool in
-            guard let base = buffer.baseAddress else { return true }
-            while sent < data.count {
-                let written = write(fd, base + sent, data.count - sent)
-                if written < 0 && errno == EINTR { continue }
-                guard written > 0 else { return false }
-                sent += written
-            }
-            return true
-        }
-        if !ok { disconnect(fd) }
+        guard let client = clients[fd] else { return }
+        client.outgoing.append(data)
+        flush(fd)
     }
+    private func flush(_ fd: Int32) {
+        guard let client = clients[fd] else { return }
+        while !client.outgoing.isEmpty {
+            let written = client.outgoing.withUnsafeBytes { buffer in
+                write(fd, buffer.baseAddress, buffer.count)
+            }
+            if written > 0 {
+                client.outgoing.removeFirst(written)
+            } else if written < 0 && errno == EINTR {
+                continue
+            } else if written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)
+                && client.outgoing.count <= Self.maxOutgoing
+            {
+                if client.writer == nil {
+                    let writer = DispatchSource.makeWriteSource(fileDescriptor: fd, queue: .main)
+                    writer.setEventHandler { [weak self] in MainActor.assumeIsolated { self?.flush(fd) } }
+                    client.writer = writer
+                    writer.resume()
+                }
+                return
+            } else {
+                disconnect(fd)  // Gone, or not reading what it asked for.
+                return
+            }
+        }
+        client.writer?.cancel()
+        client.writer = nil
+    }
+    private static let maxOutgoing = 64 << 20
     private func disconnect(_ fd: Int32) {
         guard let client = clients.removeValue(forKey: fd) else { return }
+        client.writer?.cancel()
         client.source.cancel()
         close(fd)
         onConnectionsChanged?(clients.count)

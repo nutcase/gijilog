@@ -203,6 +203,9 @@ struct Meeting: Codable, Identifiable {
     // Lines corrected by hand before there were minutes to mark: the first minutes take them, if they were written
     // from the lines as they were.
     var revisedBeforeMinutes: Set<String>?
+    // The Mac that records or processes the meeting (Store.thisMac). Work left unfinished, by a crash or a quit, is
+    // taken up again only there: another Mac sharing the save location may hold an old copy of it.
+    var workingMac: String?
     init(title: String) { self.title = title }
     /// When the meeting's clock reads zero: the start of the recording, or, for a meeting recorded in parts, the
     /// moment that puts the latest part right after the earlier ones.
@@ -210,7 +213,7 @@ struct Meeting: Codable, Identifiable {
     enum CodingKeys: String, CodingKey {
         case id, title, date, segments, minutes, status, capture, settings, jobs, notes, captureError, hasAudio,
             revision, folderName, finalReviewPending, tags, agenda, corrections, clockStart, stoppedForSilence,
-            ignoredLearned, revisedBeforeMinutes
+            ignoredLearned, revisedBeforeMinutes, workingMac
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -237,6 +240,7 @@ struct Meeting: Codable, Identifiable {
         stoppedForSilence = try c.decodeIfPresent(Date.self, forKey: .stoppedForSilence)
         ignoredLearned = try c.decodeIfPresent([String].self, forKey: .ignoredLearned)
         revisedBeforeMinutes = try c.decodeIfPresent(Set<String>.self, forKey: .revisedBeforeMinutes)
+        workingMac = try c.decodeIfPresent(String.self, forKey: .workingMac)
     }
 }
 
@@ -615,11 +619,16 @@ actor MeetingRepository {
     private var deleted: Set<UUID> = []
     // When each meeting.json was last written or read here, to tell a change made elsewhere from this app's own.
     private var seen: [UUID: Date] = [:]
+    // This Mac's own copy of each meeting as it last saved or read it, kept outside the save location, where a sync
+    // cannot bring back an older version. Nil keeps none.
+    private let copies: URL?
+    private var restored: [String] = []  // Meetings put back from the copies on loading, by title.
     private func modified(_ file: URL) -> Date? {
         (try? FileManager.default.attributesOfItem(atPath: file.path))?[.modificationDate] as? Date
     }
-    init(root: URL, discard: (@Sendable (URL) throws -> Void)? = nil) {
+    init(root: URL, copies: URL? = nil, discard: (@Sendable (URL) throws -> Void)? = nil) {
         self.root = root
+        self.copies = copies
         self.discard = discard ?? { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) }
     }
     func folder(for meeting: Meeting) -> URL {
@@ -636,6 +645,7 @@ actor MeetingRepository {
         let file = folder.appendingPathComponent("meeting.json")
         try data.write(to: file, options: .atomic)
         seen[meeting.id] = modified(file)
+        keepCopy(data, of: meeting.id)
         // The readable minutes travel with the audio; they are rewritten whenever the meeting changes.
         if let document = MinutesEngine.document(meeting) {
             try Data(document.utf8).write(to: folder.appendingPathComponent(Self.documentName), options: .atomic)
@@ -654,6 +664,18 @@ actor MeetingRepository {
                 var meeting = try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: file))
                 meeting.folderName = folder.lastPathComponent
                 seen[meeting.id] = modified(file)
+                let mine = copy(of: meeting.id)
+                if var newer = mine, newer.revision > meeting.revision, newer.folderName == meeting.folderName {
+                    // Saved fewer times than this Mac's copy, the file was written from one that was behind it, as
+                    // on a Mac that had not synced yet: this Mac's version goes back in its place.
+                    newer.folderName = meeting.folderName
+                    if (try? save(newer)) != nil {
+                        meeting = newer
+                        restored.append(meeting.title)
+                    }
+                } else if mine?.revision != meeting.revision {
+                    keepCopy(meeting)
+                }
                 meetings.append(meeting)
             } catch {
                 errors.append("\(folder.lastPathComponent): \(error.localizedDescription)")
@@ -696,6 +718,26 @@ actor MeetingRepository {
         }
     }
     func markSeen(_ id: UUID, at date: Date) { seen[id] = date }
+    /// The meetings the last load put back from this Mac's copies, by title; asked once.
+    func takeRestored() -> [String] {
+        defer { restored = [] }
+        return restored
+    }
+    /// Keeps this Mac's copy of a meeting it read, such as one changed on another Mac and taken in.
+    func keepCopy(_ meeting: Meeting) {
+        guard copies != nil, let data = try? JSONEncoder().encode(meeting) else { return }
+        keepCopy(data, of: meeting.id)
+    }
+    private func keepCopy(_ data: Data, of id: UUID) {
+        guard let copies else { return }
+        try? FileManager.default.createDirectory(at: copies, withIntermediateDirectories: true)
+        try? data.write(to: copies.appendingPathComponent(id.uuidString + ".json"), options: .atomic)
+    }
+    private func copy(of id: UUID) -> Meeting? {
+        guard let copies, let data = try? Data(contentsOf: copies.appendingPathComponent(id.uuidString + ".json"))
+        else { return nil }
+        return try? JSONDecoder().decode(Meeting.self, from: data)
+    }
     // Meetings saved before 議事録.md existed get one when they are next loaded.
     func writeMissingDocuments(_ meetings: [Meeting]) {
         for meeting in meetings {
@@ -715,6 +757,9 @@ actor MeetingRepository {
     func delete(_ meeting: Meeting) throws {
         let folder = folder(for: meeting)
         if FileManager.default.fileExists(atPath: folder.path) { try discard(folder) }
+        if let copies {
+            try? FileManager.default.removeItem(at: copies.appendingPathComponent(meeting.id.uuidString + ".json"))
+        }
         deleted.insert(meeting.id)
         savedRevisions[meeting.id] = nil
     }

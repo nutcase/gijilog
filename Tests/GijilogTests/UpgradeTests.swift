@@ -65,6 +65,7 @@ extension ProcessingTests {
         let save = root.appendingPathComponent("save")
         var meeting = Meeting(title: "強制終了")  // Saved while still recording.
         meeting.settings = SessionSettings()
+        meeting.workingMac = Store.unsavedMac  // Recorded on this Mac.
         meeting.folderName = "2026-10-03 17.26 強制終了"
         let folder = save.appendingPathComponent(meeting.folderName ?? "")
         try FileManager.default.createDirectory(
