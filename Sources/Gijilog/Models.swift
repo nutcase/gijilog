@@ -141,6 +141,14 @@ struct MinutesState: Codable, Sendable {
                 $0.state != .cancelled && (!revised.isDisjoint(with: $0.evidence) || unchecked.contains($0.id))
             }.map(\.id))
     }
+    /// Whether writing the minutes again would change an item to check: one the AI wrote cites a line corrected or
+    /// deleted by hand. Items edited by hand are kept as they are, so for them only checking clears the mark.
+    var updateTakesInCorrections: Bool {
+        let revised = revisedSegmentIDs ?? []
+        guard !revised.isEmpty else { return false }
+        let shown = content.summary + content.decisions + content.unresolved + content.actions
+        return shown.contains { $0.state != .cancelled && $0.edited != true && !revised.isDisjoint(with: $0.evidence) }
+    }
     /// What carries over when the whole recording is processed again: the items edited by hand, and those deleted.
     /// The transcript is written again with new line IDs, so an edited item still to check is marked by its own ID.
     /// Nil when nothing carries over.

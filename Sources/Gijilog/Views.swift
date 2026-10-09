@@ -1352,7 +1352,9 @@ struct MinutesSections: View {
         let content = notes.content
         let revised = editable ? notes.itemsCitingRevisedLines : []
         VStack(alignment: .leading, spacing: 30) {
-            if !revised.isEmpty, let meetingID { RevisionNotice(meetingID: meetingID, count: revised.count) }
+            if !revised.isEmpty, let meetingID {
+                RevisionNotice(meetingID: meetingID, count: revised.count, updates: notes.updateTakesInCorrections)
+            }
             if content.summary.contains(where: { !Set($0.evidence).isDisjoint(with: latest) }) {
                 HStack(spacing: 6) {
                     FreshSwatch()
@@ -1388,24 +1390,38 @@ struct MinutesSections: View {
     }
 }
 // Shown when transcript lines the minutes cite were corrected or deleted by hand: the minutes can be written again
-// from the corrected transcript (hand-edited items stay), or kept as they are.
+// from the corrected transcript, or kept as they are. Items edited by hand are kept by an update, so once only they
+// are left to check, updating is not offered: it would leave them, and the notice, as they were.
 struct RevisionNotice: View {
     @EnvironmentObject var store: Store
     let meetingID: UUID
     let count: Int
+    let updates: Bool  // Writing the minutes again would change some of the marked items.
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Palette.yamabuki)
-                Text("文字起こしで直した発言をもとにした項目が\(count)件あります（「要確認」の印）。")
-                    .font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                Text(
+                    updates
+                        ? "文字起こしで直した発言をもとにした項目が\(count)件あります（「要確認」の印）。"
+                        : "手で直した項目のうち\(count)件は、もとにした発言を文字起こしで直しています（「要確認」の印）。"
+                )
+                .font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
             }
-            Text("直した文字起こしから議事録を作り直すと反映されます。手で直した項目はそのまま残ります。")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(
+                updates
+                    ? "直した文字起こしから議事録を作り直すと反映されます。手で直した項目はそのまま残ります。"
+                    : "手で直した項目は、議事録を更新しても書き換わりません。今も合っているか確かめてください。"
+            )
+            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
-                Button("訂正を反映して更新") { Task { await store.refineMinutes(meetingID) } }
-                    .disabled(!store.hasKey)
-                Button("このままにする") { store.keepMinutesDespiteRevisions(meetingID) }
+                if updates {
+                    Button("訂正を反映して更新") { Task { await store.refineMinutes(meetingID) } }
+                        .disabled(!store.hasKey)
+                    Button("このままにする") { store.keepMinutesDespiteRevisions(meetingID) }
+                } else {
+                    Button("確認済みにする") { store.keepMinutesDespiteRevisions(meetingID) }
+                }
             }
             .controlSize(.small)
         }

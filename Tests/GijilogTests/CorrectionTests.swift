@@ -419,8 +419,9 @@ extension ProcessingTests {
             "a blank edit is ignored, and an invented line can be deleted")
         let revised = try Self.require(store.meetings[0].notes, "notes")
         try Self.check(
-            revised.revisedSegmentIDs == ["a", "c"] && revised.itemsCitingRevisedLines == ["s1"],
-            "a corrected or deleted line marks the minutes citing it for checking")
+            revised.revisedSegmentIDs == ["a", "c"] && revised.itemsCitingRevisedLines == ["s1"]
+                && revised.updateTakesInCorrections,
+            "a corrected or deleted line marks the minutes citing it for checking, which an update can write again")
         let rewritten = try MinutesEngine.rewrite(
             revised, delta: NotesDelta(summary: [NoteItem(id: "", text: "モリバス：価格を決める", evidence: ["a"])]),
             transcript: store.meetings[0].segments)
@@ -441,7 +442,15 @@ extension ProcessingTests {
         let again = try MinutesEngine.rewrite(
             keptAsEdited, delta: NotesDelta(summary: [NoteItem(id: "", text: "モリバス：価格を決める", evidence: ["a"])]),
             transcript: store.meetings[0].segments)
-        try Self.check(again.itemsCitingRevisedLines == ["d1"], "until someone checks it, through another rewrite")
+        try Self.check(
+            again.itemsCitingRevisedLines == ["d1"] && !keptAsEdited.updateTakesInCorrections
+                && !again.updateTakesInCorrections,
+            "until someone checks it, through another rewrite, so no update is offered for it")
+        var onlyHandEdited = revised
+        onlyHandEdited.content.summary = [NoteItem(id: "s1", text: "森バス：価格を決める", evidence: ["a"], edited: true)]
+        try Self.check(
+            onlyHandEdited.itemsCitingRevisedLines == ["s1"] && !onlyHandEdited.updateTakesInCorrections,
+            "nor for a corrected line cited only by items edited by hand, which an update keeps as they are")
         // Processing the whole recording again writes a new transcript with new line IDs: an edited item still to
         // check carries over marked by its own ID, through the rewrite after it, and the rest is written again.
         var beforeReprocess = withHandEdit
