@@ -239,8 +239,9 @@ import UniformTypeIdentifiers
     private var observers: [NSObjectProtocol] = []
     // Every change is written by a coalesced checkpoint; lifecycle steps also call checkpoint() directly.
     // Revisions live here rather than in the published meetings so a save does not redraw the UI.
-    private var dirtyIDs: Set<UUID> = []
-    private var revisions: [UUID: UInt64] = [:]
+    var dirtyIDs: Set<UUID> = []
+    var revisions: [UUID: UInt64] = [:]
+    var savedCounts: [UUID: SaveCounts] = [:]  // Of the version this Mac last saved or took in (see Sync.swift).
     private var savedSizes: [UUID: Int] = [:]
     private var flushTask: Task<Void, Never>?
     private var writesInFlight = 0
@@ -494,8 +495,13 @@ import UniformTypeIdentifiers
         guard var meeting = meetings.first(where: { $0.id == id }) else { return }
         dirtyIDs.remove(id)  // Changes made while this write is in flight mark the meeting dirty again.
         let revision = max(revisions[id] ?? 0, meeting.revision) + 1
+        let counts = (savedCounts[id] ?? SaveCounts.of(meeting)).adding(thisMac)
         revisions[id] = revision
+        savedCounts[id] = counts
         meeting.revision = revision
+        meeting.saveCounts = counts
+        meeting.schemaVersion = max(meeting.schemaVersion, Meeting.schema)  // A newer one is not saved (see save).
+        meeting.savedOn = Self.computerName
         writesInFlight += 1
         defer { writesInFlight -= 1 }
         do {
@@ -539,61 +545,26 @@ import UniformTypeIdentifiers
                 status = "同期で古い版に戻っていた会議を、この Mac の版に戻しました：" + restored.map { "「\($0)」" }.joined()
             }
             meetings = saved
-            for meeting in saved { revisions[meeting.id] = meeting.revision }
+            for meeting in saved {
+                revisions[meeting.id] = meeting.revision
+                savedCounts[meeting.id] = SaveCounts.of(meeting)
+            }
+            // Changed both in the save location and in this Mac's copy while the app was not running: this Mac's
+            // stays, and the other is kept aside.
+            for (other, found) in await repository.takeConflicts() {
+                guard let mine = meetings.first(where: { $0.id == other.id }) else { continue }
+                await keepAside(other, found: found, here: SaveCounts.of(mine), hereRevision: mine.revision)
+            }
             await repository.writeMissingDocuments(saved)
             selected = meetings.first?.id
             if !failures.isEmpty { error = "一部の会議を読み込めませんでした。保存場所のデータは保持しています。\n" + failures.joined(separator: "\n") }
             for meeting in saved {
-                let id = meeting.id
                 // Work left unfinished elsewhere (a recording under way on another Mac, or its processing) is that
                 // Mac's to finish: taken up here, it would be written over from whatever copy sync had brought.
-                // Older files name no Mac, and any Mac may hold an old copy of them, so they are left alone too.
+                // Older files name no Mac, and any Mac may hold an old copy of them, so they are left alone too; the
+                // meeting offers to continue on this Mac instead (continueHere).
                 guard meeting.workingMac == thisMac else { continue }
-                let interrupted = meeting.capture == .recording
-                if interrupted || meeting.jobs.contains(where: { $0.state == .running }) {
-                    change(id) { m in
-                        if interrupted {
-                            m.capture = .interrupted
-                            m.status = "録音中断・未処理を復旧中"
-                        }
-                        for i in m.jobs.indices where m.jobs[i].state == .running {
-                            m.jobs[i].state = .pending
-                            m.jobs[i].retryAfter = nil
-                        }
-                    }
-                }
-                if meeting.settings != nil {
-                    // Settled meetings are left untouched; only unfinished work, or audio never inspected, is recovered.
-                    let needsRecovery =
-                        interrupted || (meeting.notes == nil && meeting.hasAudio == nil)
-                        || meeting.finalReviewPending == true
-                        || meeting.jobs.contains { $0.state == .pending || $0.state == .running }
-                        || !MinutesEngine.batch(meeting.segments, state: meeting.notes ?? MinutesState()).isEmpty
-                    guard needsRecovery else { continue }
-                    do {
-                        if interrupted || meeting.finalReviewPending != true || meeting.hasAudio == nil
-                            || meeting.jobs.contains(where: { $0.state == .pending || $0.state == .running })
-                        {
-                            try await discoverJobs(id)
-                        }
-                        if hasKey {
-                            try await checkpoint(id)
-                            pipeline.resume(id, key: key)
-                        } else {
-                            change(id) { $0.status = "録音済み・APIキー設定後に未処理を再開" }
-                            try await checkpoint(id)
-                        }
-                    } catch {
-                        change(id) {
-                            $0.status = "録音済み・復旧確認が必要"
-                            $0.captureError = error.localizedDescription
-                        }
-                        try? await checkpoint(id)
-                        self.error = error.localizedDescription
-                    }
-                } else if interrupted {
-                    try await checkpoint(id)
-                }
+                try await takeUpUnfinishedWork(meeting)
             }
             // The first launch that learns misheard words takes in the fixes already made in the meetings, joined with
             // whatever the list has (another Mac may have started it).
@@ -618,44 +589,6 @@ import UniformTypeIdentifiers
             }
         }
     }
-    /// Takes in listed meetings changed in the save location by something else, such as the same meeting edited on
-    /// another Mac and synced. A meeting being recorded, processed or edited here, or with changes not yet saved,
-    /// keeps this Mac's version, which its next save writes over the other.
-    func reloadChangedMeetings() async {
-        guard ready else { return }
-        let listed = meetings.map { (id: $0.id, folder: $0.folderName ?? $0.id.uuidString) }
-        var reloaded = 0
-        var refused = 0
-        for (meeting, date) in await repository.loadChanged(listed) {
-            let id = meeting.id
-            let open = selected == id && (editingNoteItem != nil || editingSegment != nil || editingTitle == id)
-            guard let i = meetings.firstIndex(where: { $0.id == id }) else { continue }
-            let here = max(meetings[i].revision, revisions[id] ?? 0)
-            guard id != activeID, !isProcessing(id), !dirtyIDs.contains(id), !open else {
-                // This Mac's version is kept and its next save goes over the other's: counted past it, so that the
-                // other Mac does not refuse that save as an older version.
-                revisions[id] = max(here, meeting.revision)
-                continue
-            }
-            // Saved fewer times than this Mac's, the version was written from a copy that was behind it, as on a Mac
-            // that had not synced yet: taken in, it would undo what was done since. This Mac's goes back over it.
-            guard meeting.revision >= here else {
-                await repository.markSeen(id, at: date)
-                try? await checkpoint(id)
-                refused += 1
-                continue
-            }
-            meetings[i] = meeting
-            revisions[id] = meeting.revision
-            await repository.markSeen(id, at: date)
-            await repository.keepCopy(meeting)
-            reloaded += 1
-        }
-        if refused > 0 { status = "ほかから届いた古い版の会議は取り込まず、この Mac の版を保存し直しました" }
-        if reloaded > 0 && refused == 0 {
-            status = reloaded == 1 ? "ほかで更新された会議を読み込み直しました" : "ほかで更新された会議を\(reloaded)件読み込み直しました"
-        }
-    }
     /// A meeting changed on another Mac while it was open for editing here was left as it was; once the edit closes,
     /// unless it changed the meeting (whose next save then goes over the other), the change is taken in.
     private func takeInChangesLeftWhileEditing() {
@@ -677,32 +610,59 @@ import UniformTypeIdentifiers
         if file.terms != here.terms { vocabulary = file.terms.joined(separator: "\n") }
         if file.corrections != here.corrections { learnedWords = LearnedWords.format(file.corrections) }
     }
-    /// Lists meeting folders that appeared in the save location while the app runs, such as ones synced from another
-    /// Mac or restored from a backup, without a restart. They are shown as they are: nothing is processed for them
-    /// here, and a meeting already listed, or a copy of one, is not loaded again.
-    func loadAddedMeetings() async {
-        guard ready else { return }  // Loading at launch or after a move reads every folder anyway.
-        let known = Set(meetings.map { $0.folderName ?? $0.id.uuidString })
-        let found = await repository.loadAdded(skipping: known)
-        // Checked against the list as it is after the read, not before it. A sync arrives as a burst of changes and
-        // each starts a load of its own; one that began while another was reading found the same meeting unlisted,
-        // and both added it.
-        let listed = Set(meetings.map(\.id))
-        var added: [Meeting] = []
-        for meeting in found where !listed.contains(meeting.id) && !added.contains(where: { $0.id == meeting.id }) {
-            added.append(meeting)
+    /// Takes up what a quit or a crash left unfinished in a meeting this Mac records or processes: a recording
+    /// stopped short is marked interrupted, and its transcription and minutes are resumed.
+    func takeUpUnfinishedWork(_ meeting: Meeting) async throws {
+        let id = meeting.id
+        let interrupted = meeting.capture == .recording
+        if interrupted || meeting.jobs.contains(where: { $0.state == .running }) {
+            change(id) { m in
+                if interrupted {
+                    m.capture = .interrupted
+                    m.status = "録音中断・未処理を復旧中"
+                }
+                for i in m.jobs.indices where m.jobs[i].state == .running {
+                    m.jobs[i].state = .pending
+                    m.jobs[i].retryAfter = nil
+                }
+            }
         }
-        guard !added.isEmpty else { return }
-        for meeting in added { revisions[meeting.id] = meeting.revision }
-        meetings = (meetings + added).sorted { $0.date > $1.date }
-        // Only accepted meetings get a copy: a duplicate folder must not replace the listed meeting's backup.
-        for meeting in added { await repository.keepCopy(meeting) }
-        await repository.writeMissingDocuments(added)
-        status = added.count == 1 ? "「\(added[0].title)」を読み込みました" : "会議を\(added.count)件読み込みました"
+        if meeting.settings != nil {
+            // Settled meetings are left untouched; only unfinished work, or audio never inspected, is recovered.
+            let needsRecovery =
+                interrupted || (meeting.notes == nil && meeting.hasAudio == nil)
+                || meeting.finalReviewPending == true
+                || meeting.jobs.contains { $0.state == .pending || $0.state == .running }
+                || !MinutesEngine.batch(meeting.segments, state: meeting.notes ?? MinutesState()).isEmpty
+            guard needsRecovery else { return }
+            do {
+                if interrupted || meeting.finalReviewPending != true || meeting.hasAudio == nil
+                    || meeting.jobs.contains(where: { $0.state == .pending || $0.state == .running })
+                {
+                    try await discoverJobs(id)
+                }
+                if hasKey {
+                    try await checkpoint(id)
+                    pipeline.resume(id, key: key)
+                } else {
+                    change(id) { $0.status = "録音済み・APIキー設定後に未処理を再開" }
+                    try await checkpoint(id)
+                }
+            } catch {
+                change(id) {
+                    $0.status = "録音済み・復旧確認が必要"
+                    $0.captureError = error.localizedDescription
+                }
+                try? await checkpoint(id)
+                self.error = error.localizedDescription
+            }
+        } else if interrupted {
+            try await checkpoint(id)
+        }
     }
     /// Marks the meeting as this Mac's to record or process, so that after a crash or a quit only this Mac takes up
     /// what was left unfinished.
-    private func claim(_ id: UUID) {
+    func claim(_ id: UUID) {
         guard meetings.first(where: { $0.id == id })?.workingMac != thisMac else { return }
         change(id) { $0.workingMac = thisMac }
     }

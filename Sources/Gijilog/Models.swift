@@ -206,6 +206,15 @@ struct Meeting: Codable, Identifiable {
     // The Mac that records or processes the meeting (Store.thisMac). Work left unfinished, by a crash or a quit, is
     // taken up again only there: another Mac sharing the save location may hold an old copy of it.
     var workingMac: String?
+    // Telling versions apart when Macs share the save location (see Sync.swift): each Mac's save count, the Mac that
+    // saved this version, and a version kept aside when the meeting was changed on two Macs at once.
+    var saveCounts: SaveCounts?
+    var savedOn: String?
+    var conflict: MeetingConflict?
+    // The form of meeting.json. 1 is everything before 2, which counts saves per Mac. A file in a form newer than
+    // this version of ギジログ knows is read but not written, so the fields it does not know are not lost.
+    var schemaVersion = Meeting.schema
+    static let schema = 2
     init(title: String) { self.title = title }
     /// When the meeting's clock reads zero: the start of the recording, or, for a meeting recorded in parts, the
     /// moment that puts the latest part right after the earlier ones.
@@ -213,7 +222,7 @@ struct Meeting: Codable, Identifiable {
     enum CodingKeys: String, CodingKey {
         case id, title, date, segments, minutes, status, capture, settings, jobs, notes, captureError, hasAudio,
             revision, folderName, finalReviewPending, tags, agenda, corrections, clockStart, stoppedForSilence,
-            ignoredLearned, revisedBeforeMinutes, workingMac
+            ignoredLearned, revisedBeforeMinutes, workingMac, saveCounts, savedOn, conflict, schemaVersion
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -241,6 +250,10 @@ struct Meeting: Codable, Identifiable {
         ignoredLearned = try c.decodeIfPresent([String].self, forKey: .ignoredLearned)
         revisedBeforeMinutes = try c.decodeIfPresent(Set<String>.self, forKey: .revisedBeforeMinutes)
         workingMac = try c.decodeIfPresent(String.self, forKey: .workingMac)
+        saveCounts = try c.decodeIfPresent(SaveCounts.self, forKey: .saveCounts)
+        savedOn = try c.decodeIfPresent(String.self, forKey: .savedOn)
+        conflict = try c.decodeIfPresent(MeetingConflict.self, forKey: .conflict)
+        schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
     }
 }
 
@@ -623,6 +636,9 @@ actor MeetingRepository {
     // cannot bring back an older version. Nil keeps none.
     private let copies: URL?
     private var restored: [String] = []  // Meetings put back from the copies on loading, by title.
+    // Versions found on loading that were changed both there and in this Mac's copy, with when they were found.
+    private var conflicts: [(Meeting, Date)] = []
+    static let asideName = "meeting.conflict.json"  // The version kept aside when two Macs changed a meeting.
     private func modified(_ file: URL) -> Date? {
         (try? FileManager.default.attributesOfItem(atPath: file.path))?[.modificationDate] as? Date
     }
@@ -638,6 +654,9 @@ actor MeetingRepository {
     @discardableResult func save(_ meeting: Meeting) throws -> Int {
         guard !deleted.contains(meeting.id), meeting.revision >= savedRevisions[meeting.id, default: 0] else {
             return 0
+        }
+        guard meeting.schemaVersion <= Meeting.schema else {
+            throw AppError.message("「\(meeting.title)」は新しいギジログで保存された会議のため、この版では保存しません。ギジログを更新してください。")
         }
         let folder = folder(for: meeting)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -664,16 +683,25 @@ actor MeetingRepository {
                 var meeting = try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: file))
                 meeting.folderName = folder.lastPathComponent
                 seen[meeting.id] = modified(file)
-                let mine = copy(of: meeting.id)
-                if var newer = mine, newer.revision > meeting.revision, newer.folderName == meeting.folderName {
-                    // Saved fewer times than this Mac's copy, the file was written from one that was behind it, as
-                    // on a Mac that had not synced yet: this Mac's version goes back in its place.
+                let mine = copy(of: meeting.id).flatMap { $0.folderName == meeting.folderName ? $0 : nil }
+                let verdict = mine.map {
+                    SyncVerdict.of(meeting, here: SaveCounts.of($0), hereRevision: $0.revision)
+                }
+                if var newer = mine, verdict == .older {
+                    // The file lacks saves this Mac's copy has, written from one that was behind it, as on a Mac
+                    // that had not synced yet: this Mac's version goes back in its place.
                     newer.folderName = meeting.folderName
                     if (try? save(newer)) != nil {
                         meeting = newer
                         restored.append(meeting.title)
                     }
-                } else if mine?.revision != meeting.revision {
+                } else if var mine, verdict == .both {
+                    // Changed in both while the app was not running: this Mac's version is shown, and the Store keeps
+                    // the file's aside.
+                    conflicts.append((meeting, Date()))
+                    mine.folderName = meeting.folderName
+                    meeting = mine
+                } else if verdict != .same {
                     keepCopy(meeting)
                 }
                 meetings.append(meeting)
@@ -718,6 +746,26 @@ actor MeetingRepository {
         }
     }
     func markSeen(_ id: UUID, at date: Date) { seen[id] = date }
+    /// The versions the last load found changed both in the save location and in this Mac's copies; asked once.
+    func takeConflicts() -> [(Meeting, Date)] {
+        defer { conflicts = [] }
+        return conflicts
+    }
+    /// Keeps a version of the meeting aside, beside meeting.json, in place of any kept before.
+    func keepAside(_ meeting: Meeting) throws {
+        let folder = folder(for: meeting)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try JSONEncoder().encode(meeting).write(to: folder.appendingPathComponent(Self.asideName), options: .atomic)
+    }
+    func versionAside(of meeting: Meeting) -> Meeting? {
+        guard let data = try? Data(contentsOf: folder(for: meeting).appendingPathComponent(Self.asideName)) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(Meeting.self, from: data)
+    }
+    func removeAside(of meeting: Meeting) {
+        try? FileManager.default.removeItem(at: folder(for: meeting).appendingPathComponent(Self.asideName))
+    }
     /// The meetings the last load put back from this Mac's copies, by title; asked once.
     func takeRestored() -> [String] {
         defer { restored = [] }

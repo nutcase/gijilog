@@ -1149,6 +1149,21 @@ struct MinutesDesk: View {
     }
     @ViewBuilder private var notices: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let conflict = meeting.conflict { ConflictNotice(meetingID: meeting.id, conflict: conflict) }
+            if meeting.workingMac != store.thisMac && meeting.hasUnfinishedWork && meeting.id != store.activeID
+                && !store.isProcessing(meeting.id)
+            {
+                // Another Mac's to finish (see Store.recover); it may never come back to it.
+                Notice(
+                    text: (meeting.workingMac == nil
+                        ? "この会議は、どの Mac で録音・処理したかの記録がない以前の形式で、処理が途中のままです。"
+                        : meeting.capture == .recording
+                            ? "この会議は、ほかの Mac で録音中か、その Mac で録音が途中で止まっています。"
+                            : "この会議は、ほかの Mac で処理していて、まだ途中です。その Mac でギジログを開くと続きを処理します。")
+                        + "その Mac で続けないときは、この Mac で引き取れます。",
+                    actionTitle: store.hasKey ? "この Mac で続ける" : nil,
+                    action: { Task { await store.continueHere(meeting.id) } })
+            }
             if let message = meeting.captureError { Notice(text: message) }
             if let stopped = meeting.stoppedForSilence, meeting.capture != .recording {
                 Notice(
@@ -1387,6 +1402,36 @@ struct MinutesSections: View {
     private func edit(_ part: NotePart) -> NoteEditing? {
         guard editable, let meetingID else { return nil }
         return NoteEditing(meetingID: meetingID, part: part)
+    }
+}
+// Shown when the meeting was changed on two Macs at once: the version shown is kept, the other aside, and either can
+// be put in place of the other until one is let go.
+struct ConflictNotice: View {
+    @EnvironmentObject var store: Store
+    let meetingID: UUID
+    let conflict: MeetingConflict
+    var body: some View {
+        // The version aside may be this Mac's own, when the other Mac's was kept in its place.
+        let mac =
+            conflict.savedOn == nil
+            ? "もう一方の Mac" : conflict.savedOn == Store.computerName ? "この Mac" : "「\(conflict.savedOn ?? "")」"
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "arrow.triangle.branch").foregroundStyle(Palette.yamabuki)
+                Text("この会議は、2台の Mac で同時に直されました。\(mac)で直した版を、別に残しています。")
+                    .font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+            }
+            Text("表示している版と見比べて、残す方を選んでください。入れ替えても、もう一方の版は別に残ります。")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button("\(mac)の版に入れ替える") { Task { await store.swapConflict(meetingID) } }
+                Button("表示している版を残す") { Task { await store.dismissConflict(meetingID) } }
+            }
+            .controlSize(.small)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Palette.yamabuki.opacity(0.12)))
     }
 }
 // Shown when transcript lines the minutes cite were corrected or deleted by hand: the minutes can be written again

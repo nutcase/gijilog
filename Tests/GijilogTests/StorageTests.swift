@@ -282,12 +282,17 @@ extension ProcessingTests {
             try await store.checkpoint(meeting.id)
         }
         let file = store.folder(meeting.id).appendingPathComponent("meeting.json")
+        let early = try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: file))
         var later = Date().addingTimeInterval(5)
+        // Another Mac's save counts one more save of its own onto the version it read; one that had not synced read
+        // an older one.
         func writeElsewhere(_ title: String, behind: Bool = false) throws {
-            var other = try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: file))
+            var other = try JSONDecoder().decode(
+                Meeting.self, from: behind ? JSONEncoder().encode(early) : Data(contentsOf: file))
             other.title = title
-            // The other Mac's save counts on from the version it read; one that had not synced read an older one.
-            other.revision = behind ? 1 : other.revision + 1
+            other.revision += 1
+            other.saveCounts = SaveCounts.of(other).adding("another Mac")
+            other.savedOn = "別の Mac"
             try JSONEncoder().encode(other).write(to: file)
             try FileManager.default.setAttributes([.modificationDate: later], ofItemAtPath: file.path)
             later.addTimeInterval(5)
@@ -314,17 +319,26 @@ extension ProcessingTests {
         func saved() throws -> String { try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: file)).title }
         let afterReload = try saved()
         try Self.check(afterReload == "こちらで直した", "a change made here afterwards is saved, not refused as stale")
+        // Changed on both Macs at once: this Mac's version stays, the other's is kept aside, and neither is lost.
         store.change(meeting.id) { $0.title = "まだ保存していない" }
         try writeElsewhere("同時に直した")
-        let theirs = try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: file)).revision
+        let theirs = try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: file))
         await store.reloadChangedMeetings()
         await store.flushCheckpoints()
         let together = try saved()
+        let aside = store.folder(meeting.id).appendingPathComponent(MeetingRepository.asideName)
+        func asideTitle() throws -> String {
+            try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: aside)).title
+        }
+        let keptAside = try asideTitle()
         try Self.check(
-            store.meetings[0].title == "まだ保存していない" && together == "まだ保存していない",
-            "a change here not yet saved wins over one made elsewhere")
-        let ours = try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: file)).revision
-        try Self.check(ours > theirs, "and is saved as the later version, which the other Mac then takes in")
+            store.meetings[0].title == "まだ保存していない" && together == "まだ保存していない" && keptAside == "同時に直した"
+                && store.meetings[0].conflict?.savedOn == "別の Mac",
+            "a meeting changed on both Macs keeps this Mac's version and the other's aside: \(together), \(keptAside)")
+        let ours = try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: file))
+        try Self.check(
+            SaveCounts.of(ours).includes(SaveCounts.of(theirs)) && SaveCounts.of(ours) != SaveCounts.of(theirs),
+            "and is saved past both, so the other Mac takes it in rather than keeping one aside in turn")
         // A version written on a Mac whose copy was behind would undo what was done since: it is not taken in, and
         // this Mac's goes back over it.
         try writeElsewhere("同期の遅れた古い版", behind: true)
@@ -336,7 +350,132 @@ extension ProcessingTests {
         try writeElsewhere("録音中に直した")
         store.activeID = meeting.id
         await store.reloadChangedMeetings()
-        try Self.check(store.meetings[0].title == "まだ保存していない", "a meeting being recorded here is not replaced")
+        let duringRecording = try asideTitle()
+        try Self.check(
+            store.meetings[0].title == "まだ保存していない" && duringRecording == "録音中に直した",
+            "a meeting being recorded here is not replaced; the change made elsewhere is kept aside")
+        store.activeID = nil
+        // Either version can be put in place of the other, and the one let go only when the user keeps one.
+        await store.swapConflict(meeting.id)
+        await store.flushCheckpoints()
+        let swapped = try saved()
+        let nowAside = try asideTitle()
+        try Self.check(
+            store.meetings[0].title == "録音中に直した" && swapped == "録音中に直した" && nowAside == "まだ保存していない",
+            "swapping puts the version aside in place and keeps the one shown aside")
+        await store.dismissConflict(meeting.id)
+        await store.flushCheckpoints()
+        try Self.check(
+            store.meetings[0].conflict == nil && !FileManager.default.fileExists(atPath: aside.path),
+            "keeping the version shown lets the other go")
+    }
+    // While the app was not running, the meeting was changed both on another Mac and, before it quit, here: on the
+    // next launch this Mac's version is shown and the other's kept aside. Work another Mac left unfinished is taken
+    // up only when asked, and a file in a newer form than this version knows is not written.
+    @MainActor func testTwoMacsKeepBothVersionsAndHandOverWork() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let save = root.appendingPathComponent("save")
+        let copies = root.appendingPathComponent("copies")
+        let store = Store(root: save, loadSettings: false, copies: copies)
+        var meeting = Meeting(title: "こちらで直した")
+        meeting.folderName = "both"
+        meeting.capture = .stopped
+        meeting.workingMac = store.thisMac
+        store.meetings = [meeting]
+        try await store.checkpoint(meeting.id)
+        let file = save.appendingPathComponent("both/meeting.json")
+        var base = try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: file))
+        try await store.checkpoint(meeting.id)  // A save here the other Mac never saw.
+        base.title = "あちらで直した"
+        base.saveCounts = SaveCounts.of(base).adding("another Mac")
+        base.savedOn = "別の Mac"
+        try JSONEncoder().encode(base).write(to: file)
+        let relaunched = Store(root: save, loadSettings: false, copies: copies)
+        await relaunched.recover()
+        await relaunched.flushCheckpoints()
+        let aside = try JSONDecoder().decode(
+            Meeting.self, from: Data(contentsOf: save.appendingPathComponent("both/" + MeetingRepository.asideName)))
+        let saved = try relaunched.savedMeeting(meeting.id)
+        try Self.check(
+            relaunched.meetings.first?.title == "こちらで直した" && saved.title == "こちらで直した"
+                && aside.title == "あちらで直した" && saved.conflict?.savedOn == "別の Mac"
+                && SaveCounts.of(saved).includes(SaveCounts.of(base)),
+            "changed on both while closed: this Mac's version shows and the other's is kept aside")
+
+        // Another Mac's unfinished work waits for it, until this Mac is asked to take it up.
+        var elsewhere = Meeting(title: "ほかの Mac で仕上げ中")
+        elsewhere.folderName = "elsewhere"
+        elsewhere.workingMac = "another Mac"
+        elsewhere.capture = .stopped
+        elsewhere.hasAudio = true
+        elsewhere.settings = SessionSettings()
+        elsewhere.finalReviewPending = true
+        elsewhere.segments = [Segment(id: "s0", time: 0, source: "マイク", text: "新しい案を採用します")]
+        var notes = MinutesState()
+        notes.appliedSegmentIDs = ["s0"]
+        notes.content.decisions = [NoteItem(id: "d1", text: "新しい案を採用する", evidence: ["s0"])]
+        elsewhere.notes = notes
+        try await MeetingRepository(root: save).save(elsewhere)
+        let here = Store(root: save, loadSettings: false, copies: copies)
+        here.key = "TEST"
+        var reviews = 0
+        here.pipeline = ProcessingPipeline(
+            store: here,
+            review: { state, _, _, _ in
+                reviews += 1
+                return state
+            }, recognize: { _, _, _, _, _ in throw AppError.message("must not transcribe") })
+        await here.recover()
+        try await here.waitUntilIdle()
+        let waiting = reviews == 0 && here.meetings.first { $0.id == elsewhere.id }?.workingMac == "another Mac"
+        await here.continueHere(elsewhere.id)
+        try await here.waitUntilIdle()
+        await here.waitForBackgroundWork()
+        let finished = try here.savedMeeting(elsewhere.id)
+        try Self.check(
+            waiting && reviews == 1 && finished.workingMac == here.thisMac && finished.finalReviewPending == false,
+            "another Mac's unfinished work is taken up only when asked, and then finished here")
+
+        var newer = Meeting(title: "新しい形式")
+        newer.folderName = "newer"
+        newer.schemaVersion = Meeting.schema + 1
+        var refused = false
+        do { try await MeetingRepository(root: save).save(newer) } catch { refused = true }
+        try Self.check(refused, "a meeting in a form newer than this version knows is not written")
+    }
+    // Which of two versions is the later one, by each Mac's save count.
+    func testSaveCountsTellNewerOlderAndBoth() throws {
+        var base = Meeting(title: "会議")
+        base.saveCounts = SaveCounts(["A": 3, "B": 1])
+        func version(_ counts: [String: UInt64]) -> Meeting {
+            var meeting = base
+            meeting.saveCounts = SaveCounts(counts)
+            return meeting
+        }
+        let here = SaveCounts(["A": 3, "B": 1])
+        try Self.check(
+            SyncVerdict.of(version(["A": 3, "B": 1]), here: here, hereRevision: 4) == .same
+                && SyncVerdict.of(version(["A": 3, "B": 2]), here: here, hereRevision: 4) == .newer
+                && SyncVerdict.of(version(["A": 2, "B": 1]), here: here, hereRevision: 4) == .older
+                && SyncVerdict.of(version(["A": 2, "B": 2]), here: here, hereRevision: 4) == .both,
+            "a version is the same, newer, older, or changed on both Macs")
+        // However many times a Mac saves from a copy that was behind, it does not become the later version.
+        try Self.check(
+            SyncVerdict.of(version(["A": 2, "B": 900]), here: SaveCounts(["A": 3, "B": 1]), hereRevision: 4) == .both,
+            "saving many times from an old copy does not make a version newer")
+        var legacy = Meeting(title: "以前の形式")
+        legacy.revision = 10
+        let decoded = try JSONDecoder().decode(
+            Meeting.self,
+            from: Data(
+                #"{"id":"\#(UUID().uuidString)","title":"x","date":0,"segments":[],"minutes":"","status":"完了"}"#.utf8))
+        try Self.check(
+            SyncVerdict.of(legacy, here: here, hereRevision: 9) == .newer
+                && SyncVerdict.of(legacy, here: here, hereRevision: 11) == .older
+                && SaveCounts.of(legacy) == SaveCounts([SaveCounts.legacy: 10]) && decoded.schemaVersion == 1
+                && Meeting(title: "新しい会議").schemaVersion == Meeting.schema,
+            "a file from before the counts is told by its save count, and reads as the first form")
     }
     // A sync can bring back an older meeting.json, written on a Mac whose copy was behind. This Mac's own copy, kept
     // outside the save location, puts its version back on the next launch; a newer file is read as it is.
