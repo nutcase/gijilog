@@ -90,6 +90,40 @@ extension ProcessingTests {
         let seconds = try await AVURLAsset(url: output).load(.duration).seconds
         try Self.check(abs(seconds - 3) < 0.2, "an unreadable last chunk is skipped: \(seconds)s")
     }
+    // Unfinished work in a file older than the record of which Mac does it may be an old copy of a meeting that was
+    // finished on another Mac: it is not taken up on launch.
+    @MainActor func testLegacyUnfinishedMeetingIsLeftAlone() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var meeting = Meeting(title: "旧形式の中断会議")
+        meeting.settings = SessionSettings()
+        meeting.folderName = "legacy"
+        meeting.finalReviewPending = true
+        meeting.jobs = [
+            TranscriptionJob(id: "j", filename: "chunks/first.caf", offset: 0, source: "マイク", state: .running)
+        ]
+        meeting.revision = 7
+        try await MeetingRepository(root: root).save(meeting)
+        let store = Store(root: root, loadSettings: false)
+        store.key = "TEST"
+        var reviews = 0
+        store.pipeline = ProcessingPipeline(
+            store: store,
+            review: { state, segments, settings, key in
+                reviews += 1
+                return try await MinutesEngine.stubReview(state, segments, settings, key)
+            },
+            recognize: { _, offset, source, _, _ in [Segment(time: offset, source: source, text: "新しい案を採用します")] },
+            summarize: MinutesEngine.stubSummary)
+        await store.recover()
+        try await store.waitUntilIdle()
+        await store.flushCheckpoints()
+        let saved = try store.savedMeeting(meeting.id)
+        try Self.check(
+            store.meetings.first?.capture == .recording && saved.revision == 7 && saved.workingMac == nil
+                && saved.jobs.map(\.state) == [.running] && reviews == 0,
+            "an ownerless meeting with unfinished work is neither taken up nor written")
+    }
 }
 
 extension ProcessingTests {

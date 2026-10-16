@@ -379,6 +379,47 @@ extension ProcessingTests {
                 atPath: copies.appendingPathComponent(meeting.id.uuidString + ".json").path),
             "deleting a meeting deletes this Mac's copy too")
     }
+    @MainActor func testAddedMeetingKeepsRecoveryCopy() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let save = root.appendingPathComponent("save")
+        let copies = root.appendingPathComponent("copies")
+        let store = Store(root: save, loadSettings: false, copies: copies)
+        await store.recover()
+        var meeting = Meeting(title: "同期された新しい内容")
+        meeting.folderName = "synced"
+        meeting.capture = .stopped
+        meeting.revision = 20
+        try await MeetingRepository(root: save).save(meeting)
+        await store.loadAddedMeetings()
+        let copyFile = copies.appendingPathComponent(meeting.id.uuidString + ".json")
+        let copy = try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: copyFile))
+        try Self.check(
+            copy.title == meeting.title && copy.revision == 20, "an accepted new meeting gets a recovery copy")
+
+        // A duplicate folder that is not accepted must not replace the copy of the listed meeting.
+        var duplicate = meeting
+        duplicate.folderName = "synced (2)"
+        duplicate.title = "取り込まない写し"
+        duplicate.revision = 30
+        try await MeetingRepository(root: save).save(duplicate)
+        await store.loadAddedMeetings()
+        let unchanged = try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: copyFile))
+        try Self.check(
+            store.meetings.count == 1 && unchanged.title == meeting.title, "rejected duplicates leave the copy alone")
+        try FileManager.default.removeItem(at: save.appendingPathComponent("synced (2)"))
+
+        var old = meeting
+        old.title = "同期で届いた古い内容"
+        old.revision = 10
+        try await MeetingRepository(root: save).save(old)
+        let relaunched = MeetingRepository(root: save, copies: copies)
+        let (loaded, _) = try await relaunched.load()
+        let restored = await relaunched.takeRestored()
+        try Self.check(
+            loaded.first?.title == meeting.title && loaded.first?.revision == 20 && restored == [meeting.title],
+            "a meeting added while running survives an older sync on the next launch")
+    }
     @MainActor func testSaveLocationMovesWithItsMeetings() async throws {
         let (root, _) = try fixture(seconds: 1, amplitude: 0)
         defer { try? FileManager.default.removeItem(at: root) }

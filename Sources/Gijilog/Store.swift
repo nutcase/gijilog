@@ -252,7 +252,7 @@ import UniformTypeIdentifiers
     }
     init(
         root: URL? = nil, recorder: Recorder = Recorder(), loadSettings: Bool = true,
-        discardFolder: (@Sendable (URL) throws -> Void)? = nil
+        discardFolder: (@Sendable (URL) throws -> Void)? = nil, copies: URL? = nil
     ) {
         self.recorder = recorder
         if loadSettings {
@@ -273,7 +273,8 @@ import UniformTypeIdentifiers
         } else {
             thisMac = Self.unsavedMac
         }
-        repository = MeetingRepository(root: root, copies: loadSettings ? Self.copies : nil, discard: discardFolder)
+        repository = MeetingRepository(
+            root: root, copies: copies ?? (loadSettings ? Self.copies : nil), discard: discardFolder)
         if loadSettings {
             let defaults = UserDefaults.standard
             microphone = defaults.string(forKey: "microphone") ?? ""
@@ -546,6 +547,7 @@ import UniformTypeIdentifiers
                 let id = meeting.id
                 // Work left unfinished elsewhere (a recording under way on another Mac, or its processing) is that
                 // Mac's to finish: taken up here, it would be written over from whatever copy sync had brought.
+                // Older files name no Mac, and any Mac may hold an old copy of them, so they are left alone too.
                 guard meeting.workingMac == thisMac else { continue }
                 let interrupted = meeting.capture == .recording
                 if interrupted || meeting.jobs.contains(where: { $0.state == .running }) {
@@ -693,6 +695,8 @@ import UniformTypeIdentifiers
         guard !added.isEmpty else { return }
         for meeting in added { revisions[meeting.id] = meeting.revision }
         meetings = (meetings + added).sorted { $0.date > $1.date }
+        // Only accepted meetings get a copy: a duplicate folder must not replace the listed meeting's backup.
+        for meeting in added { await repository.keepCopy(meeting) }
         await repository.writeMissingDocuments(added)
         status = added.count == 1 ? "「\(added[0].title)」を読み込みました" : "会議を\(added.count)件読み込みました"
     }

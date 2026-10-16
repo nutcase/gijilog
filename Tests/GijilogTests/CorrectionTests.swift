@@ -300,6 +300,8 @@ extension ProcessingTests {
         fresh.notes = nil
         first.meetings = [fresh]
         first.updateSegment(fresh.id, id: "b", text: "次は日程を決めます")
+        // Correct the same line before and during the request: its ID alone cannot detect the second edit.
+        first.updateSegment(fresh.id, id: "a", text: "新しい案を採用します")
         first.pipeline.resume(fresh.id, key: "")
         first.pipeline.requestSummary(fresh.id, force: true)
         for _ in 0..<50 where !first.pipeline.isSummarizing(fresh.id) { try await Task.sleep(nanoseconds: 10_000_000) }

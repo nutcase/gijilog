@@ -258,8 +258,14 @@ import Foundation
                         // checked. Marks cleared meanwhile (このままにする) stay cleared.
                         let current = store.meetings.first { $0.id == id }
                         notes.keepMarks(madeSince: meeting.notes, now: current?.notes)
-                        // So do lines corrected before there were minutes, but after these were asked for.
-                        let late = (current?.revisedBeforeMinutes ?? []).subtracting(meeting.revisedBeforeMinutes ?? [])
+                        // Compare the actual text used by this request, including deletions. A line can have been
+                        // corrected both before and during the first update, without adding a new ID to the set.
+                        let originalLines = meeting.segments.byID
+                        let currentLines = current?.segments.byID ?? [:]
+                        let late = Set(
+                            (current?.revisedBeforeMinutes ?? []).filter { id in
+                                originalLines[id] != nil && originalLines[id]?.text != currentLines[id]?.text
+                            })
                         if !late.isEmpty { notes.revisedSegmentIDs = (notes.revisedSegmentIDs ?? []).union(late) }
                         // Only this task updates notes for this meeting; transcription may append newer utterances meanwhile.
                         store.change(id) { m in
