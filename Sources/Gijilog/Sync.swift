@@ -1,4 +1,6 @@
+import CryptoKit
 import Foundation
+import IOKit
 
 // Macs sharing a save location through a sync service (iCloud Drive and the like) each write meeting.json, and the
 // service keeps whichever arrived last. To tell which version is the later one, each meeting carries how many times
@@ -207,4 +209,38 @@ extension Store {
     /// The name of this Mac as the user sees it, saved with each version, so a version kept aside can say where it
     /// was made.
     static let computerName = Host.current().localizedName
+}
+// Which Mac a meeting is: the one that records and processes it, and the only one that changes it.
+extension Store {
+    /// Marks the meeting as this Mac's to record or process, so that after a crash or a quit only this Mac takes up
+    /// what was left unfinished.
+    func claim(_ id: UUID) {
+        guard let i = meetings.firstIndex(where: { $0.id == id }), meetings[i].workingMac != thisMac else { return }
+        meetings[i].workingMac = thisMac
+        dirtyIDs.insert(id)
+        scheduleFlush(id)
+    }
+    /// Whether this Mac may change the meeting: it records and processes it, or took it over. Another Mac's meeting
+    /// is only read here, so two Macs never write the same meeting.json.
+    func owns(_ meeting: Meeting) -> Bool {
+        meeting.workingMac == thisMac || (meeting.workingMac == nil && ownsUnnamed)
+    }
+    /// This Mac's name in the meetings, from its hardware ID: settings carried to another Mac (by Migration Assistant)
+    /// do not make the two the same Mac. Hashed, so the ID itself is not written into shared files.
+    static func machineID() -> String? {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPlatformExpertDevice"))
+        guard service != 0 else { return nil }
+        defer { IOObjectRelease(service) }
+        guard
+            let uuid = IORegistryEntryCreateCFProperty(service, kIOPlatformUUIDKey as CFString, kCFAllocatorDefault, 0)?
+                .takeRetainedValue() as? String
+        else { return nil }
+        return SHA256.hash(data: Data(("ギジログ:" + uuid).utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+    /// Where this Mac keeps its own copy of each meeting, outside the save location (see MeetingRepository).
+    static var copies: URL {
+        (FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support"))
+            .appendingPathComponent("Gijilog/Meetings")
+    }
 }

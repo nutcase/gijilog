@@ -321,11 +321,30 @@ Claude Desktop に追加した拡張機能は、Claude デスクトップアプ�
 | `Corrections.swift` | 語句の一括修正（同じ表記と読みでの検索、置き換え、取り消し、あとから書かれた文への適用） |
 | `Processing.swift` | OpenAI への送信、無音の除外、録音ファイルの合成と読み込み |
 | `Models.swift` | 会議・議事録・アジェンダのデータと保存、タグと検索、アジェンダの読み取り |
-| `Store.swift` | 録音の開始・停止、準備中の会議、保存、再起動後の復旧、保存先の移動、タグ・検索・アジェンダの操作 |
+| `Store.swift` | アプリの状態、設定、保存（変更のまとめ書き）、保存先の移動 |
+| `StoreRecording.swift` | 録音の開始・続けて録音・停止 |
+| `StoreProcessing.swift` | 文字起こしと議事録の処理、録音ファイルの読み込み、作業用の音声の整理、削除 |
+| `StoreRecovery.swift` | 起動時の読み込みと、この Mac が途中にした作業の再開 |
+| `StoreEditing.swift` | 議事録・文字起こしの手直し、語句の一括修正、聞き返し、アジェンダ |
+| `StoreTags.swift` | 人の名前、タグ、検索 |
+| `StoreAsk.swift` | ギジログAI への質問と、答えのリンクから会議を開く操作 |
+| `StoreMCP.swift` | MCP の待ち受けと、AI アプリからの読み取りの記録 |
+| `Sync.swift` | 複数の Mac で保存先を共有するときの版の比べ方、両方の版を残す処理、会議を担当する Mac |
+| `Agent.swift` | ギジログAI（質問への答えを、会議を読むツールで組み立てる） |
 | `MCPServer.swift` | MCP の処理（読み取りツール、新旧両方式）と Unix ソケットでの待ち受け |
 | `MCPSetup.swift` | AI アプリへの登録（Claude Code、Claude Desktop の拡張機能） |
 | `GijilogMCP/main.swift` | AI アプリが起動する中継プログラム `gijilog-mcp`（stdio とソケットの中継、ギジログの起動とつなぎ直し） |
-| `Views.swift` | 大きい画面・小画面・設定 |
+| `Views.swift` | 色と共通の部品、大きい画面の骨組み |
+| `SidebarViews.swift` | 左の一覧（ギジログAI、会議の見出し、検索、タグ） |
+| `RecorderBarViews.swift` | 上の録音バー |
+| `MinutesViews.swift` | 議事録の画面（タイトル、タグ、お知らせ、各欄） |
+| `MinuteItemViews.swift` | 議事録の各項目の表示と編集、担当・期限、根拠 |
+| `CorrectionViews.swift` | 語句の一括修正 |
+| `TranscriptViews.swift` | 文字起こしの欄と、中の検索 |
+| `AgendaViews.swift` | アジェンダ |
+| `LiveWindowViews.swift` | 小画面 |
+| `SettingsViews.swift` | 設定 |
+| `MenuBarViews.swift` | メニューバーのアイコンと、アプリのメニュー |
 
 ### ビルドし直しても許可を保つ
 
