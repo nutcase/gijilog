@@ -124,10 +124,10 @@ extension ProcessingTests {
         elsewhere.settings = SessionSettings()
         elsewhere.workingMac = "another Mac"
         elsewhere.jobs = [TranscriptionJob(id: "j", filename: "chunks/a.caf", offset: 0, source: "マイク")]
-        let owner = Store(root: root.appendingPathComponent("shared"), loadSettings: false)
-        owner.meetings = [elsewhere]
-        try await owner.checkpoint(elsewhere.id)
-        let here = Store(root: owner.root, loadSettings: false)
+        elsewhere.revision = 1
+        let shared = root.appendingPathComponent("shared")
+        try await MeetingRepository(root: shared).save(elsewhere)  // As the other Mac saved it.
+        let here = Store(root: shared, loadSettings: false)
         here.key = "TEST"
         await here.recover()
         try await here.waitUntilIdle()

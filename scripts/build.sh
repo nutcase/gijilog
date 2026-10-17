@@ -59,10 +59,18 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
-# Ad-hoc signing (the default) changes the signature on every build, so macOS drops the screen and
-# audio recording permission. Set GIJILOG_SIGN_IDENTITY to a code-signing certificate name to keep it.
-codesign --force --sign "${GIJILOG_SIGN_IDENTITY:--}" "$APP/Contents/MacOS/gijilog-mcp"
-codesign --force --sign "${GIJILOG_SIGN_IDENTITY:--}" "$APP"
+# Ad-hoc signing changes the signature on every build, so macOS drops the audio recording permission and asks
+# again before the app reads its key from the keychain. A self-signed code-signing certificate named ギジログ開発
+# (see README) keeps both, and is used when it is in the keychain; GIJILOG_SIGN_IDENTITY names another.
+identity="${GIJILOG_SIGN_IDENTITY:-}"
+if [[ -z "$identity" ]] && security find-certificate -c "ギジログ開発" >/dev/null 2>&1; then
+  identity="ギジログ開発"
+fi
+if [[ -z "$identity" ]]; then
+  print '署名用の証明書「ギジログ開発」がないため、ad-hoc で署名します（録音の許可が外れることがあります）。'
+fi
+codesign --force --sign "${identity:--}" "$APP/Contents/MacOS/gijilog-mcp"
+codesign --force --sign "${identity:--}" "$APP"
 # macOS keeps showing an app's earlier icon until the app's folder changes: mark it changed and register it again.
 touch "$APP" "$APP/Contents"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" \

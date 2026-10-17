@@ -200,6 +200,9 @@ import UniformTypeIdentifiers
     // in tests and previews, share one for the process: the same Mac.
     let thisMac: String
     static let unsavedMac = UUID().uuidString
+    // Whether a meeting that names no Mac (from before Meeting.workingMac) is this Mac's to change. The app reads
+    // them only, until taken over here; stores without settings (tests, previews) change them as before.
+    let ownsUnnamed: Bool
     var activeID: UUID?
     lazy var pipeline = ProcessingPipeline(store: self)
     private var captureInputID: String?  // The microphone in use, so unrelated devices cannot stop a recording.
@@ -253,7 +256,7 @@ import UniformTypeIdentifiers
     }
     init(
         root: URL? = nil, recorder: Recorder = Recorder(), loadSettings: Bool = true,
-        discardFolder: (@Sendable (URL) throws -> Void)? = nil, copies: URL? = nil
+        discardFolder: (@Sendable (URL) throws -> Void)? = nil, copies: URL? = nil, ownsUnnamed: Bool? = nil
     ) {
         self.recorder = recorder
         if loadSettings {
@@ -274,6 +277,7 @@ import UniformTypeIdentifiers
         } else {
             thisMac = Self.unsavedMac
         }
+        self.ownsUnnamed = ownsUnnamed ?? !loadSettings
         repository = MeetingRepository(
             root: root, copies: copies ?? (loadSettings ? Self.copies : nil), discard: discardFolder)
         if loadSettings {
@@ -306,11 +310,15 @@ import UniformTypeIdentifiers
             }
             readingVocabulary = false
             foldedSections = Set(defaults.stringArray(forKey: "foldedSections") ?? [])
-            key = KeyStore.read()
             let savedModel = defaults.string(forKey: "summaryModel")
             model = savedModel == "gpt-4.1-mini" ? "gpt-6-sol" : (savedModel ?? model)
             ready = false
+            // Reading the key can wait on macOS asking whether this build may use it, as after a rebuild: the window
+            // and the menu bar come up meanwhile, and recovery waits for the key to know what it may resume.
+            let keyLoad = Task.detached { KeyStore.read() }
             Task {
+                let saved = await keyLoad.value
+                if key.isEmpty { key = saved }  // Unless one was saved in Settings meanwhile.
                 await moveMeetings(from: Self.previousLocations)
                 await recover()
             }
@@ -486,7 +494,8 @@ import UniformTypeIdentifiers
         } catch { self.error = "保存先を変更できませんでした: " + error.localizedDescription }
     }
     func change(_ id: UUID, _ update: (inout Meeting) -> Void) {
-        guard let i = meetings.firstIndex(where: { $0.id == id }) else { return }
+        // Another Mac's meeting is only read here (owns): nothing changes it until it is taken over (claim).
+        guard let i = meetings.firstIndex(where: { $0.id == id }), owns(meetings[i]) else { return }
         update(&meetings[i])
         dirtyIDs.insert(id)
         scheduleFlush(id)
@@ -494,6 +503,7 @@ import UniformTypeIdentifiers
     func checkpoint(_ id: UUID) async throws {
         guard var meeting = meetings.first(where: { $0.id == id }) else { return }
         dirtyIDs.remove(id)  // Changes made while this write is in flight mark the meeting dirty again.
+        guard owns(meeting) else { return }
         let revision = max(revisions[id] ?? 0, meeting.revision) + 1
         let counts = (savedCounts[id] ?? SaveCounts.of(meeting)).adding(thisMac)
         revisions[id] = revision
@@ -552,8 +562,17 @@ import UniformTypeIdentifiers
             // Changed both in the save location and in this Mac's copy while the app was not running: this Mac's
             // stays, and the other is kept aside.
             for (other, found) in await repository.takeConflicts() {
-                guard let mine = meetings.first(where: { $0.id == other.id }) else { continue }
-                await keepAside(other, found: found, here: SaveCounts.of(mine), hereRevision: mine.revision)
+                guard let i = meetings.firstIndex(where: { $0.id == other.id }) else { continue }
+                let mine = meetings[i]
+                if owns(mine) {
+                    await keepAside(other, found: found, here: SaveCounts.of(mine), hereRevision: mine.revision)
+                } else {
+                    // Another Mac's meeting: its version is the one shown, and nothing is written here.
+                    meetings[i] = other
+                    revisions[other.id] = other.revision
+                    savedCounts[other.id] = SaveCounts.of(other)
+                    await repository.keepCopy(other)
+                }
             }
             await repository.writeMissingDocuments(saved)
             selected = meetings.first?.id
@@ -663,8 +682,15 @@ import UniformTypeIdentifiers
     /// Marks the meeting as this Mac's to record or process, so that after a crash or a quit only this Mac takes up
     /// what was left unfinished.
     func claim(_ id: UUID) {
-        guard meetings.first(where: { $0.id == id })?.workingMac != thisMac else { return }
-        change(id) { $0.workingMac = thisMac }
+        guard let i = meetings.firstIndex(where: { $0.id == id }), meetings[i].workingMac != thisMac else { return }
+        meetings[i].workingMac = thisMac
+        dirtyIDs.insert(id)
+        scheduleFlush(id)
+    }
+    /// Whether this Mac may change the meeting: it records and processes it, or took it over. Another Mac's meeting
+    /// is only read here, so two Macs never write the same meeting.json.
+    func owns(_ meeting: Meeting) -> Bool {
+        meeting.workingMac == thisMac || (meeting.workingMac == nil && ownsUnnamed)
     }
     /// This Mac's name in the meetings, from its hardware ID: settings carried to another Mac (by Migration Assistant)
     /// do not make the two the same Mac. Hashed, so the ID itself is not written into shared files.
@@ -714,6 +740,7 @@ import UniformTypeIdentifiers
         let id: UUID
         if let planned {
             id = planned.id
+            claim(id)  // A meeting prepared on another Mac is recorded, and from then on kept, here.
             change(id) { meeting in
                 meeting.capture = .recording
                 meeting.date = Date()
@@ -744,7 +771,7 @@ import UniformTypeIdentifiers
     /// A finished meeting can take more recording once nothing is processing it.
     func canContinueRecording(_ meeting: Meeting) -> Bool {
         (meeting.capture == .stopped || meeting.capture == .interrupted) && meeting.id != activeID
-            && !isProcessing(meeting.id) && !preparingIDs.contains(meeting.id)
+            && !isProcessing(meeting.id) && !preparingIDs.contains(meeting.id) && owns(meeting)
     }
     /// Records more of a finished meeting, such as after a break: the new speech follows the earlier recording on
     /// the meeting's clock, the transcript and minutes grow, and stopping makes one 録音.m4a and reviews the whole
@@ -870,6 +897,7 @@ import UniformTypeIdentifiers
     private func newMeeting(capture: CaptureState) -> Meeting {
         var meeting = Meeting(title: "会議 \(Date().formatted(date: .numeric, time: .shortened))")
         meeting.capture = capture
+        meeting.workingMac = thisMac
         if capture == .planned {
             meeting.status = "準備中"
         } else {
@@ -1222,7 +1250,9 @@ import UniformTypeIdentifiers
     func isProcessing(_ id: UUID) -> Bool { preparingIDs.contains(id) || pipeline.isProcessing(id) }
     /// The minutes are still being written: during the recording, and while its speech or minutes are processed.
     func minutesChanging(_ meeting: Meeting) -> Bool { meeting.capture == .recording || isProcessing(meeting.id) }
-    func canDelete(_ id: UUID) -> Bool { ready && id != activeID && !busy && !isProcessing(id) }
+    func canDelete(_ id: UUID) -> Bool {
+        ready && id != activeID && !busy && !isProcessing(id) && meetings.first { $0.id == id }.map(owns) == true
+    }
     /// Moves the meeting's audio, transcript and minutes to the Trash.
     func delete(_ id: UUID) async {
         guard canDelete(id) else { return }
@@ -1280,6 +1310,15 @@ import UniformTypeIdentifiers
         if result == "完了" && removesWorkingAudio {
             enqueueBackground { [weak self] in await self?.removeWorkingAudio(of: [id]) }
         }
+    }
+    /// Whether a request to quit is turned down: while recording, one sent by another app (`sender`, its bundle ID, or
+    /// "" for a process without one), as an app that quits apps it thinks unused would. The user's own quit (⌘Q and
+    /// the menus send none), the Dock's, and logging out or shutting down (which give a reason) go ahead.
+    nonisolated static func refusesQuit(recording: Bool, sender: String?, fromThisApp: Bool, systemReason: Bool)
+        -> Bool
+    {
+        guard recording, let sender, !fromThisApp, !systemReason else { return false }
+        return sender != "com.apple.dock"
     }
     func prepareForTermination() async {
         shuttingDown = true
@@ -1503,7 +1542,7 @@ extension Store {
     /// Minutes are edited by hand once the AI is not writing them: not while recording or processing.
     func canEditMinutes(_ meeting: Meeting) -> Bool {
         meeting.notes != nil && meeting.capture != .recording && meeting.capture != .planned
-            && meeting.id != activeID && !pipeline.isProcessing(meeting.id)
+            && meeting.id != activeID && !pipeline.isProcessing(meeting.id) && owns(meeting)
     }
     /// Changes an item and marks it edited by hand, so AI updates leave it alone. An item edited to name another
     /// summary topic moves under it. Fixing a word offers to fix it elsewhere in the meeting, unless
@@ -1711,7 +1750,9 @@ extension Store {
     }
     /// The transcript can be corrected whenever it exists, also during the recording: transcription only adds
     /// lines, and the minutes refer to lines by ID.
-    func canEditTranscript(_ meeting: Meeting) -> Bool { meeting.capture != .planned && !meeting.segments.isEmpty }
+    func canEditTranscript(_ meeting: Meeting) -> Bool {
+        meeting.capture != .planned && !meeting.segments.isEmpty && owns(meeting)
+    }
     /// Corrects one line of the transcript. When the change fixed a word that appears elsewhere in the meeting,
     /// offers to fix it there too.
     func updateSegment(_ meetingID: UUID, id: String, text: String) {

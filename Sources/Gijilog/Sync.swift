@@ -82,9 +82,22 @@ extension Store {
             guard let i = meetings.firstIndex(where: { $0.id == id }) else { continue }
             let here = savedCounts[id] ?? SaveCounts.of(meetings[i])
             let hereRevision = max(meetings[i].revision, revisions[id] ?? 0)
+            let verdict = SyncVerdict.of(meeting, here: here, hereRevision: hereRevision)
+            guard owns(meetings[i]) else {
+                // Another Mac's meeting is only read here: the version it saved is shown. An older one that comes
+                // back is that Mac's to put right, not this one's to write over.
+                await repository.markSeen(id, at: date)
+                guard verdict == .newer || verdict == .both else { continue }
+                meetings[i] = meeting
+                revisions[id] = meeting.revision
+                savedCounts[id] = SaveCounts.of(meeting)
+                await repository.keepCopy(meeting)
+                reloaded += 1
+                continue
+            }
             let busy = id == activeID || isProcessing(id) || dirtyIDs.contains(id)
             let open = selected == id && (editingNoteItem != nil || editingSegment != nil || editingTitle == id)
-            switch SyncVerdict.of(meeting, here: here, hereRevision: hereRevision) {
+            switch verdict {
             case .same:
                 await repository.markSeen(id, at: date)
             case .older:
@@ -133,6 +146,7 @@ extension Store {
         let shown = meetings[i]
         guard (try? await repository.keepAside(shown)) != nil else { return }
         other.folderName = shown.folderName
+        other.workingMac = shown.workingMac  // The Mac that chose keeps the meeting.
         other.conflict = MeetingConflict(savedOn: shown.savedOn ?? Self.computerName, found: Date())
         savedCounts[id] = (savedCounts[id] ?? SaveCounts.of(shown)).merged(with: SaveCounts.of(other))
         revisions[id] = max(revisions[id] ?? 0, shown.revision, other.revision)
@@ -170,6 +184,12 @@ extension Store {
         for meeting in added { await repository.keepCopy(meeting) }
         await repository.writeMissingDocuments(added)
         status = added.count == 1 ? "「\(added[0].title)」を読み込みました" : "会議を\(added.count)件読み込みました"
+    }
+    /// Takes a meeting another Mac records (or one that names no Mac) for this Mac to change. From then on the other
+    /// Mac only reads it.
+    func editHere(_ id: UUID) {
+        claim(id)
+        status = "この Mac で編集できるようにしました"
     }
     /// Takes up, on this Mac, work another Mac left unfinished (or a file that names no Mac), when the user says that
     /// Mac will not finish it: from then on this Mac records and processes the meeting.

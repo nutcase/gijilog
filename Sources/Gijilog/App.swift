@@ -35,6 +35,22 @@ import SwiftUI
     weak var store: Store?
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let store else { return .terminateNow }
+        // A quit another app asks for (one that quits apps it thinks unused, a script) would end the meeting's
+        // recording: it is turned down while recording. ⌘Q, the menus, the Dock and logging out still quit.
+        if let event = NSAppleEventManager.shared().currentAppleEvent, event.eventClass == kCoreEventClass,
+            event.eventID == kAEQuitApplication
+        {
+            let pid = event.attributeDescriptor(forKeyword: AEKeyword(keySenderPIDAttr))?.int32Value
+            let app = pid.flatMap { NSRunningApplication(processIdentifier: $0) }
+            if Store.refusesQuit(
+                recording: store.recording, sender: pid.map { _ in app?.bundleIdentifier ?? "" },
+                fromThisApp: pid == getpid(),
+                systemReason: event.attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason)) != nil)
+            {
+                store.status = "録音中のため、\(app?.localizedName ?? "ほかのアプリ")からの終了の依頼を断りました"
+                return .terminateCancel
+            }
+        }
         Task {
             await store.prepareForTermination()
             sender.reply(toApplicationShouldTerminate: true)

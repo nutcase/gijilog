@@ -248,7 +248,9 @@ struct ContentView: View {
             .help("録音ファイル（音声・動画）を読み込んで議事録を作る。ウインドウにドロップしても読み込めます")
             .disabled(!store.ready || !store.hasKey)
             if let meeting = store.selectedMeeting {
-                let idle = meeting.id != store.activeID && !store.busy && !store.isProcessing(meeting.id)
+                let idle =
+                    meeting.id != store.activeID && !store.busy && !store.isProcessing(meeting.id)
+                    && store.owns(meeting)
                 // A click exports the minutes alone; the arrow offers them with the transcript.
                 Menu {
                     Button("文字起こしも含めて書き出す…") { store.export(meeting, includesTranscript: true) }
@@ -280,7 +282,9 @@ struct ContentView: View {
                     Button("語句をまとめて直す…", systemImage: "character.cursor.ibeam") {
                         store.correcting = CorrectionRequest(meetingID: meeting.id)
                     }
-                    .disabled(meeting.capture == .planned || (meeting.segments.isEmpty && meeting.notes == nil))
+                    .disabled(
+                        meeting.capture == .planned || (meeting.segments.isEmpty && meeting.notes == nil)
+                            || !store.owns(meeting))
                     Button("Finderで表示", systemImage: "folder") {
                         NSWorkspace.shared.open(store.folder(meeting.id))
                     }
@@ -632,6 +636,7 @@ struct TagMenu: View {
                 }
             }
         }
+        .disabled(!store.owns(meeting))  // Another Mac's meeting is only read here.
     }
 }
 // Lays out chips left to right and wraps them onto new rows.
@@ -1106,9 +1111,15 @@ struct MinutesDesk: View {
     }
     private var tags: some View {
         FlowLayout(spacing: 6) {
+            let owned = store.owns(meeting)
             ForEach(meeting.tags, id: \.self) { tag in
-                TagChip(name: tag) { store.removeTag(tag, from: meeting.id) }
+                TagChip(name: tag, remove: owned ? { store.removeTag(tag, from: meeting.id) } : nil)
             }
+            if owned { addTag }
+        }
+    }
+    private var addTag: some View {
+        Group {
             Button {
                 store.tagEditor = meeting.id
             } label: {
@@ -1149,8 +1160,19 @@ struct MinutesDesk: View {
     }
     @ViewBuilder private var notices: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let conflict = meeting.conflict { ConflictNotice(meetingID: meeting.id, conflict: conflict) }
-            if meeting.workingMac != store.thisMac && meeting.hasUnfinishedWork && meeting.id != store.activeID
+            if let conflict = meeting.conflict, store.owns(meeting) {
+                ConflictNotice(meetingID: meeting.id, conflict: conflict)
+            }
+            if !store.owns(meeting) && !meeting.hasUnfinishedWork {
+                // Another Mac's meeting is only read here (Store.owns), until it is taken over.
+                Notice(
+                    text: (meeting.workingMac == nil
+                        ? "この会議は、どの Mac で録音したかの記録がない以前の形式のため、この Mac では見るだけにしています。"
+                        : "この会議は\(meeting.savedOn.map { "「\($0)」" } ?? "ほかの Mac ")で録音・処理しているため、この Mac では見るだけです。")
+                        + "この Mac で直すときは、引き取ってください（引き取ると、もう一方の Mac では見るだけになります）。",
+                    actionTitle: "この Mac で編集する", action: { store.editHere(meeting.id) })
+            }
+            if !store.owns(meeting) && meeting.hasUnfinishedWork && meeting.id != store.activeID
                 && !store.isProcessing(meeting.id)
             {
                 // Another Mac's to finish (see Store.recover); it may never come back to it.
@@ -1169,11 +1191,11 @@ struct MinutesDesk: View {
                 Notice(
                     text: "音がしばらくなかったため、\(stopped.formatted(date: .omitted, time: .shortened)) に録音を自動で止めました。"
                         + "続きがあるときは「続けて録音」で録音できます。",
-                    actionTitle: "閉じる", action: { store.dismissSilenceStop(meeting.id) })
+                    actionTitle: store.owns(meeting) ? "閉じる" : nil, action: { store.dismissSilenceStop(meeting.id) })
             }
             if let failure = meeting.transcriptionFailure {
                 Notice(
-                    text: failure, actionTitle: store.hasKey ? "再試行" : nil,
+                    text: failure, actionTitle: store.hasKey && store.owns(meeting) ? "再試行" : nil,
                     action: { store.retryFailedJobs(meeting.id) })
             }
             if store.pipeline.summaryFailed(meeting.id) {
@@ -1192,23 +1214,28 @@ struct MinutesDesk: View {
         }
         .padding(.top, 14)
     }
-    private var canResume: Bool { meeting.id != store.activeID && store.hasKey && !store.isProcessing(meeting.id) }
+    private var canResume: Bool {
+        meeting.id != store.activeID && store.hasKey && !store.isProcessing(meeting.id) && store.owns(meeting)
+    }
     private func resume() { Task { await store.process() } }
 }
 struct TagChip: View {
     let name: String
-    let remove: () -> Void
+    let remove: (() -> Void)?  // Nil on a meeting only read here.
     var body: some View {
         HStack(spacing: 5) {
             Text(name).lineLimit(1)
-            Button(action: remove) {
-                Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+            if let remove {
+                Button(action: remove) {
+                    Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .help("このタグを外す")
+                .accessibilityLabel("「\(name)」を外す")
             }
-            .buttonStyle(.plain).foregroundStyle(.secondary)
-            .help("このタグを外す")
-            .accessibilityLabel("「\(name)」を外す")
         }
         .font(.system(size: 12, weight: .medium))
+        .padding(.trailing, remove == nil ? 2 : 0)
         .foregroundStyle(Palette.sumi)
         .padding(.leading, 9).padding(.trailing, 7).padding(.vertical, 3)
         .background(Capsule().fill(Palette.asagi.opacity(0.14)))
@@ -1246,8 +1273,8 @@ struct MeetingTitle: View {
                 Text(highlighted(meeting.title, terms))
                     .textSelection(.disabled)
                     .contentShape(Rectangle())
-                    .onTapGesture { store.editingTitle = meeting.id }
-                    .help("クリックしてタイトルを変更")
+                    .onTapGesture { if store.owns(meeting) { store.editingTitle = meeting.id } }
+                    .help(store.owns(meeting) ? "クリックしてタイトルを変更" : "")
             }
         }
         .font(.mincho(26))
@@ -3482,7 +3509,7 @@ struct AgendaSection: View {
     var compact = false
     var body: some View {
         let live = meeting.id == store.activeID
-        let editable = meeting.capture == .planned || live
+        let editable = (meeting.capture == .planned || live) && store.owns(meeting)
         let planned = meeting.agenda.compactMap(\.minutes).reduce(0, +)
         let folded = !compact && store.foldedSections.contains("アジェンダ")
         VStack(alignment: .leading, spacing: 0) {
