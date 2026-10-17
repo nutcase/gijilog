@@ -13,6 +13,8 @@ import Foundation
     static func main() async throws {
         _ = URLProtocol.registerClass(BlockNetworkProtocol.self)  // Consulted after the per-test mocks.
         let tests = ProcessingTests()
+        try tests.testKeychainNameMigration()
+        try tests.testKeychainSaveAndDeleteAfterMigration()
         try tests.testChunkingPreservesFramesAndOffsets()
         try await tests.testSilentCloudChunkDoesNotCallAPI()
         try tests.testLegacyExtractionNotesRender()
@@ -108,7 +110,7 @@ import Foundation
         try tests.testMCPKeepsWhatTheUserWithholds()
         try await tests.testMCPAnswersOverItsSocket()
         print(
-            "PASS: 94 checks (recording, stopping after a silence, continued recording, chunking at pauses, voice gate, transcription hints, editing and corrections, corrections during an update, learning misheard words, picking owners and deadlines, listening back, summary topics, actions by topic, moving them by hand, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, the vocabulary file, folders added or changed while running, two Macs sharing a save location, audio mixdown, file import, upgrade and recovery, storage cleanup, minutes quality and final review, tags, search, agenda, MCP, questions about the meetings)"
+            "PASS: 96 checks (recording, stopping after a silence, continued recording, chunking at pauses, voice gate, transcription hints, editing and corrections, corrections during an update, learning misheard words, picking owners and deadlines, listening back, summary topics, actions by topic, moving them by hand, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, the vocabulary file, folders added or changed while running, two Macs sharing a save location, audio mixdown, file import, upgrade and recovery, storage cleanup, minutes quality and final review, tags, search, agenda, MCP, questions about the meetings)"
         )
     }
     /// A steady tone, silent in the given ranges of seconds.

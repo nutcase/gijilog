@@ -18,36 +18,74 @@ struct RecordedInput {
     var source: String
 }
 enum KeyStore {
-    static let query: [String: Any] = [
-        kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "local.minutes.openai",
-        kSecAttrAccount as String: "api-key",
-    ]
-    static func read() -> String {
-        var q = query
-        q[kSecReturnData as String] = true
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &result) == errSecSuccess, let data = result as? Data else {
+    static let service = "io.github.nutcase.gijilog"
+    static let legacyService = "local.minutes.openai"
+    // Injectable so migration can be checked without reading or changing the user's actual keychain.
+    struct Access {
+        var read: ([String: Any]) -> (OSStatus, Data?) = { query in
+            var q = query
+            q[kSecReturnData as String] = true
+            var result: CFTypeRef?
+            let status = SecItemCopyMatching(q as CFDictionary, &result)
+            return (status, result as? Data)
+        }
+        var update: ([String: Any], [String: Any]) -> OSStatus = {
+            SecItemUpdate($0 as CFDictionary, $1 as CFDictionary)
+        }
+        var add: ([String: Any]) -> OSStatus = { SecItemAdd($0 as CFDictionary, nil) }
+        var delete: ([String: Any]) -> OSStatus = { SecItemDelete($0 as CFDictionary) }
+    }
+    private static func query(_ service: String) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+            kSecAttrAccount as String: "api-key",
+        ]
+    }
+    static func read(using access: Access = Access()) -> String {
+        let (status, data) = access.read(query(service))
+        if status == errSecSuccess { return data.flatMap { String(data: $0, encoding: .utf8) } ?? "" }
+        // A denied or locked new item must not silently fall back to an older key.
+        guard status == errSecItemNotFound else { return "" }
+        // Rename in place to preserve the credential and its access controls. If that fails, leave it intact and
+        // keep using it for this launch; the next launch can try migration again.
+        let moved = access.update(
+            query(legacyService), [kSecAttrService as String: service, kSecAttrLabel as String: service])
+        let name = moved == errSecSuccess || moved == errSecDuplicateItem ? service : legacyService
+        let (loaded, value) = access.read(query(name))
+        guard loaded == errSecSuccess, let value else {
             return ""
         }
-        return String(data: data, encoding: .utf8) ?? ""
+        return String(data: value, encoding: .utf8) ?? ""
     }
-    static func save(_ value: String) throws {
+    static func save(_ value: String, using access: Access = Access()) throws {
+        let query = query(service)
         if value.isEmpty {
-            let status = SecItemDelete(query as CFDictionary)
-            guard status == errSecSuccess || status == errSecItemNotFound else {
-                throw AppError.message("Keychain削除エラー: \(status)")
-            }
+            // Remove the fallback first, so a failed deletion cannot resurrect an old credential.
+            try removeLegacy(using: access)
+            try remove(query, using: access)
             return
         }
-        let attributes = [kSecValueData as String: Data(value.utf8)]
-        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        let attributes: [String: Any] = [kSecValueData as String: Data(value.utf8), kSecAttrLabel as String: service]
+        let status = access.update(query, attributes)
         if status == errSecItemNotFound {
             var q = query
             q.merge(attributes) { _, new in new }
-            let added = SecItemAdd(q as CFDictionary, nil)
+            let added = access.add(q)
             guard added == errSecSuccess else { throw AppError.message("Keychain保存エラー: \(added)") }
         } else if status != errSecSuccess {
             throw AppError.message("Keychain更新エラー: \(status)")
+        }
+        // The new key is already saved and takes priority on read. A cleanup failure must not make the caller
+        // keep using its old in-memory key. Clearing the key still requires deleting both items above.
+        try? removeLegacy(using: access)
+    }
+    private static func removeLegacy(using access: Access) throws {
+        try remove(query(legacyService), using: access)
+    }
+    private static func remove(_ query: [String: Any], using access: Access) throws {
+        let status = access.delete(query)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw AppError.message("Keychain削除エラー: \(status)")
         }
     }
 }
