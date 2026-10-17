@@ -60,17 +60,17 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict></plist>
 PLIST
 # Ad-hoc signing changes the signature on every build, so macOS drops the audio recording permission and asks
-# again before the app reads its key from the keychain. A self-signed code-signing certificate named ギジログ開発
-# (see README) keeps both, and is used when it is in the keychain; GIJILOG_SIGN_IDENTITY names another.
-identity="${GIJILOG_SIGN_IDENTITY:-}"
-if [[ -z "$identity" ]] && security find-certificate -c "ギジログ開発" >/dev/null 2>&1; then
-  identity="ギジログ開発"
-fi
+# again before the app reads its key from the keychain. A self-signed code-signing certificate named ギジログ
+# (see README) keeps both, and is used when it is in the keychain; GIJILOG_SIGN_IDENTITY names another. It is
+# chosen by its SHA-1, so another certificate with a similar name cannot make the choice ambiguous.
+sign_name="${GIJILOG_SIGN_IDENTITY:-ギジログ}"
+identity="$(security find-certificate -c "$sign_name" -Z 2>/dev/null | awk '/SHA-1/ { print $3; exit }')"
 if [[ -z "$identity" ]]; then
-  print '署名用の証明書「ギジログ開発」がないため、ad-hoc で署名します（録音の許可が外れることがあります）。'
+  print "署名用の証明書「$sign_name」がないため、ad-hoc で署名します（録音の許可が外れることがあります）。"
+  identity="-"
 fi
-codesign --force --sign "${identity:--}" "$APP/Contents/MacOS/gijilog-mcp"
-codesign --force --sign "${identity:--}" "$APP"
+codesign --force --sign "$identity" "$APP/Contents/MacOS/gijilog-mcp"
+codesign --force --sign "$identity" "$APP"
 # macOS keeps showing an app's earlier icon until the app's folder changes: mark it changed and register it again.
 touch "$APP" "$APP/Contents"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" \

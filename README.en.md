@@ -73,7 +73,7 @@ You can also start and stop from the menu bar icon (a waveform, or a record mark
 >
 > You can change the permission later under System Settings → Privacy & Security → Screen & System Audio Recording → System Audio Recording Only. If the Mac audio waveform stays flat, check it there.
 >
-> To keep the permission across rebuilds, create a self-signed code-signing certificate named ギジログ開発 in Keychain Access (Certificate Assistant → Create a Certificate, identity type Self-Signed Root, certificate type Code Signing): `./scripts/build.sh` signs with it whenever it is in the keychain (or name another with `GIJILOG_SIGN_IDENTITY="<certificate name>"`). Only the first build signed with it asks for the permission and the keychain again.
+> To keep the permission across rebuilds, create a self-signed code-signing certificate named ギジログ in Keychain Access (Certificate Assistant → Create a Certificate, identity type Self-Signed Root, certificate type Code Signing): `./scripts/build.sh` signs with it whenever it is in the keychain (or name another with `GIJILOG_SIGN_IDENTITY="<certificate name>"`). Only the first build signed with it asks for the permission and the keychain again.
 
 ## Decision-focused minutes
 
