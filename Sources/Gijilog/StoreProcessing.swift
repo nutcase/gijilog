@@ -282,9 +282,7 @@ extension Store {
     func isProcessing(_ id: UUID) -> Bool { preparingIDs.contains(id) || pipeline.isProcessing(id) }
     /// The minutes are still being written: during the recording, and while its speech or minutes are processed.
     func minutesChanging(_ meeting: Meeting) -> Bool { meeting.capture == .recording || isProcessing(meeting.id) }
-    func canDelete(_ id: UUID) -> Bool {
-        ready && id != activeID && !busy && !isProcessing(id) && meetings.first { $0.id == id }.map(owns) == true
-    }
+    func canDelete(_ id: UUID) -> Bool { ready && id != activeID && !busy && !isProcessing(id) }
     /// Moves the meeting's audio, transcript and minutes to the Trash.
     func delete(_ id: UUID) async {
         guard canDelete(id) else { return }

@@ -198,9 +198,6 @@ import UniformTypeIdentifiers
     // in tests and previews, share one for the process: the same Mac.
     let thisMac: String
     static let unsavedMac = UUID().uuidString
-    // Whether a meeting that names no Mac (from before Meeting.workingMac) is this Mac's to change. The app reads
-    // them only, until taken over here; stores without settings (tests, previews) change them as before.
-    let ownsUnnamed: Bool
     var activeID: UUID?
     lazy var pipeline = ProcessingPipeline(store: self)
     var captureInputID: String?  // The microphone in use, so unrelated devices cannot stop a recording.
@@ -255,7 +252,7 @@ import UniformTypeIdentifiers
     }
     init(
         root: URL? = nil, recorder: Recorder = Recorder(), loadSettings: Bool = true,
-        discardFolder: (@Sendable (URL) throws -> Void)? = nil, copies: URL? = nil, ownsUnnamed: Bool? = nil
+        discardFolder: (@Sendable (URL) throws -> Void)? = nil, copies: URL? = nil
     ) {
         self.recorder = recorder
         if loadSettings {
@@ -276,7 +273,6 @@ import UniformTypeIdentifiers
         } else {
             thisMac = Self.unsavedMac
         }
-        self.ownsUnnamed = ownsUnnamed ?? !loadSettings
         repository = MeetingRepository(
             root: root, copies: copies ?? (loadSettings ? Self.copies : nil), discard: discardFolder)
         if loadSettings {
@@ -493,8 +489,7 @@ import UniformTypeIdentifiers
         } catch { self.error = "保存先を変更できませんでした: " + error.localizedDescription }
     }
     func change(_ id: UUID, _ update: (inout Meeting) -> Void) {
-        // Another Mac's meeting is only read here (owns): nothing changes it until it is taken over (claim).
-        guard let i = meetings.firstIndex(where: { $0.id == id }), owns(meetings[i]) else { return }
+        guard let i = meetings.firstIndex(where: { $0.id == id }) else { return }
         update(&meetings[i])
         dirtyIDs.insert(id)
         scheduleFlush(id)
@@ -502,7 +497,6 @@ import UniformTypeIdentifiers
     func checkpoint(_ id: UUID) async throws {
         guard var meeting = meetings.first(where: { $0.id == id }) else { return }
         dirtyIDs.remove(id)  // Changes made while this write is in flight mark the meeting dirty again.
-        guard owns(meeting) else { return }
         let revision = max(revisions[id] ?? 0, meeting.revision) + 1
         let counts = (savedCounts[id] ?? SaveCounts.of(meeting)).adding(thisMac)
         revisions[id] = revision

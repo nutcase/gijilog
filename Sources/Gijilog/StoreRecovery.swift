@@ -24,17 +24,8 @@ extension Store {
             // Changed both in the save location and in this Mac's copy while the app was not running: this Mac's
             // stays, and the other is kept aside.
             for (other, found) in await repository.takeConflicts() {
-                guard let i = meetings.firstIndex(where: { $0.id == other.id }) else { continue }
-                let mine = meetings[i]
-                if owns(mine) {
-                    await keepAside(other, found: found, here: SaveCounts.of(mine), hereRevision: mine.revision)
-                } else {
-                    // Another Mac's meeting: its version is the one shown, and nothing is written here.
-                    meetings[i] = other
-                    revisions[other.id] = other.revision
-                    savedCounts[other.id] = SaveCounts.of(other)
-                    await repository.keepCopy(other)
-                }
+                guard let mine = meetings.first(where: { $0.id == other.id }) else { continue }
+                await keepAside(other, found: found, here: SaveCounts.of(mine), hereRevision: mine.revision)
             }
             await repository.writeMissingDocuments(saved)
             selected = meetings.first?.id

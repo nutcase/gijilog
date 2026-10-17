@@ -306,7 +306,6 @@ struct TagMenu: View {
                 }
             }
         }
-        .disabled(!store.owns(meeting))  // Another Mac's meeting is only read here.
     }
 }
 // Lays out chips left to right and wraps them onto new rows.

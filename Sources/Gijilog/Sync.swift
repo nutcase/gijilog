@@ -85,18 +85,6 @@ extension Store {
             let here = savedCounts[id] ?? SaveCounts.of(meetings[i])
             let hereRevision = max(meetings[i].revision, revisions[id] ?? 0)
             let verdict = SyncVerdict.of(meeting, here: here, hereRevision: hereRevision)
-            guard owns(meetings[i]) else {
-                // Another Mac's meeting is only read here: the version it saved is shown. An older one that comes
-                // back is that Mac's to put right, not this one's to write over.
-                await repository.markSeen(id, at: date)
-                guard verdict == .newer || verdict == .both else { continue }
-                meetings[i] = meeting
-                revisions[id] = meeting.revision
-                savedCounts[id] = SaveCounts.of(meeting)
-                await repository.keepCopy(meeting)
-                reloaded += 1
-                continue
-            }
             let busy = id == activeID || isProcessing(id) || dirtyIDs.contains(id)
             let open = selected == id && (editingNoteItem != nil || editingSegment != nil || editingTitle == id)
             switch verdict {
@@ -187,12 +175,6 @@ extension Store {
         await repository.writeMissingDocuments(added)
         status = added.count == 1 ? "「\(added[0].title)」を読み込みました" : "会議を\(added.count)件読み込みました"
     }
-    /// Takes a meeting another Mac records (or one that names no Mac) for this Mac to change. From then on the other
-    /// Mac only reads it.
-    func editHere(_ id: UUID) {
-        claim(id)
-        status = "この Mac で編集できるようにしました"
-    }
     /// Takes up, on this Mac, work another Mac left unfinished (or a file that names no Mac), when the user says that
     /// Mac will not finish it: from then on this Mac records and processes the meeting.
     func continueHere(_ id: UUID) async {
@@ -210,7 +192,8 @@ extension Store {
     /// was made.
     static let computerName = Host.current().localizedName
 }
-// Which Mac a meeting is: the one that records and processes it, and the only one that changes it.
+// Which Mac records and processes a meeting: the only one that takes up its unfinished work by itself. Any Mac
+// can change a meeting; two changing it at once keep both versions (above).
 extension Store {
     /// Marks the meeting as this Mac's to record or process, so that after a crash or a quit only this Mac takes up
     /// what was left unfinished.
@@ -219,11 +202,6 @@ extension Store {
         meetings[i].workingMac = thisMac
         dirtyIDs.insert(id)
         scheduleFlush(id)
-    }
-    /// Whether this Mac may change the meeting: it records and processes it, or took it over. Another Mac's meeting
-    /// is only read here, so two Macs never write the same meeting.json.
-    func owns(_ meeting: Meeting) -> Bool {
-        meeting.workingMac == thisMac || (meeting.workingMac == nil && ownsUnnamed)
     }
     /// This Mac's name in the meetings, from its hardware ID: settings carried to another Mac (by Migration Assistant)
     /// do not make the two the same Mac. Hashed, so the ID itself is not written into shared files.

@@ -444,12 +444,12 @@ extension ProcessingTests {
         do { try await MeetingRepository(root: save).save(newer) } catch { refused = true }
         try Self.check(refused, "a meeting in a form newer than this version knows is not written")
     }
-    // A meeting another Mac records is only read here: nothing this Mac does writes it, the version that Mac saves
-    // is shown, and it can be taken over to change it here. Meetings that name no Mac are read only in the app.
-    @MainActor func testOtherMacsMeetingsAreOnlyRead() async throws {
+    // Any Mac can change a meeting another Mac records: the change is saved past that Mac's saves, so it takes the
+    // change in, and the meeting stays that Mac's for taking up unfinished work.
+    @MainActor func testAnyMacChangesAMeeting() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let store = Store(root: root, loadSettings: false, ownsUnnamed: false)
+        let store = Store(root: root, loadSettings: false)
         var meeting = Meeting(title: "ほかの Mac の会議")
         meeting.folderName = "theirs"
         meeting.capture = .stopped
@@ -460,58 +460,19 @@ extension ProcessingTests {
         meeting.saveCounts = SaveCounts(["another Mac": 5])
         try await MeetingRepository(root: root).save(meeting)
         await store.recover()
-        let file = root.appendingPathComponent("theirs/meeting.json")
-        func onDisk() throws -> Meeting { try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: file)) }
-        store.renameMeeting(meeting.id, to: "こちらで直そうとした")
-        try await store.checkpoint(meeting.id)
-        let untouched = try onDisk()
+        let shown = try Self.require(store.meetings.first, "the meeting")
         try Self.check(
-            store.meetings[0].title == "ほかの Mac の会議" && untouched.title == "ほかの Mac の会議" && untouched.revision == 5
-                && !store.canEditMinutes(store.meetings[0]) && !store.canEditTranscript(store.meetings[0])
-                && !store.canDelete(meeting.id) && !store.canContinueRecording(store.meetings[0]),
-            "another Mac's meeting is neither changed nor written here")
-        var later = Date().addingTimeInterval(5)
-        func writeThere(_ edit: (inout Meeting) -> Void) throws {
-            var other = try onDisk()
-            edit(&other)
-            try JSONEncoder().encode(other).write(to: file)
-            try FileManager.default.setAttributes([.modificationDate: later], ofItemAtPath: file.path)
-            later.addTimeInterval(5)
-        }
-        try writeThere {
-            $0.title = "あちらで直した"
-            $0.saveCounts = SaveCounts(["another Mac": 6])
-            $0.revision = 6
-        }
-        await store.reloadChangedMeetings()
-        try writeThere {
-            $0.title = "同期で戻った古い版"
-            $0.saveCounts = SaveCounts(["another Mac": 4])
-            $0.revision = 4
-        }
-        await store.reloadChangedMeetings()
-        let stale = try onDisk()
-        try Self.check(
-            store.meetings[0].title == "あちらで直した" && stale.title == "同期で戻った古い版",
-            "the version that Mac saves is shown, and an older one is left for that Mac to put right")
-        store.editHere(meeting.id)
-        store.renameMeeting(meeting.id, to: "こちらで引き取って直した")
+            store.canEditMinutes(shown) && store.canEditTranscript(shown) && store.canDelete(meeting.id),
+            "another Mac's meeting can be changed here")
+        store.renameMeeting(meeting.id, to: "こちらで直した")
         await store.flushCheckpoints()
-        let taken = try onDisk()
+        let saved = try JSONDecoder().decode(
+            Meeting.self, from: Data(contentsOf: root.appendingPathComponent("theirs/meeting.json")))
         try Self.check(
-            taken.title == "こちらで引き取って直した" && taken.workingMac == store.thisMac
-                && SaveCounts.of(taken).includes(SaveCounts(["another Mac": 6])),
-            "taken over, it is changed and saved here")
-
-        var unnamed = Meeting(title: "以前の形式")
-        unnamed.folderName = "unnamed"
-        unnamed.capture = .stopped
-        try await MeetingRepository(root: root).save(unnamed)
-        let app = Store(root: root, loadSettings: false, ownsUnnamed: false)
-        await app.recover()
-        let old = try Self.require(app.meetings.first { $0.id == unnamed.id }, "the meeting from before")
-        let tests = Store(root: root, loadSettings: false)
-        try Self.check(!app.owns(old) && tests.owns(old), "a meeting that names no Mac is only read in the app")
+            saved.title == "こちらで直した" && saved.workingMac == "another Mac"
+                && SaveCounts.of(saved).includes(SaveCounts(["another Mac": 5]))
+                && SyncVerdict.of(saved, here: SaveCounts(["another Mac": 5]), hereRevision: 5) == .newer,
+            "the change is saved as the later version, and the meeting stays the other Mac's")
 
         // A recording is not ended by another app asking ギジログ to quit; the user, the Dock and shutting down are.
         try Self.check(

@@ -14,7 +14,7 @@ struct AgendaSection: View {
     var compact = false
     var body: some View {
         let live = meeting.id == store.activeID
-        let editable = (meeting.capture == .planned || live) && store.owns(meeting)
+        let editable = meeting.capture == .planned || live
         let planned = meeting.agenda.compactMap(\.minutes).reduce(0, +)
         let folded = !compact && store.foldedSections.contains("アジェンダ")
         VStack(alignment: .leading, spacing: 0) {

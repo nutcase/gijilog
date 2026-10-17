@@ -159,11 +159,10 @@ struct MinutesDesk: View {
     }
     private var tags: some View {
         FlowLayout(spacing: 6) {
-            let owned = store.owns(meeting)
             ForEach(meeting.tags, id: \.self) { tag in
-                TagChip(name: tag, remove: owned ? { store.removeTag(tag, from: meeting.id) } : nil)
+                TagChip(name: tag, remove: { store.removeTag(tag, from: meeting.id) })
             }
-            if owned { addTag }
+            addTag
         }
     }
     private var addTag: some View {
@@ -208,19 +207,8 @@ struct MinutesDesk: View {
     }
     @ViewBuilder private var notices: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let conflict = meeting.conflict, store.owns(meeting) {
-                ConflictNotice(meetingID: meeting.id, conflict: conflict)
-            }
-            if !store.owns(meeting) && !meeting.hasUnfinishedWork {
-                // Another Mac's meeting is only read here (Store.owns), until it is taken over.
-                Notice(
-                    text: (meeting.workingMac == nil
-                        ? "この会議は、どの Mac で録音したかの記録がない以前の形式のため、この Mac では見るだけにしています。"
-                        : "この会議は\(meeting.savedOn.map { "「\($0)」" } ?? "ほかの Mac ")で録音・処理しているため、この Mac では見るだけです。")
-                        + "この Mac で直すときは、引き取ってください（引き取ると、もう一方の Mac では見るだけになります）。",
-                    actionTitle: "この Mac で編集する", action: { store.editHere(meeting.id) })
-            }
-            if !store.owns(meeting) && meeting.hasUnfinishedWork && meeting.id != store.activeID
+            if let conflict = meeting.conflict { ConflictNotice(meetingID: meeting.id, conflict: conflict) }
+            if meeting.workingMac != store.thisMac && meeting.hasUnfinishedWork && meeting.id != store.activeID
                 && !store.isProcessing(meeting.id)
             {
                 // Another Mac's to finish (see Store.recover); it may never come back to it.
@@ -239,11 +227,11 @@ struct MinutesDesk: View {
                 Notice(
                     text: "音がしばらくなかったため、\(stopped.formatted(date: .omitted, time: .shortened)) に録音を自動で止めました。"
                         + "続きがあるときは「続けて録音」で録音できます。",
-                    actionTitle: store.owns(meeting) ? "閉じる" : nil, action: { store.dismissSilenceStop(meeting.id) })
+                    actionTitle: "閉じる", action: { store.dismissSilenceStop(meeting.id) })
             }
             if let failure = meeting.transcriptionFailure {
                 Notice(
-                    text: failure, actionTitle: store.hasKey && store.owns(meeting) ? "再試行" : nil,
+                    text: failure, actionTitle: store.hasKey ? "再試行" : nil,
                     action: { store.retryFailedJobs(meeting.id) })
             }
             if store.pipeline.summaryFailed(meeting.id) {
@@ -263,7 +251,7 @@ struct MinutesDesk: View {
         .padding(.top, 14)
     }
     private var canResume: Bool {
-        meeting.id != store.activeID && store.hasKey && !store.isProcessing(meeting.id) && store.owns(meeting)
+        meeting.id != store.activeID && store.hasKey && !store.isProcessing(meeting.id)
     }
     private func resume() { Task { await store.process() } }
 }
@@ -321,8 +309,8 @@ struct MeetingTitle: View {
                 Text(highlighted(meeting.title, terms))
                     .textSelection(.disabled)
                     .contentShape(Rectangle())
-                    .onTapGesture { if store.owns(meeting) { store.editingTitle = meeting.id } }
-                    .help(store.owns(meeting) ? "クリックしてタイトルを変更" : "")
+                    .onTapGesture { store.editingTitle = meeting.id }
+                    .help("クリックしてタイトルを変更")
             }
         }
         .font(.mincho(26))

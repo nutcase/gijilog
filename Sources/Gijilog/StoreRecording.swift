@@ -19,7 +19,7 @@ extension Store {
         let id: UUID
         if let planned {
             id = planned.id
-            claim(id)  // A meeting prepared on another Mac is recorded, and from then on kept, here.
+            claim(id)  // A meeting prepared on another Mac is recorded here, and its unfinished work is this Mac's.
             change(id) { meeting in
                 meeting.capture = .recording
                 meeting.date = Date()
@@ -50,7 +50,7 @@ extension Store {
     /// A finished meeting can take more recording once nothing is processing it.
     func canContinueRecording(_ meeting: Meeting) -> Bool {
         (meeting.capture == .stopped || meeting.capture == .interrupted) && meeting.id != activeID
-            && !isProcessing(meeting.id) && !preparingIDs.contains(meeting.id) && owns(meeting)
+            && !isProcessing(meeting.id) && !preparingIDs.contains(meeting.id)
     }
     /// Records more of a finished meeting, such as after a break: the new speech follows the earlier recording on
     /// the meeting's clock, the transcript and minutes grow, and stopping makes one 録音.m4a and reviews the whole

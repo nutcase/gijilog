@@ -248,9 +248,7 @@ struct ContentView: View {
             .help("録音ファイル（音声・動画）を読み込んで議事録を作る。ウインドウにドロップしても読み込めます")
             .disabled(!store.ready || !store.hasKey)
             if let meeting = store.selectedMeeting {
-                let idle =
-                    meeting.id != store.activeID && !store.busy && !store.isProcessing(meeting.id)
-                    && store.owns(meeting)
+                let idle = meeting.id != store.activeID && !store.busy && !store.isProcessing(meeting.id)
                 // A click exports the minutes alone; the arrow offers them with the transcript.
                 Menu {
                     Button("文字起こしも含めて書き出す…") { store.export(meeting, includesTranscript: true) }
@@ -282,9 +280,7 @@ struct ContentView: View {
                     Button("語句をまとめて直す…", systemImage: "character.cursor.ibeam") {
                         store.correcting = CorrectionRequest(meetingID: meeting.id)
                     }
-                    .disabled(
-                        meeting.capture == .planned || (meeting.segments.isEmpty && meeting.notes == nil)
-                            || !store.owns(meeting))
+                    .disabled(meeting.capture == .planned || (meeting.segments.isEmpty && meeting.notes == nil))
                     Button("Finderで表示", systemImage: "folder") {
                         NSWorkspace.shared.open(store.folder(meeting.id))
                     }

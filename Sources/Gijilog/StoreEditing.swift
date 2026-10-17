@@ -25,7 +25,7 @@ extension Store {
     /// Minutes are edited by hand once the AI is not writing them: not while recording or processing.
     func canEditMinutes(_ meeting: Meeting) -> Bool {
         meeting.notes != nil && meeting.capture != .recording && meeting.capture != .planned
-            && meeting.id != activeID && !pipeline.isProcessing(meeting.id) && owns(meeting)
+            && meeting.id != activeID && !pipeline.isProcessing(meeting.id)
     }
     /// Changes an item and marks it edited by hand, so AI updates leave it alone. An item edited to name another
     /// summary topic moves under it. Fixing a word offers to fix it elsewhere in the meeting, unless
@@ -111,7 +111,7 @@ extension Store {
     /// The transcript can be corrected whenever it exists, also during the recording: transcription only adds
     /// lines, and the minutes refer to lines by ID.
     func canEditTranscript(_ meeting: Meeting) -> Bool {
-        meeting.capture != .planned && !meeting.segments.isEmpty && owns(meeting)
+        meeting.capture != .planned && !meeting.segments.isEmpty
     }
     /// Corrects one line of the transcript. When the change fixed a word that appears elsewhere in the meeting,
     /// offers to fix it there too.

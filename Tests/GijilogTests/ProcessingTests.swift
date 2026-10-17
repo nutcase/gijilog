@@ -67,7 +67,7 @@ import Foundation
         try await tests.testThisMacsCopyOutlastsAnOlderSync()
         try tests.testSaveCountsTellNewerOlderAndBoth()
         try await tests.testTwoMacsKeepBothVersionsAndHandOverWork()
-        try await tests.testOtherMacsMeetingsAreOnlyRead()
+        try await tests.testAnyMacChangesAMeeting()
         try await tests.testAddedMeetingKeepsRecoveryCopy()
         try await tests.testTranscriptionFailureIsShownAndRetriedWhileRecording()
         try await tests.testEarlierSettingsAndFoldersCarryOver()
