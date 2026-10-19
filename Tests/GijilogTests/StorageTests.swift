@@ -394,14 +394,36 @@ extension ProcessingTests {
         let relaunched = Store(root: save, loadSettings: false, copies: copies)
         await relaunched.recover()
         await relaunched.flushCheckpoints()
-        let aside = try JSONDecoder().decode(
-            Meeting.self, from: Data(contentsOf: save.appendingPathComponent("both/" + MeetingRepository.asideName)))
-        let saved = try relaunched.savedMeeting(meeting.id)
+        let asideFile = save.appendingPathComponent("both/" + MeetingRepository.asideName)
+        let merged = try relaunched.savedMeeting(meeting.id)
         try Self.check(
-            relaunched.meetings.first?.title == "こちらで直した" && saved.title == "こちらで直した"
-                && aside.title == "あちらで直した" && saved.conflict?.savedOn == "別の Mac"
-                && SaveCounts.of(saved).includes(SaveCounts.of(base)),
-            "changed on both while closed: this Mac's version shows and the other's is kept aside")
+            relaunched.meetings.first?.title == "あちらで直した" && merged.title == "あちらで直した"
+                && merged.conflict == nil && !FileManager.default.fileExists(atPath: asideFile.path)
+                && SaveCounts.of(merged).includes(SaveCounts.of(base)),
+            "changed on both while closed, from a version this Mac keeps: merged into one")
+
+        // Without that version (gone from this Mac's history), this Mac's version shows and the other's is kept aside.
+        let editor = Store(root: save, loadSettings: false, copies: copies)
+        await editor.recover()
+        editor.change(meeting.id) { $0.title = "こちらでまた直した" }
+        try await editor.checkpoint(meeting.id)
+        try FileManager.default.removeItem(at: copies.appendingPathComponent(meeting.id.uuidString + ".history"))
+        var other = merged
+        other.title = "あちらでまた直した"
+        other.saveCounts = SaveCounts.of(merged).adding("another Mac")
+        other.revision += 1
+        other.savedOn = "別の Mac"
+        try JSONEncoder().encode(other).write(to: file)
+        let again = Store(root: save, loadSettings: false, copies: copies)
+        await again.recover()
+        await again.flushCheckpoints()
+        let aside = try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: asideFile))
+        let saved = try again.savedMeeting(meeting.id)
+        try Self.check(
+            again.meetings.first?.title == "こちらでまた直した" && saved.title == "こちらでまた直した"
+                && aside.title == "あちらでまた直した" && saved.conflict?.savedOn == "別の Mac" && saved.conflict?.spots == nil
+                && SaveCounts.of(saved).includes(SaveCounts.of(other)),
+            "changed on both while closed, with no version both had: this Mac's shows and the other's is kept aside")
 
         // Another Mac's unfinished work waits for it, until this Mac is asked to take it up.
         var elsewhere = Meeting(title: "ほかの Mac で仕上げ中")

@@ -55,6 +55,10 @@ enum SyncVerdict: Equatable {
 struct MeetingConflict: Codable, Equatable {
     var savedOn: String?
     var found: Date
+    // Merged from the version both Macs had: the places both changed differently, still to choose. Nil for a whole
+    // version kept aside, when there was no version to merge from.
+    var spots: [ConflictSpot]?
+    var keptOn: String?  // The Mac whose version of the spots the meeting shows.
 }
 
 extension Meeting {
@@ -139,10 +143,20 @@ extension Store {
         }
     }
     /// A version saved on another Mac while this one also saved: joined into this Mac's when the two hold the same
-    /// meeting (Meeting.sameContent), and otherwise kept aside to choose from.
+    /// meeting (Meeting.sameContent); merged from the version both had when this Mac keeps one (MeetingMerge); and
+    /// otherwise kept aside to choose from. A meeting recorded or processed here is not merged under the work going
+    /// on: its version stays, and the other is kept aside.
     func keepAsideUnlessAlike(_ other: Meeting, found: Date, here: SaveCounts, hereRevision: UInt64) async {
-        guard let mine = meetings.first(where: { $0.id == other.id }), other.sameContent(as: mine) else {
-            await keepAside(other, found: found, here: here, hereRevision: hereRevision)
+        guard let mine = meetings.first(where: { $0.id == other.id }) else { return }
+        guard other.sameContent(as: mine) else {
+            let id = other.id
+            if id != activeID, !isProcessing(id),
+                let base = await repository.base(of: id, under: here, and: SaveCounts.of(other))
+            {
+                await merge(other, into: mine, from: base, found: found, here: here, hereRevision: hereRevision)
+            } else {
+                await keepAside(other, found: found, here: here, hereRevision: hereRevision)
+            }
             return
         }
         let id = other.id
@@ -151,6 +165,52 @@ extension Store {
         await repository.markSeen(id, at: found)
         // Saved counted past both, so the other Mac takes this one in; a notice dismissed on either stays so.
         change(id) { if other.stoppedForSilence == nil { $0.stoppedForSilence = nil } }
+    }
+    /// Takes in what the other Mac changed since the version both had, beside what this Mac changed. Places both
+    /// changed differently keep this Mac's, are listed on the meeting (MeetingConflict.spots) with the other's
+    /// version kept aside to take them from, and the meeting is saved counted past both.
+    private func merge(
+        _ other: Meeting, into mine: Meeting, from base: Meeting, found: Date, here: SaveCounts, hereRevision: UInt64
+    ) async {
+        let id = other.id
+        let worker = MeetingMerge.pick(base.workingMac, mine.workingMac, other.workingMac).value
+        let result = MeetingMerge.merge(base: base, ours: mine, theirs: other, oursProcesses: worker == thisMac)
+        var merged = result.meeting
+        merged.folderName = mine.folderName
+        if !result.spots.isEmpty {
+            guard (try? await repository.keepAside(other)) != nil else {
+                await keepAside(other, found: found, here: here, hereRevision: hereRevision)
+                return
+            }
+            merged.conflict = MeetingConflict(
+                savedOn: other.savedOn, found: found, spots: result.spots, keptOn: Self.computerName)
+        }
+        savedCounts[id] = here.merged(with: SaveCounts.of(other))
+        revisions[id] = max(hereRevision, other.revision)
+        await repository.markSeen(id, at: found)
+        guard let i = meetings.firstIndex(where: { $0.id == id }) else { return }
+        meetings[i] = merged
+        change(id) { _ in }
+        status =
+            result.spots.isEmpty
+            ? "ほかの Mac での直しを取り込み、1つにまとめました"
+            : "ほかの Mac での直しを取り込みました。同じ箇所が別々に直されたところが\(result.spots.count)か所あります"
+    }
+    /// Settles one place both Macs changed differently: the other Mac's version of it, from the version kept aside,
+    /// or the one shown. Once none is left, the version kept aside goes.
+    func settleSpot(_ id: UUID, spot: String, takeOther: Bool) async {
+        guard id != activeID, !isProcessing(id), let meeting = meetings.first(where: { $0.id == id }),
+            let spots = meeting.conflict?.spots, spots.contains(where: { $0.id == spot })
+        else { return }
+        let other = takeOther ? await repository.versionAside(of: meeting) : nil
+        if takeOther && other == nil { return }
+        let left = spots.filter { $0.id != spot }
+        if left.isEmpty { await repository.removeAside(of: meeting) }
+        change(id) { meeting in
+            if let other { MeetingMerge.take(spot, from: other, into: &meeting) }
+            meeting.conflict?.spots = left
+            if left.isEmpty { meeting.conflict = nil }
+        }
     }
     /// Lets go of versions kept aside that hold the same meeting as the one shown, as two Macs saving alike
     /// meetings once left: nothing is there to choose.

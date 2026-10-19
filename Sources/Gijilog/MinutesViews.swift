@@ -467,34 +467,85 @@ struct MinutesSections: View {
         return NoteEditing(meetingID: meetingID, part: part)
     }
 }
-// Shown when the meeting was changed on two Macs at once: the version shown is kept, the other aside, and either can
-// be put in place of the other until one is let go.
+// Shown when the meeting was changed on two Macs at once. Merged from the version both had, only the places both
+// changed differently are left, each to settle with either Mac's version; without such a version, the whole other
+// version is kept aside, and either can be put in place of the other until one is let go.
 struct ConflictNotice: View {
     @EnvironmentObject var store: Store
     let meetingID: UUID
     let conflict: MeetingConflict
     var body: some View {
-        // The version aside may be this Mac's own, when the other Mac's was kept in its place.
-        let mac =
-            conflict.savedOn == nil
-            ? "もう一方の Mac" : conflict.savedOn == Store.computerName ? "この Mac" : "「\(conflict.savedOn ?? "")」"
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Image(systemName: "arrow.triangle.branch").foregroundStyle(Palette.yamabuki)
-                Text("この会議は、2台の Mac で同時に直されました。\(mac)で直した版を、別に残しています。")
-                    .font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+            if let spots = conflict.spots {
+                heading("2台の Mac で、同じ箇所が別々に直されました（\(spots.count)か所）。ほかの直しは1つにまとめてあります。")
+                Text("箇所ごとに、残す方を選んでください。選ぶまでは\(kept)の内容を表示しています。")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                ForEach(spots) { spot in SpotChoice(meetingID: meetingID, spot: spot, kept: kept, other: other) }
+                Button("すべて\(kept)の内容のままにする") { Task { await store.dismissConflict(meetingID) } }
+                    .controlSize(.small)
+            } else {
+                // The version aside may be this Mac's own, when the other Mac's was kept in its place.
+                heading("この会議は、2台の Mac で同時に直されました。\(other)で直した版を、別に残しています。")
+                Text("表示している版と見比べて、残す方を選んでください。入れ替えても、もう一方の版は別に残ります。")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Button("\(other)の版に入れ替える") { Task { await store.swapConflict(meetingID) } }
+                    Button("表示している版を残す") { Task { await store.dismissConflict(meetingID) } }
+                }
+                .controlSize(.small)
             }
-            Text("表示している版と見比べて、残す方を選んでください。入れ替えても、もう一方の版は別に残ります。")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 8) {
-                Button("\(mac)の版に入れ替える") { Task { await store.swapConflict(meetingID) } }
-                Button("表示している版を残す") { Task { await store.dismissConflict(meetingID) } }
-            }
-            .controlSize(.small)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 6).fill(Palette.yamabuki.opacity(0.12)))
+    }
+    private func heading(_ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "arrow.triangle.branch").foregroundStyle(Palette.yamabuki)
+            Text(text).font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+    // Each Mac by name, or "この Mac" for this one: the notice reads the same on both Macs.
+    private var kept: String { Self.mac(conflict.keptOn) }
+    private var other: String { Self.mac(conflict.savedOn) }
+    private static func mac(_ name: String?) -> String {
+        guard let name else { return "もう一方の Mac" }
+        return name == Store.computerName ? "この Mac" : "「\(name)」"
+    }
+}
+// One place both Macs changed differently: each Mac's version, and a choice between them.
+struct SpotChoice: View {
+    @EnvironmentObject var store: Store
+    let meetingID: UUID
+    let spot: ConflictSpot
+    let kept: String
+    let other: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(spot.label).font(.caption.weight(.semibold))
+            version(kept, spot.kept)
+            version(other, spot.other)
+            HStack(spacing: 8) {
+                Button("\(other)の内容にする") {
+                    Task { await store.settleSpot(meetingID, spot: spot.id, takeOther: true) }
+                }
+                Button("\(kept)の内容のままにする") {
+                    Task { await store.settleSpot(meetingID, spot: spot.id, takeOther: false) }
+                }
+            }
+            .controlSize(.small)
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 5).fill(Palette.paper.opacity(0.7)))
+    }
+    private func version(_ mac: String, _ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(mac).font(.caption).foregroundStyle(.secondary).frame(minWidth: 72, alignment: .leading)
+            Text(text.isEmpty ? "（削除）" : text).font(.caption).lineLimit(4)
+                .foregroundStyle(text.isEmpty ? Color.secondary : Palette.sumi)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 // Shown when transcript lines the minutes cite were corrected or deleted by hand: the minutes can be written again

@@ -651,7 +651,9 @@ actor MeetingRepository {
         root.appendingPathComponent(meeting.folderName ?? meeting.id.uuidString)
     }
     /// Returns the number of bytes written, or 0 when a stale or deleted snapshot is ignored.
-    @discardableResult func save(_ meeting: Meeting) throws -> Int {
+    /// `history` keeps the version among the recent ones a merge can start from (base); a recording's frequent saves
+    /// leave it out.
+    @discardableResult func save(_ meeting: Meeting, history: Bool = true) throws -> Int {
         guard !deleted.contains(meeting.id), meeting.revision >= savedRevisions[meeting.id, default: 0] else {
             return 0
         }
@@ -665,6 +667,7 @@ actor MeetingRepository {
         try data.write(to: file, options: .atomic)
         seen[meeting.id] = modified(file)
         keepCopy(data, of: meeting.id)
+        if history { keepInHistory(data, of: meeting) }
         // The readable minutes travel with the audio; they are rewritten whenever the meeting changes.
         if let document = MinutesEngine.document(meeting) {
             try Data(document.utf8).write(to: folder.appendingPathComponent(Self.documentName), options: .atomic)
@@ -775,6 +778,36 @@ actor MeetingRepository {
     func keepCopy(_ meeting: Meeting) {
         guard copies != nil, let data = try? JSONEncoder().encode(meeting) else { return }
         keepCopy(data, of: meeting.id)
+        keepInHistory(data, of: meeting)
+    }
+    // The last few versions of each meeting this Mac saved or took in, beside its copy: a meeting changed on two Macs
+    // at once is merged from the latest of them both Macs had.
+    static let historyLength = 8
+    private func history(of id: UUID) -> URL? { copies?.appendingPathComponent(id.uuidString + ".history") }
+    private func keepInHistory(_ data: Data, of meeting: Meeting) {
+        guard let folder = history(of: meeting.id) else { return }
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try? data.write(to: folder.appendingPathComponent("\(meeting.revision).json"), options: .atomic)
+        let kept = versionsInHistory(folder)
+        for old in kept.dropFirst(Self.historyLength) { try? FileManager.default.removeItem(at: old.url) }
+    }
+    private func versionsInHistory(_ folder: URL) -> [(revision: UInt64, url: URL)] {
+        let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
+        return files.compactMap { url in UInt64(url.deletingPathExtension().lastPathComponent).map { ($0, url) } }
+            .sorted { $0.revision > $1.revision }
+    }
+    /// The latest version in this Mac's history that both versions descend from: every save it has, each of them
+    /// has. Nil when none is kept, as when the other Mac went on from a version this Mac never had.
+    func base(of id: UUID, under one: SaveCounts, and other: SaveCounts) -> Meeting? {
+        guard let folder = history(of: id) else { return nil }
+        for (_, url) in versionsInHistory(folder) {
+            guard let data = try? Data(contentsOf: url),
+                let version = try? JSONDecoder().decode(Meeting.self, from: data)
+            else { continue }
+            let counts = SaveCounts.of(version)
+            if one.includes(counts) && other.includes(counts) { return version }
+        }
+        return nil
     }
     private func keepCopy(_ data: Data, of id: UUID) {
         guard let copies else { return }
@@ -807,6 +840,7 @@ actor MeetingRepository {
         if FileManager.default.fileExists(atPath: folder.path) { try discard(folder) }
         if let copies {
             try? FileManager.default.removeItem(at: copies.appendingPathComponent(meeting.id.uuidString + ".json"))
+            if let history = history(of: meeting.id) { try? FileManager.default.removeItem(at: history) }
         }
         deleted.insert(meeting.id)
         savedRevisions[meeting.id] = nil

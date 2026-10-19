@@ -508,7 +508,7 @@ import UniformTypeIdentifiers
         writesInFlight += 1
         defer { writesInFlight -= 1 }
         do {
-            savedSizes[id] = try await repository.save(meeting)
+            savedSizes[id] = try await repository.save(meeting, history: id != activeID)
         } catch {
             dirtyIDs.insert(id)
             throw error
