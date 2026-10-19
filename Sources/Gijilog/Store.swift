@@ -314,6 +314,12 @@ import UniformTypeIdentifiers
             Task {
                 let saved = await keyLoad.value
                 if key.isEmpty { key = saved }  // Unless one was saved in Settings meanwhile.
+                // Once on each Mac: the item is made again under ギジログ's name (KeyStore.rebuild).
+                if !saved.isEmpty && !defaults.bool(forKey: "keychainItemRebuilt") {
+                    if await Task.detached(operation: { KeyStore.rebuild(saved) }).value {
+                        defaults.set(true, forKey: "keychainItemRebuilt")
+                    }
+                }
                 await moveMeetings(from: Self.previousLocations)
                 await recover()
             }

@@ -20,6 +20,10 @@ struct RecordedInput {
 enum KeyStore {
     static let service = "io.github.nutcase.gijilog"
     static let legacyService = "local.minutes.openai"
+    // The item's name as macOS shows it when it asks whether ギジログ may read the key.
+    static let label = "ギジログ OpenAI APIキー"
+    // Holds the key while the item is made again (rebuild), so it is never only in memory.
+    static let spareService = "io.github.nutcase.gijilog.spare"
     // Injectable so migration can be checked without reading or changing the user's actual keychain.
     struct Access {
         var read: ([String: Any]) -> (OSStatus, Data?) = { query in
@@ -46,10 +50,19 @@ enum KeyStore {
         if status == errSecSuccess { return data.flatMap { String(data: $0, encoding: .utf8) } ?? "" }
         // A denied or locked new item must not silently fall back to an older key.
         guard status == errSecItemNotFound else { return "" }
+        // A rebuild stopped between its steps left the key in the spare item: it goes back under its own name.
+        let (spare, kept) = access.read(query(spareService))
+        if spare == errSecSuccess, let kept {
+            var item = query(service)
+            item[kSecValueData as String] = kept
+            item[kSecAttrLabel as String] = label
+            if access.add(item) == errSecSuccess { _ = access.delete(query(spareService)) }
+            return String(data: kept, encoding: .utf8) ?? ""
+        }
         // Rename in place to preserve the credential and its access controls. If that fails, leave it intact and
         // keep using it for this launch; the next launch can try migration again.
         let moved = access.update(
-            query(legacyService), [kSecAttrService as String: service, kSecAttrLabel as String: service])
+            query(legacyService), [kSecAttrService as String: service, kSecAttrLabel as String: label])
         let name = moved == errSecSuccess || moved == errSecDuplicateItem ? service : legacyService
         let (loaded, value) = access.read(query(name))
         guard loaded == errSecSuccess, let value else {
@@ -65,7 +78,7 @@ enum KeyStore {
             try remove(query, using: access)
             return
         }
-        let attributes: [String: Any] = [kSecValueData as String: Data(value.utf8), kSecAttrLabel as String: service]
+        let attributes: [String: Any] = [kSecValueData as String: Data(value.utf8), kSecAttrLabel as String: label]
         let status = access.update(query, attributes)
         if status == errSecItemNotFound {
             var q = query
@@ -78,6 +91,29 @@ enum KeyStore {
         // The new key is already saved and takes priority on read. A cleanup failure must not make the caller
         // keep using its old in-memory key. Clearing the key still requires deleting both items above.
         try? removeLegacy(using: access)
+    }
+    /// Makes the key's item again, so macOS names it by `label` when it asks whether ギジログ may read the key: an
+    /// item renamed from an earlier name (as local.minutes.openai was) keeps the name it was made with in its access
+    /// list, which is what the question shows. The key goes into a spare item first: if a step fails, it stays in
+    /// the item it was in or in the spare, which `read` puts back. True once made again.
+    static func rebuild(_ value: String, using access: Access = Access()) -> Bool {
+        guard !value.isEmpty else { return false }
+        let spare = query(spareService)
+        _ = access.delete(spare)  // Left by an earlier attempt that stopped; the key is read from the item itself.
+        var kept = spare
+        kept[kSecValueData as String] = Data(value.utf8)
+        kept[kSecAttrLabel as String] = label
+        guard access.add(kept) == errSecSuccess else { return false }
+        guard access.delete(query(service)) == errSecSuccess else {
+            _ = access.delete(spare)
+            return false
+        }
+        var item = query(service)
+        item[kSecValueData as String] = Data(value.utf8)
+        item[kSecAttrLabel as String] = label
+        guard access.add(item) == errSecSuccess else { return false }  // The spare holds the key until `read`.
+        _ = access.delete(spare)
+        return true
     }
     private static func removeLegacy(using access: Access) throws {
         try remove(query(legacyService), using: access)
