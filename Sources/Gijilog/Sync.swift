@@ -58,6 +58,25 @@ struct MeetingConflict: Codable, Equatable {
 }
 
 extension Meeting {
+    /// Whether two versions hold the same meeting: alike in everything but what only tells versions apart (save
+    /// counts, the Mac that saved, the form, a version kept aside) or is never saved. Sets compare by what they hold,
+    /// whatever order a Mac wrote them in. A notice dismissed on one Mac (a recording stopped by silence) does not
+    /// count either: dismissed is how the versions are joined.
+    func sameContent(as other: Meeting) -> Bool { comparable == other.comparable }
+    private var comparable: Meeting {
+        var meeting = self
+        meeting.revision = 0
+        meeting.saveCounts = nil
+        meeting.savedOn = nil
+        meeting.conflict = nil
+        meeting.schemaVersion = Meeting.schema
+        meeting.folderName = nil
+        meeting.stoppedForSilence = nil
+        meeting.notes?.agenda = []
+        meeting.notes?.topic = nil
+        meeting.notes?.corrections = []
+        return meeting
+    }
     /// Recording, transcription or minutes still to finish, as a quit or a crash can leave them.
     var hasUnfinishedWork: Bool {
         capture == .recording || finalReviewPending == true
@@ -105,8 +124,10 @@ extension Store {
                 await repository.keepCopy(meeting)
                 reloaded += 1
             case .newer, .both:
-                await keepAside(meeting, found: date, here: here, hereRevision: hereRevision)
-                kept += 1
+                // Saved on both Macs, but often alike in all the user sees (only the order a set was written in, or
+                // the save counts, differ): then it is one meeting, not two to choose from.
+                await keepAsideUnlessAlike(meeting, found: date, here: here, hereRevision: hereRevision)
+                kept += meeting.sameContent(as: meetings[i]) ? 0 : 1
             }
         }
         if kept > 0 {
@@ -116,6 +137,40 @@ extension Store {
         } else if reloaded > 0 {
             status = reloaded == 1 ? "ほかで更新された会議を読み込み直しました" : "ほかで更新された会議を\(reloaded)件読み込み直しました"
         }
+    }
+    /// A version saved on another Mac while this one also saved: joined into this Mac's when the two hold the same
+    /// meeting (Meeting.sameContent), and otherwise kept aside to choose from.
+    func keepAsideUnlessAlike(_ other: Meeting, found: Date, here: SaveCounts, hereRevision: UInt64) async {
+        guard let mine = meetings.first(where: { $0.id == other.id }), other.sameContent(as: mine) else {
+            await keepAside(other, found: found, here: here, hereRevision: hereRevision)
+            return
+        }
+        let id = other.id
+        savedCounts[id] = here.merged(with: SaveCounts.of(other))
+        revisions[id] = max(hereRevision, other.revision)
+        await repository.markSeen(id, at: found)
+        // Saved counted past both, so the other Mac takes this one in; a notice dismissed on either stays so.
+        change(id) { if other.stoppedForSilence == nil { $0.stoppedForSilence = nil } }
+    }
+    /// Lets go of versions kept aside that hold the same meeting as the one shown, as two Macs saving alike
+    /// meetings once left: nothing is there to choose.
+    func joinAlikeVersionsAside() async {
+        var joined = 0
+        for meeting in meetings where meeting.conflict != nil {
+            guard let other = await repository.versionAside(of: meeting), other.sameContent(as: meeting) else {
+                continue
+            }
+            let id = meeting.id
+            savedCounts[id] = (savedCounts[id] ?? SaveCounts.of(meeting)).merged(with: SaveCounts.of(other))
+            revisions[id] = max(revisions[id] ?? meeting.revision, other.revision)
+            await repository.removeAside(of: meeting)
+            change(id) {
+                $0.conflict = nil
+                if other.stoppedForSilence == nil { $0.stoppedForSilence = nil }
+            }
+            joined += 1
+        }
+        if joined > 0 { status = "同じ内容だった別の版を\(joined)件、1つにまとめました" }
     }
     /// Keeps the other Mac's version of a meeting changed on both beside this Mac's, which stays, and saves this
     /// Mac's counted past both, so the other Mac takes it in rather than keeping a version aside in turn.

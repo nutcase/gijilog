@@ -489,6 +489,66 @@ extension ProcessingTests {
                     recording: true, sender: "io.github.nutcase.gijilog", fromThisApp: true, systemReason: false),
             "only another app's quit is turned down, and only while recording")
     }
+    // Two Macs that saved the same meeting at once, alike in all the user sees, keep one version, not two to choose
+    // from: whatever order a set was written in, whatever the save counts. One already kept aside goes on launch.
+    @MainActor func testAlikeVersionsAreJoined() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = Store(root: root, loadSettings: false)
+        var meeting = Meeting(title: "同じ会議")
+        meeting.folderName = "alike"
+        meeting.capture = .stopped
+        var notes = MinutesState()
+        notes.appliedSegmentIDs = Set((0..<20).map { "s\($0)" })
+        meeting.notes = notes
+        meeting.stoppedForSilence = Date(timeIntervalSince1970: 1_790_000_000)
+        store.meetings = [meeting]
+        try await store.checkpoint(meeting.id)
+        let file = root.appendingPathComponent("alike/meeting.json")
+        let base = try Data(contentsOf: file)
+        try await store.checkpoint(meeting.id)  // A save here the other Mac never saw.
+        // The other Mac saved the same meeting from the first save: its own count, the set in another order, and
+        // the silence notice dismissed.
+        var json = try Self.require(try JSONSerialization.jsonObject(with: base) as? [String: Any], "the saved meeting")
+        var savedNotes = try Self.require(json["notes"] as? [String: Any], "notes")
+        savedNotes["appliedSegmentIDs"] = Array((savedNotes["appliedSegmentIDs"] as? [String] ?? []).reversed())
+        json["notes"] = savedNotes
+        json["saveCounts"] = (json["saveCounts"] as? [String: Any] ?? [:]).merging(["another Mac": 1]) { a, _ in a }
+        json["savedOn"] = "別の Mac"
+        json.removeValue(forKey: "stoppedForSilence")
+        try JSONSerialization.data(withJSONObject: json).write(to: file)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(5)], ofItemAtPath: file.path)
+        let theirs = try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: file))
+        var renamed = theirs
+        renamed.title = "別の題"
+        try Self.check(
+            theirs.sameContent(as: store.meetings[0]) && !renamed.sameContent(as: store.meetings[0]),
+            "versions alike but for set order, counts and a dismissed notice hold the same meeting; a title does not")
+        await store.reloadChangedMeetings()
+        await store.flushCheckpoints()
+        let saved = try JSONDecoder().decode(Meeting.self, from: Data(contentsOf: file))
+        let aside = root.appendingPathComponent("alike/" + MeetingRepository.asideName)
+        try Self.check(
+            !FileManager.default.fileExists(atPath: aside.path) && store.meetings[0].conflict == nil
+                && saved.stoppedForSilence == nil && SaveCounts.of(saved).includes(SaveCounts.of(theirs))
+                && SyncVerdict.of(saved, here: SaveCounts.of(theirs), hereRevision: theirs.revision) == .newer,
+            "saved alike on both Macs, the meeting stays one version, saved past both")
+
+        // A version kept aside before alike ones were joined goes on the next launch.
+        var shown = saved
+        shown.conflict = MeetingConflict(savedOn: "別の Mac", found: Date())
+        try await MeetingRepository(root: root).save(shown)
+        try await MeetingRepository(root: root).keepAside(theirs)
+        let relaunched = Store(root: root, loadSettings: false)
+        await relaunched.recover()
+        await relaunched.flushCheckpoints()
+        let resaved = try relaunched.savedMeeting(meeting.id)
+        try Self.check(
+            relaunched.meetings.first?.conflict == nil && !FileManager.default.fileExists(atPath: aside.path)
+                && resaved.conflict == nil,
+            "a version kept aside that holds the same meeting is let go on launch")
+    }
     // Which of two versions is the later one, by each Mac's save count.
     func testSaveCountsTellNewerOlderAndBoth() throws {
         var base = Meeting(title: "会議")

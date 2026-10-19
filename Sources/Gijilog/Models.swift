@@ -38,10 +38,10 @@ enum CaptureState: String, Codable { case planned, recording, stopped, interrupt
 enum JobState: String, Codable, Sendable { case pending, running, completed, failed }
 enum ItemState: String, Codable, CaseIterable, Sendable { case open, done, cancelled }
 // Transcription and minutes always use OpenAI. Older meetings may also carry "mode"/"localModel", which are ignored.
-struct SessionSettings: Codable, Sendable {
+struct SessionSettings: Codable, Sendable, Equatable {
     var model = "gpt-6-sol"
 }
-struct TranscriptionJob: Codable, Identifiable, Sendable {
+struct TranscriptionJob: Codable, Identifiable, Sendable, Equatable {
     var id: String
     var filename: String
     var offset: Double
@@ -93,7 +93,7 @@ extension NoteItem {
             .filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 }
-struct NotesDelta: Codable, Sendable {
+struct NotesDelta: Codable, Sendable, Equatable {
     var summary: [NoteItem] = []
     var decisions: [NoteItem] = []
     var unresolved: [NoteItem] = []
@@ -103,7 +103,7 @@ struct NotesDelta: Codable, Sendable {
             + actions.filter { $0.state == .cancelled }
     }
 }
-struct MinutesState: Codable, Sendable {
+struct MinutesState: Codable, Sendable, Equatable {
     var content = NotesDelta()
     var appliedSegmentIDs: Set<String> = []
     var updatedAt: Date?
@@ -176,7 +176,7 @@ struct MinutesState: Codable, Sendable {
         uncheckedItemIDs = marks(uncheckedItemIDs, before?.uncheckedItemIDs, now?.uncheckedItemIDs)
     }
 }
-struct Meeting: Codable, Identifiable {
+struct Meeting: Codable, Identifiable, Equatable {
     var id = UUID()
     var title: String
     var date = Date()

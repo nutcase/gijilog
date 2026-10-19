@@ -25,8 +25,9 @@ extension Store {
             // stays, and the other is kept aside.
             for (other, found) in await repository.takeConflicts() {
                 guard let mine = meetings.first(where: { $0.id == other.id }) else { continue }
-                await keepAside(other, found: found, here: SaveCounts.of(mine), hereRevision: mine.revision)
+                await keepAsideUnlessAlike(other, found: found, here: SaveCounts.of(mine), hereRevision: mine.revision)
             }
+            await joinAlikeVersionsAside()
             await repository.writeMissingDocuments(saved)
             selected = meetings.first?.id
             if !failures.isEmpty { error = "一部の会議を読み込めませんでした。保存場所のデータは保持しています。\n" + failures.joined(separator: "\n") }
