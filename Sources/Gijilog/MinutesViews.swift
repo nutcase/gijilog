@@ -127,6 +127,9 @@ struct MinutesDesk: View {
             updateState.font(.caption)
             Rectangle().fill(Palette.sumi).frame(height: 1.5).padding(.top, 6)
         }
+        // Nothing here is for copying, and the status changes (仕上げ中 → 完了) just as the sheet becomes selectable
+        // again: selectable text is drawn by AppKit, which drew that change upside down.
+        .textSelection(.disabled)
     }
     // The meeting's own recording: a prepared meeting is recorded, a finished one continued. A new meeting is
     // recorded from the toolbar.
