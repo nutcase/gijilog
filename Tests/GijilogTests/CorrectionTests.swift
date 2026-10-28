@@ -49,6 +49,43 @@ extension ProcessingTests {
             TermMatcher.replacing(["郡"], with: "郡司", in: "郡司さんと郡さん") == "郡司さんと郡司さん",
             "the right spelling is never corrected inside itself")
     }
+    // A line corrected in several places at once offers each changed word that appears elsewhere, one at a time.
+    @MainActor func testEveryWordChangedInAnEditIsOffered() throws {
+        let both = TermMatcher.changedTerms(from: "森バスのコストを高山さんに確認", to: "モリバスのコストを高松さんに確認")
+        let mixed = TermMatcher.changedTerms(
+            from: "セキュリティ、これはもう済みですね。エルミンさん、WAとか。", to: "セキュリティ、これはもう済みですね。えりんちゃんWL版とか。")
+        let one = TermMatcher.changedTerms(from: "森バスのコストを整理中", to: "モリバスのコストを整理中")
+        try Self.check(
+            both.map(\.from) == ["森バス", "高山"] && both.map(\.to) == ["モリバス", "高松"]
+                && mixed.contains(where: { $0.from == "WA" && $0.to == "WL版" })
+                && one.map(\.from) == ["森バス"] && one.map(\.to) == ["モリバス"]
+                && TermMatcher.changedTerms(from: "A案にする", to: "A案にする").isEmpty,
+            "each word changed in one edit is found, and a single change reads as before: \(both) \(mixed)")
+
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = Store(root: root, loadSettings: false)
+        var meeting = Meeting(title: "定例")
+        meeting.capture = .stopped
+        meeting.segments = [
+            Segment(id: "a", time: 0, source: "マイク", text: "森バスのコストを高山さんに確認"),
+            Segment(id: "b", time: 10, source: "マイク", text: "森バスは好調です"),
+        ]
+        var notes = MinutesState()
+        notes.content.actions = [NoteItem(id: "x", text: "高山さんに見積もりを依頼する", evidence: ["b"])]
+        meeting.notes = notes
+        store.meetings = [meeting]
+        store.updateSegment(meeting.id, id: "a", text: "モリバスのコストを高松さんに確認")
+        let first = store.correctionOffer
+        store.correctionOffer = nil
+        let second = store.correctionOffer
+        store.correctionOffer = nil
+        try Self.check(
+            first?.from == "森バス" && first?.to == "モリバス" && second?.from == "高山" && second?.to == "高松"
+                && store.correctionOffer == nil,
+            "each changed word that appears elsewhere is offered in turn: \(String(describing: first)), \(String(describing: second))"
+        )
+    }
     func testHandEditsSurviveAIUpdates() throws {
         let first = Segment(id: "s1", time: 0, source: "マイク", text: "B案にします")
         let second = Segment(id: "s2", time: 30, source: "マイク", text: "資料は田中さんが金曜までに作ります")

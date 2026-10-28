@@ -229,6 +229,52 @@ enum TermMatcher {
     }
     /// The word changed in an edit, as whole words: "森バスのコスト" → "モリバスのコスト" changes 森バス to モリバス,
     /// not just 森 to モリ. Nil when nothing, or more than one short phrase, changed.
+    /// Every word changed in an edit that changed several at once (「エルミンさん、WA」→「えりんちゃんWL版」), each
+    /// as `changedTerm` finds a single one. The two texts are lined up by the letters they share (kanji, katakana,
+    /// Latin and digits; kana and punctuation are too common to tell where a word went), and each stretch between
+    /// those that differs is read in its own surroundings, which are the same in both.
+    static func changedTerms(from old: String, to new: String) -> [(from: String, to: String)] {
+        let a = Array(old)
+        let b = Array(new)
+        guard a != b else { return [] }
+        func ties(_ character: Character) -> Bool { script(character) != .other }
+        // The longest run of shared letters, in order (an LCS over the letters that can tie the texts together).
+        let n = a.count
+        let m = b.count
+        var length = [[Int]](repeating: [Int](repeating: 0, count: m + 1), count: n + 1)
+        for i in stride(from: n - 1, through: 0, by: -1) {
+            for j in stride(from: m - 1, through: 0, by: -1) {
+                length[i][j] =
+                    a[i] == b[j] && ties(a[i]) ? length[i + 1][j + 1] + 1 : max(length[i + 1][j], length[i][j + 1])
+            }
+        }
+        var shared: [(Int, Int)] = [(-1, -1)]
+        var (i, j) = (0, 0)
+        while i < n && j < m {
+            if a[i] == b[j] && ties(a[i]) && length[i][j] == length[i + 1][j + 1] + 1 {
+                shared.append((i, j))
+                i += 1
+                j += 1
+            } else if length[i + 1][j] >= length[i][j + 1] {
+                i += 1
+            } else {
+                j += 1
+            }
+        }
+        shared.append((n, m))
+        let changed: [(Range<Int>, Range<Int>)] = zip(shared, shared.dropFirst()).compactMap { start, end in
+            let here = (start.0 + 1)..<end.0
+            let there = (start.1 + 1)..<end.1
+            return Array(a[here]) == Array(b[there]) ? nil : (here, there)
+        }
+        return changed.indices.compactMap { k in
+            let from = k == 0 ? 0 : changed[k - 1].0.upperBound
+            let to = k == changed.count - 1 ? n : changed[k + 1].0.lowerBound
+            let fromNew = k == 0 ? 0 : changed[k - 1].1.upperBound
+            let toNew = k == changed.count - 1 ? m : changed[k + 1].1.lowerBound
+            return changedTerm(from: String(a[from..<to]), to: String(b[fromNew..<toNew]))
+        }
+    }
     static func changedTerm(from old: String, to new: String) -> (from: String, to: String)? {
         let a = Array(old)
         let b = Array(new)

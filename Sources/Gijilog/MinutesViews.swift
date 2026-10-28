@@ -435,6 +435,9 @@ struct MinutesSections: View {
         VStack(alignment: .leading, spacing: 30) {
             if !revised.isEmpty, let meetingID {
                 RevisionNotice(meetingID: meetingID, count: revised.count, updates: notes.updateTakesInCorrections)
+            } else if editable, let meetingID, let lines = notes.revisedSegmentIDs, !lines.isEmpty {
+                // No item cites the lines corrected, but the minutes may still say what they said.
+                RevisionNotice(meetingID: meetingID, count: 0, updates: true, lines: lines.count)
             }
             if content.summary.contains(where: { !Set($0.evidence).isDisjoint(with: latest) }) {
                 HStack(spacing: 6) {
@@ -559,14 +562,17 @@ struct RevisionNotice: View {
     let meetingID: UUID
     let count: Int
     let updates: Bool  // Writing the minutes again would change some of the marked items.
+    var lines = 0  // Corrected lines no item cites, when `count` is 0.
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Palette.yamabuki)
                 Text(
-                    updates
-                        ? "文字起こしで直した発言をもとにした項目が\(count)件あります（「要確認」の印）。"
-                        : "手で直した項目のうち\(count)件は、もとにした発言を文字起こしで直しています（「要確認」の印）。"
+                    count == 0
+                        ? "文字起こしで直した発言が\(lines)件あります。議事録には、直す前の内容が残っているかもしれません。"
+                        : updates
+                            ? "文字起こしで直した発言をもとにした項目が\(count)件あります（「要確認」の印）。"
+                            : "手で直した項目のうち\(count)件は、もとにした発言を文字起こしで直しています（「要確認」の印）。"
                 )
                 .font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
             }

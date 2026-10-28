@@ -34,7 +34,7 @@ extension Store {
     func updateNoteItem(
         _ meetingID: UUID, part: NotePart, id: String, offersCorrection: Bool = true, _ update: (inout NoteItem) -> Void
     ) {
-        var offer: CorrectionOffer?
+        var offers: [CorrectionOffer] = []
         var offersCorrection = offersCorrection
         change(meetingID) { m in
             guard var item = m.notes?.content[part].first(where: { $0.id == id }),
@@ -69,15 +69,16 @@ extension Store {
                 return [(old, new)] + (field == .points || field == .opinions ? lines : [])
             }
             for (old, new) in edits where offersCorrection {
-                guard let term = TermMatcher.changedTerm(from: old, to: new) else { continue }
-                let count = m.occurrences(of: term.from, correctedTo: term.to).count
-                if count > 0 {
-                    offer = CorrectionOffer(meetingID: meetingID, from: term.from, to: term.to, count: count)
-                    break
+                for term in TermMatcher.changedTerms(from: old, to: new)
+                where !offers.contains(where: { $0.from == term.from }) {
+                    let count = m.occurrences(of: term.from, correctedTo: term.to).count
+                    if count > 0 {
+                        offers.append(CorrectionOffer(meetingID: meetingID, from: term.from, to: term.to, count: count))
+                    }
                 }
             }
         }
-        correctionOffer = offer
+        offerCorrections(offers)
     }
     /// Moves a decision, open issue or action by hand under the summary topic with that ID, where AI updates then keep
     /// it. Topics are found among those the minutes show, not cancelled ones; two of the same name stay apart.
@@ -118,22 +119,29 @@ extension Store {
     func updateSegment(_ meetingID: UUID, id: String, text: String) {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        var offer: CorrectionOffer?
+        var offers: [CorrectionOffer] = []
         change(meetingID) { m in
             guard let i = m.segments.firstIndex(where: { $0.id == id }), m.segments[i].text != text else { return }
             let old = m.segments[i].text
             m.segments[i].text = text
             m.segments[i].edited = true
             Self.markRevised(id, in: &m)
-            if let term = TermMatcher.changedTerm(from: old, to: text) {
+            // Each word the edit changed, one offer at a time.
+            for term in TermMatcher.changedTerms(from: old, to: text) {
                 let count = m.occurrences(of: term.from, correctedTo: term.to).count
                 if count > 0 {
-                    offer = CorrectionOffer(
-                        meetingID: meetingID, from: term.from, to: term.to, count: count, inTranscript: true)
+                    offers.append(
+                        CorrectionOffer(
+                            meetingID: meetingID, from: term.from, to: term.to, count: count, inTranscript: true))
                 }
             }
         }
-        correctionOffer = offer
+        offerCorrections(offers)
+    }
+    /// Offers to fix each changed word elsewhere too, one after another: the next shows once one is answered.
+    func offerCorrections(_ offers: [CorrectionOffer]) {
+        pendingOffers = Array(offers.dropFirst())
+        correctionOffer = offers.first
     }
     /// Deletes a line, such as speech invented for noise. Minutes citing it keep their other evidence.
     func removeSegment(_ meetingID: UUID, id: String) {

@@ -143,7 +143,10 @@ import UniformTypeIdentifiers
     }
     @Published var minutesFind = FindState()  // Finding words in the open meeting's minutes.
     @Published var transcriptFind = FindState()  // Finding words in the open meeting's transcript.
-    @Published var correctionOffer: CorrectionOffer?  // After an edit: fix the same word elsewhere too?
+    @Published var correctionOffer: CorrectionOffer? {  // After an edit: fix the same word elsewhere too?
+        didSet { if correctionOffer == nil && !pendingOffers.isEmpty { correctionOffer = pendingOffers.removeFirst() } }
+    }
+    var pendingOffers: [CorrectionOffer] = []  // Other words the same edit changed, offered once that one is answered.
     @Published var correcting: CorrectionRequest?  // The sheet for fixing a word across a meeting.
     @Published var editingAgendaItem: UUID?  // The agenda topic open for editing; the others show as text.
     @Published var addingAgenda: UUID?  // The meeting whose "add a topic" field is open.
