@@ -1,12 +1,37 @@
 #!/bin/zsh
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Developer-owned desktop client configuration is bundled at build time, never imported by users.
+google_oauth_file="${GIJILOG_GOOGLE_OAUTH_FILE:-$PWD/Resources/GoogleCalendarOAuth.json}"
+if [[ -n "${GIJILOG_GOOGLE_OAUTH_FILE:-}" || -f "$google_oauth_file" ]]; then
+  python3 - "$google_oauth_file" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1]) as source:
+        client = json.load(source)["installed"]
+    if not isinstance(client.get("client_id"), str) or not client["client_id"].endswith(".apps.googleusercontent.com"):
+        raise ValueError()
+    if client.get("client_secret") is not None and not isinstance(client["client_secret"], str):
+        raise ValueError()
+except (OSError, ValueError, KeyError, TypeError, AttributeError):
+    sys.exit("Google接続設定が不正です。デスクトップアプリ用のJSONを指定してください。")
+PY
+fi
 ./scripts/check.sh
-APP="$PWD/dist/ギジログ.app"
+APP="${GIJILOG_APP_OUTPUT:-$PWD/dist/ギジログ.app}"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/Gijilog "$APP/Contents/MacOS/Gijilog"
 # The MCP bridge AI apps run (see MCPServer.swift); it is signed before the app that contains it.
 cp .build/release/gijilog-mcp "$APP/Contents/MacOS/gijilog-mcp"
+# Never retain an earlier build's configuration implicitly.
+rm -f "$APP/Contents/Resources/GoogleCalendarOAuth.json"
+if [[ -f "$google_oauth_file" ]]; then
+  cp "$google_oauth_file" "$APP/Contents/Resources/GoogleCalendarOAuth.json"
+else
+  print 'Google接続設定がないため、Google連携なしでビルドします。'
+fi
 # Package the chosen artwork at every standard macOS icon size, including Retina variants. At 16 and 32 pixels
 # the artwork shrunk turns to blur, so those use versions drawn for the pixel grid (scripts/small-icons.swift).
 iconset_dir="$PWD/.build/AppIcon.iconset"

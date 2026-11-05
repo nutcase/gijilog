@@ -23,6 +23,8 @@ struct SettingsView: View {
     var body: some View {
         TabView(selection: $store.settingsTab) {
             GeneralSettings().tabItem { Label("一般", systemImage: "gearshape") }.tag("一般")
+            CalendarSettings(calendar: store.calendar).tabItem { Label("カレンダー連携", systemImage: "calendar") }.tag(
+                "カレンダー連携")
             TranscriptionSettings().tabItem { Label("文字起こし", systemImage: "text.quote") }.tag("文字起こし")
             TagSettings().tabItem { Label("タグ", systemImage: "tag") }.tag("タグ")
             MCPSettings().tabItem { Label("AI 連携", systemImage: "sparkles") }.tag("AI 連携")

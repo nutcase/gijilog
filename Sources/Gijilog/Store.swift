@@ -203,6 +203,7 @@ import UniformTypeIdentifiers
     static let unsavedMac = UUID().uuidString
     var activeID: UUID?
     lazy var pipeline = ProcessingPipeline(store: self)
+    lazy var calendar = CalendarIntegration(store: self, defaults: persistsSettings ? .standard : nil)
     var captureInputID: String?  // The microphone in use, so unrelated devices cannot stop a recording.
     var summaryTimer: Timer?
     var silenceTimer: Timer?
@@ -343,6 +344,7 @@ import UniformTypeIdentifiers
             .sink { [weak self] _ in MainActor.assumeIsolated { self?.refreshSearch() } }
         if loadSettings {
             updateMCPServer()
+            calendar.start()
             observers.append(
                 NSWorkspace.shared.notificationCenter.addObserver(
                     forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
@@ -580,6 +582,7 @@ import UniformTypeIdentifiers
     }
     func prepareForTermination() async {
         shuttingDown = true
+        calendar.shutdown()
         stopMCPServer()  // The bridge starts the app again when an AI app next asks.
         pipeline.pause(terminal: true)
         recorder.cancelPendingStart()

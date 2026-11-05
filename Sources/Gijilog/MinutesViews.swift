@@ -98,6 +98,9 @@ struct MinutesDesk: View {
                     text: Binding(get: { meeting.title }, set: { store.renamePlannedMeeting(meeting.id, to: $0) })
                 )
                 .textFieldStyle(.plain).font(.mincho(26))
+                CalendarTitleSuggestions(calendar: store.calendar, meeting: meeting, typed: meeting.title) {
+                    store.renamePlannedMeeting(meeting.id, to: $0)
+                }
             } else {
                 MeetingTitle(meeting: meeting)
             }
@@ -299,15 +302,22 @@ struct MeetingTitle: View {
         let editing = store.editingTitle == meeting.id
         Group {
             if editing {
-                TextField("会議のタイトル", text: $draft.text)
-                    .textFieldStyle(.plain)
-                    .focused($focused)
-                    .onChange(of: draft.text) { store.renameMeeting(meeting.id, to: draft.text) }
-                    .onSubmit { store.editingTitle = nil }
-                    .onEscape {
-                        store.renameMeeting(meeting.id, to: draft.original)
-                        store.editingTitle = nil
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField("会議のタイトル", text: $draft.text)
+                        .textFieldStyle(.plain)
+                        .focused($focused)
+                        .onChange(of: draft.text) { store.renameMeeting(meeting.id, to: draft.text) }
+                        .onSubmit { store.editingTitle = nil }
+                        .onEscape {
+                            store.renameMeeting(meeting.id, to: draft.original)
+                            store.editingTitle = nil
+                        }
+                    CalendarTitleSuggestions(calendar: store.calendar, meeting: meeting, typed: draft.text) {
+                        draft.text = $0
+                        store.renameMeeting(meeting.id, to: $0)
+                        focused = true
                     }
+                }
             } else {
                 Text(highlighted(meeting.title, terms))
                     .textSelection(.disabled)

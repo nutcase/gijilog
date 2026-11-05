@@ -9,5 +9,6 @@ swiftc -swift-version 5 -parse-as-library -target "$target_arch-apple-macosx15.0
   Sources/Gijilog/MCPServer.swift Sources/Gijilog/Corrections.swift Sources/Gijilog/Agent.swift Sources/Gijilog/Sync.swift Sources/Gijilog/Merge.swift \
   Sources/Gijilog/StoreRecovery.swift Sources/Gijilog/StoreRecording.swift Sources/Gijilog/StoreProcessing.swift \
   Sources/Gijilog/StoreTags.swift Sources/Gijilog/StoreEditing.swift Sources/Gijilog/StoreMCP.swift Sources/Gijilog/StoreAsk.swift \
+  Sources/Gijilog/CalendarModel.swift Sources/Gijilog/GoogleCalendar.swift Sources/Gijilog/CalendarLogin.swift Sources/Gijilog/CalendarIntegration.swift \
   Tests/GijilogTests/*.swift -o .build/checks/processing-tests
 .build/checks/processing-tests

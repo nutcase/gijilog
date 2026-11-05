@@ -28,6 +28,7 @@ struct MeetingList: View {
                             .tag(meeting.id)
                             .contextMenu {
                                 TagMenu(meeting: meeting)
+                                CalendarTitleButton(calendar: store.calendar, meeting: meeting)
                                 Divider()
                                 Button("ゴミ箱に移動…", role: .destructive) { store.deletion = meeting }
                                     .disabled(!store.canDelete(meeting.id))

@@ -162,6 +162,7 @@ struct ContentView: View {
             MeetingList().navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 320)
         } detail: {
             VStack(spacing: 0) {
+                CalendarToday(calendar: store.calendar)
                 // Recording is started from the toolbar or a meeting's page; the bar appears only while recording,
                 // or when the API key is missing.
                 if store.recording || !store.hasKey {

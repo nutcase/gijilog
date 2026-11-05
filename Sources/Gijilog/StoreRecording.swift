@@ -9,13 +9,16 @@ import UniformTypeIdentifiers
 // Recording: starting, continuing and stopping a meeting's capture.
 extension Store {
     /// Records the selected prepared meeting, or a new one. `newMeeting` always starts a new one.
-    func start(newMeeting forcesNew: Bool = false) async {
+    func start(newMeeting forcesNew: Bool = false, prepared meetingID: UUID? = nil) async {
         guard canStartRecording() else { return }
+        if let meetingID, !meetings.contains(where: { $0.id == meetingID && $0.capture == .planned }) { return }
         busy = true
         pendingCaptureError = nil
         defer { busy = false }
         // A prepared meeting that is selected is the one recorded, with its title, tags and agenda.
-        let planned = forcesNew ? nil : selectedMeeting(where: { $0.capture == .planned })
+        let planned =
+            meetingID.flatMap { id in meetings.first { $0.id == id && $0.capture == .planned } }
+            ?? (forcesNew ? nil : selectedMeeting(where: { $0.capture == .planned }))
         let id: UUID
         if let planned {
             id = planned.id
@@ -23,6 +26,7 @@ extension Store {
             change(id) { meeting in
                 meeting.capture = .recording
                 meeting.date = Date()
+                if planned.needsCalendarTitle { meeting.title = Meeting.defaultTitle(at: meeting.date) }
                 meeting.settings = settings
                 meeting.finalReviewPending = true
                 meeting.status = "録音中"
@@ -36,6 +40,7 @@ extension Store {
             if let planned {
                 // Still prepared: the agenda waits for the next try.
                 meeting.capture = .planned
+                if meeting.needsCalendarTitle { meeting.title = planned.title }
                 meeting.date = planned.date
                 meeting.settings = nil
                 meeting.finalReviewPending = nil
@@ -45,6 +50,9 @@ extension Store {
                 meeting.capture = .interrupted
                 meeting.status = "録音開始失敗"
             }
+        }
+        if meetings.first(where: { $0.id == id })?.capture == .recording {
+            Task { await calendar.completeTitle(for: id) }
         }
     }
     /// A finished meeting can take more recording once nothing is processing it.
@@ -174,7 +182,9 @@ extension Store {
     }
     /// A meeting titled by the time, in a new folder. Its title is changed by clicking it.
     func newMeeting(capture: CaptureState) -> Meeting {
-        var meeting = Meeting(title: "会議 \(Date().formatted(date: .numeric, time: .shortened))")
+        let date = Date()
+        var meeting = Meeting(title: Meeting.defaultTitle(at: date))
+        meeting.date = date
         meeting.capture = capture
         meeting.workingMac = thisMac
         if capture == .planned {
