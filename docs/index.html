@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="google-site-verification" content="hLLaGW_bKI9RCBi5Jm-6RceBUeBqwVwyGycBb42XTPE">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="ギジログは、Macの会議音声を録音し、議論・決定事項・アクションを整理する議事録アプリです。">
+  <title>ギジログ — 会議を、次の一歩に。</title>
+  <link rel="icon" href="icon.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="nav"><a class="brand" href="./"><img src="icon.png" width="40" height="40" alt="">ギジログ <span>Gijilog</span></a><a href="privacy.html">プライバシー</a></header>
+  <main>
+    <section class="hero">
+      <div><p class="eyebrow">MACで使う、会議の記録</p><h1>会議を、<br>次の一歩に。</h1><p class="lead">話し合ったこと。決まったこと。これからやること。<br>ギジログが会議の音声を記録し、読み返せる議事録に整理します。</p><div class="actions"><a class="button" href="https://github.com/nutcase/gijilog">GitHubで使い方を見る <span aria-hidden="true">↗</span></a><a href="#calendar">Googleカレンダー連携について ↓</a></div><p class="small">macOS 15以降 · OpenAI APIキーが必要です。API利用料は別途かかります。</p></div>
+      <aside class="minutes" aria-label="議事録の構成例。架空の会議です"><div class="paper-top"><span class="dot"></span> 会議メモ <span>構成例</span></div><h2>新しい企画の打ち合わせ</h2><p class="label">話し合ったこと</p><p>最初に届けたい体験と、公開までの進め方。</p><p class="label">決まったこと</p><p>まずは小さく試し、使った人の声を集める。</p><p class="label">次にやること</p><p class="task"><span aria-hidden="true">✓</span> 試作を用意する</p><p class="task"><span aria-hidden="true">✓</span> 確認する観点をまとめる</p><div class="paper-bottom">議論 → 決定 → アクション</div></aside>
+    </section>
+    <section class="features" aria-label="主な機能"><article><span class="number">01</span><h2>話しながら、記録する</h2><p>Macで流れる音声とマイクの音声を録音。会議に参加しながら、文字起こしを進めます。</p></article><article><span class="number">02</span><h2>議論を、整理する</h2><p>録音中は30秒ごとに議事録の更新を試みます。話題ごとの論点と決定事項、最後にアクションをまとめます。処理時間は通信や音声の状況で変わります。</p></article><article><span class="number">03</span><h2>あとから、確かめる</h2><p>根拠となる発言を読み返し、音声を聞き直せます。重要な判断は、AIの要約と原文を照らして確認できます。</p></article></section>
+    <section id="calendar" class="calendar"><div><p class="eyebrow">GOOGLE CALENDAR · テスト提供中</p><h2>予定から、会議の記録へ。</h2><p>設定でGoogleアカウントを接続し、読み取るカレンダーを選びます。これからの予定を表示し、予定名を議事録のタイトルに使えます。</p><p>このMacと対象の予定で自動録音を有効にすると、開始30秒前にお知らせし、開始時刻に録音します。「今回はスキップ」も選べます。</p></div><div class="note"><h3>連携でできること</h3><ul><li>カレンダー一覧と、選んだカレンダーの予定を読み取る</li><li>予定名・日時・会議リンクを表示する</li><li>予定名の自動入力と、選択した予定の自動録音</li></ul><p>Googleの予定の作成・変更・削除は行いません。自動録音にはアプリの起動、Macが起きていること、録音権限が必要です。会議への自動参加は行わず、予定の終了時刻だけでは録音を停止しません。</p><p>Google連携は現在テスト中で、登録されたテスターが利用できます。</p></div></section>
+    <section class="data"><h2>データの扱いを、明確に。</h2><p>録音と議事録はMacの指定フォルダに保存します。文字起こしと議事録の生成にはOpenAI APIを使います。カレンダーから取り込んだ予定名も、会議タイトルとして音声認識のヒントに含まれる場合があります。</p><p>録音前には参加者に説明し、同意を得てください。保存・外部送信・連携解除については、<a href="privacy.html">プライバシーポリシー</a>で説明しています。</p></section>
+  </main>
+  <footer><div><strong>ギジログ / Gijilog</strong><p>開発・提供：nutcase</p></div><div><a href="privacy.html">プライバシーポリシー</a><a href="mailto:bootyz@gmail.com">お問い合わせ</a><a href="https://github.com/nutcase/gijilog">ソースコード</a></div></footer>
+</body>
+</html>
