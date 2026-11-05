@@ -113,28 +113,46 @@ struct CalendarTitleSuggestions: View {
                 } else if draft.failed {
                     Text("予定を取得できませんでした。タイトルはそのまま入力できます。").foregroundStyle(.secondary)
                 } else if !matches.isEmpty {
-                    Text("録音時刻の前後15分の予定").foregroundStyle(.secondary)
-                    ForEach(matches.prefix(5)) { event in
-                        Button {
-                            choose(event.title)
-                        } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: "calendar")
-                                Text(event.title).lineLimit(1)
-                                Text(
-                                    event.start.formatted(date: .abbreviated, time: .shortened)
-                                        + " – "
-                                        + event.end.formatted(
-                                            date: Calendar.current.isDate(event.start, inSameDayAs: event.end)
-                                                ? .omitted : .abbreviated,
-                                            time: .shortened)
-                                )
-                                .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label("会議名の候補", systemImage: "calendar")
+                            .font(.callout.weight(.semibold))
+                        Text("録音時刻に近いカレンダーの予定です。選ぶと会議名に反映します。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        ForEach(matches.prefix(5)) { event in
+                            Button {
+                                choose(event.title)
+                            } label: {
+                                HStack(spacing: 12) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(event.title).fontWeight(.medium).lineLimit(2)
+                                        Text(
+                                            event.start.formatted(date: .abbreviated, time: .shortened)
+                                                + " – "
+                                                + event.end.formatted(
+                                                    date: Calendar.current.isDate(event.start, inSameDayAs: event.end)
+                                                        ? .omitted : .abbreviated,
+                                                    time: .shortened)
+                                        )
+                                        .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    Text("この会議名を使う")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(Palette.sumire)
+                                }
+                                .padding(.vertical, 4)
+                                .contentShape(Rectangle())
                             }
+                            .buttonStyle(.bordered)
+                            .controlSize(.regular)
+                            .focusable(false)
+                            .help("「\(event.title)」を会議名に反映します")
                         }
-                        .buttonStyle(.borderless)
-                        .focusable(false)
                     }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.secondary.opacity(0.2)))
                 }
             }
         }
