@@ -56,6 +56,14 @@ import UniformTypeIdentifiers
     var draggedNoteItem: NoteItemDrag?  // The item a drag in the minutes started from, until it is dropped.
     var askTask: Task<Void, Never>?
     var askGeneration = 0  // Counts conversations, so an answer stopped by a new one is dropped.
+    // The column beside the minutes shows the transcript, or questions about the meeting shown. Each meeting keeps its
+    // own conversation until the app quits; it is not saved with the meeting. One question is answered at a time.
+    @Published var sidePanel = SidePanel.transcript
+    @Published var meetingAsked: [UUID: [AskMessage]] = [:]
+    @Published var meetingAsking: UUID?  // The meeting whose question is being answered.
+    let meetingAskStream = AskStream()
+    var meetingAskTask: Task<Void, Never>?
+    var meetingAskGeneration = 0
     // The utterance an answer's link or a minutes item's evidence pointed to, marked in the transcript.
     @Published var revealed: Reveal?
     // Names and terms the transcription should spell this way, one per line or separated by commas.
@@ -648,10 +656,13 @@ struct Reveal: Equatable {
     let compact: Bool
     let count: Int
 }
+/// What the column beside the minutes shows.
+enum SidePanel { case transcript, questions }
 /// What ギジログAI is doing while it answers: what it reads, and the answer as it is written. Kept apart from the
 /// Store, so that each piece of a streamed answer redraws the conversation alone.
 @MainActor final class AskStream: ObservableObject {
     @Published var progress: String?
     @Published var draft = ""
     @Published var question = ""  // Being typed, kept while a meeting is open in place of the conversation.
+    @Published var drafts: [UUID: String] = [:]  // Questions about one meeting being typed, kept for each meeting.
 }

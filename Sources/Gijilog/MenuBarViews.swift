@@ -32,6 +32,7 @@ struct FindMenuItem: View {
         Button("文字起こしの中を検索") {
             ViewSwitch(open: openWindow, dismiss: dismissWindow).full()
             store.showsTranscript = true
+            store.sidePanel = .transcript
             store.transcriptFind.open = true
             store.transcriptFind.focus += 1
         }

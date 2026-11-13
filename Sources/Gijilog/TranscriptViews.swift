@@ -59,7 +59,9 @@ struct FindBar: View {
 struct TranscriptPanel: View {
     @EnvironmentObject var store: Store
     @Environment(\.searchTerms) private var terms
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var follow = TranscriptFollow()
+    @Namespace private var tabs
     let meeting: Meeting
     var showsHeader = true  // The compact window shows the count in its tab bar instead.
     var editable = false  // Lines can be corrected in the full window.
@@ -79,44 +81,78 @@ struct TranscriptPanel: View {
         let revealed = store.revealed.flatMap { $0.meetingID == meeting.id && $0.compact == !showsHeader ? $0 : nil }
         let current = find.current(in: found) ?? revealed?.segmentID
         let shownTerms = find.terms.isEmpty ? terms : find.terms
+        let questions = showsHeader && store.sidePanel == .questions
         VStack(alignment: .leading, spacing: 0) {
             if showsHeader {
-                // The same tab as the compact window's, so the panel reads as the transcript's page.
-                HStack(alignment: .bottom, spacing: 8) {
-                    PageTab(
-                        title: "文字起こし", systemImage: "text.quote", count: meeting.segments.count,
-                        page: Palette.deepAi, ink: Palette.paper, outlined: true)
+                // The same tabs as the compact window's, so the panel reads as the transcript's page, or the page of
+                // questions about the meeting.
+                HStack(alignment: .bottom, spacing: 2) {
+                    sideTab(.transcript, title: "文字起こし", systemImage: "text.quote", count: meeting.segments.count)
+                    sideTab(.questions, title: "質問", systemImage: "bubble.left.and.text.bubble.right")
                     Spacer(minLength: 0)
-                    let pending = meeting.jobs.filter { $0.state == .pending || $0.state == .running }.count
-                    HStack(spacing: 8) {
-                        if !terms.isEmpty {
-                            Text("一致 \(matches.count)件").font(.caption.weight(.semibold)).foregroundStyle(
-                                Palette.yamabuki)
-                        }
-                        if pending > 0 {
-                            Label("処理待ち \(pending)件", systemImage: "hourglass").font(.caption).foregroundStyle(
-                                .secondary)
-                        }
+                    if !questions {
+                        transcriptTools(matches: matches.count).padding(.bottom, 9)
+                    } else if store.meetingAsked[meeting.id]?.isEmpty == false {
                         Button {
-                            store.transcriptFind.open = true
-                            store.transcriptFind.focus += 1
+                            store.clearMeetingAsked(meeting.id)
                         } label: {
-                            Image(systemName: "magnifyingglass")
+                            Image(systemName: "square.and.pencil")
                         }
                         .buttonStyle(.borderless).foregroundStyle(.secondary)
-                        .help("文字起こしの中を検索（⇧⌘F）")
-                        .accessibilityLabel("文字起こしの中を検索")
+                        .help("この会議について新しい会話を始める")
+                        .accessibilityLabel("新しい会話")
+                        .padding(.bottom, 9)
                     }
-                    .padding(.bottom, 9)
                 }
                 .padding(.top, 10)
                 .pageTabBar()
             }
-            transcript(
-                live: live, matches: matches, found: found, current: current, reveals: revealed?.count ?? 0,
-                shownTerms: shownTerms)
+            if questions {
+                MeetingAskPanel(stream: store.meetingAskStream, meeting: meeting).id(meeting.id)
+            } else {
+                transcript(
+                    live: live, matches: matches, found: found, current: current, reveals: revealed?.count ?? 0,
+                    shownTerms: shownTerms)
+            }
         }
         .background(Palette.deepAi)
+    }
+    private func sideTab(_ panel: SidePanel, title: String, systemImage: String, count: Int? = nil) -> some View {
+        let selected = store.sidePanel == panel
+        return Button {
+            withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) { store.sidePanel = panel }
+        } label: {
+            PageTab(
+                title: title, systemImage: systemImage, count: count, selected: selected, page: Palette.deepAi,
+                ink: Palette.paper, outlined: true, namespace: tabs
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(panel == .transcript ? "文字起こしを表示" : "この会議についてAIに質問する")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+    // Matches of the meeting search, speech still to transcribe, and the find button.
+    private func transcriptTools(matches: Int) -> some View {
+        let pending = meeting.jobs.filter { $0.state == .pending || $0.state == .running }.count
+        return HStack(spacing: 8) {
+            if !terms.isEmpty {
+                Text("一致 \(matches)件").font(.caption.weight(.semibold)).foregroundStyle(Palette.yamabuki)
+            }
+            if pending > 0 {
+                Label("\(pending)件", systemImage: "hourglass").font(.caption).foregroundStyle(.secondary)
+                    .help("文字起こしの処理待ち \(pending)件")
+            }
+            Button {
+                store.transcriptFind.open = true
+                store.transcriptFind.focus += 1
+            } label: {
+                Image(systemName: "magnifyingglass")
+            }
+            .buttonStyle(.borderless).foregroundStyle(.secondary)
+            .help("文字起こしの中を検索（⇧⌘F）")
+            .accessibilityLabel("文字起こしの中を検索")
+        }
     }
     @ViewBuilder private func transcript(
         live: Bool, matches: [Segment], found: [String], current: String?, reveals: Int, shownTerms: [String]
@@ -376,18 +412,20 @@ struct AskScope: View {
 // One turn of the conversation: a question on the right, an answer as text with links, a failure in yellow.
 struct AskBubble: View {
     let message: AskMessage
+    var narrow = false  // In the column beside the minutes.
     var body: some View {
         switch message.role {
         case .question:
             HStack {
-                Spacer(minLength: 120)
-                Text(message.text).font(.body).foregroundStyle(Palette.paper)
+                Spacer(minLength: narrow ? 28 : 120)
+                Text(message.text).font(narrow ? .system(size: 13.5) : .body).foregroundStyle(Palette.paper)
                     .padding(.horizontal, 14).padding(.vertical, 9)
                     .background(RoundedRectangle(cornerRadius: 12).fill(Palette.ai))
                     .textSelection(.enabled)
             }
         case .answer:
-            Text(Self.linked(message.text)).font(.system(size: 14)).lineSpacing(4).foregroundStyle(Palette.paper)
+            Text(Self.linked(message.text)).font(.system(size: narrow ? 13.5 : 14)).lineSpacing(4)
+                .foregroundStyle(Palette.paper)
                 .tint(Palette.asagi).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
         case .failure:
             Label(message.text, systemImage: "exclamationmark.triangle.fill").font(.callout)
@@ -398,6 +436,142 @@ struct AskBubble: View {
     static func linked(_ text: String) -> AttributedString {
         (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
             ?? AttributedString(text)
+    }
+}
+// Questions about the meeting shown, on the page beside its minutes. Its transcript and minutes go with each
+// question, so the answer starts at once; an answer's time opens that utterance on the transcript's page. The
+// questions asked most often are buttons over the field.
+struct MeetingAskPanel: View {
+    @EnvironmentObject var store: Store
+    @ObservedObject var stream: AskStream
+    @FocusState private var focused: Bool
+    let meeting: Meeting
+    var body: some View {
+        let messages = store.meetingAsked[meeting.id] ?? []
+        let here = store.meetingAsking == meeting.id
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        if messages.isEmpty { intro }
+                        ForEach(messages) { message in
+                            VStack(alignment: .leading, spacing: 6) {
+                                AskBubble(message: message, narrow: true)
+                                if let basis = message.basis {
+                                    Label(basis, systemImage: "clock").font(.caption2)
+                                        .foregroundStyle(Palette.paper.opacity(0.5))
+                                        .help("録音中は、文字起こしに届いた発言までで答えます（別の Mac で録音中なら、同期で届いた分まで）")
+                                }
+                            }
+                            .id(message.id)
+                        }
+                        if here && !stream.draft.isEmpty {
+                            AskBubble(message: AskMessage(role: .answer, text: stream.draft), narrow: true).id("draft")
+                        }
+                        if here, let progress = stream.progress {
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.small)
+                                Text(progress + "…").font(.callout).foregroundStyle(Palette.paper.opacity(0.7))
+                                    .lineLimit(1)
+                                Button("止める") { store.stopAskingMeeting() }.buttonStyle(.borderless).font(.callout)
+                                Spacer(minLength: 0)
+                            }
+                            .id("progress")
+                        }
+                    }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                // A new question or answer is shown from its start.
+                .onChange(of: messages.last?.id) { _, last in
+                    guard let last else { return }
+                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last, anchor: .top) }
+                }
+                // While the AI reads, its progress is kept in view; once it writes, the answer is read from its start.
+                .onChange(of: stream.progress) { _, progress in
+                    guard here, let progress else { return }
+                    proxy.scrollTo(
+                        progress == "答えを書いています" ? "draft" : "progress",
+                        anchor: progress == "答えを書いています" ? .top : .bottom)
+                }
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                presets
+                composer
+            }
+            .padding(12)
+            .background(alignment: .top) { Rectangle().fill(PageTab.edge).frame(height: 1) }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // A link opens the utterance on the transcript's page; one to another meeting opens that meeting, and one
+        // the AI wrote to elsewhere opens only on the web.
+        .environment(
+            \.openURL,
+            OpenURLAction { url in
+                store.openAskLink(url) ? .handled : AskLink.opensOnTheWeb(url) ? .systemAction : .discarded
+            }
+        )
+        .onAppear { Task { @MainActor in focused = true } }
+    }
+    // Being recorded, on this Mac or another one.
+    private var live: Bool { store.whereRecorded(meeting) != .finished }
+    private var intro: some View {
+        Text(
+            "この会議の文字起こしと議事録から、AIが答えます。答えの時刻を押すと、その発言を文字起こしで開きます。"
+                + (live ? "録音中は、この Mac の文字起こしに届いた発言までで答えます。" : "")
+        )
+        .font(.callout).foregroundStyle(Palette.paper.opacity(0.7))
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    private var presets: some View {
+        FlowLayout(spacing: 6) {
+            ForEach(MeetingQuestion.presets(meeting, recording: live)) { preset in
+                Button {
+                    store.askMeeting(preset.question, in: meeting.id)
+                } label: {
+                    Text(preset.label).font(.caption).lineLimit(1)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(Capsule().fill(Palette.ai))
+                        .overlay(Capsule().strokeBorder(PageTab.edge))
+                }
+                .buttonStyle(.plain).foregroundStyle(Palette.paper)
+                .disabled(store.meetingAsking != nil)
+                .help(preset.question)
+            }
+        }
+    }
+    private var question: Binding<String> {
+        Binding(get: { stream.drafts[meeting.id] ?? "" }, set: { stream.drafts[meeting.id] = $0 })
+    }
+    // The send button sits inside the field, at its right end, on the field's last line.
+    private var composer: some View {
+        HStack(alignment: .bottom, spacing: 6) {
+            TextField(
+                store.meetingAsking == nil || store.meetingAsking == meeting.id ? "この会議について質問" : "別の会議の質問に答えています",
+                text: question, axis: .vertical
+            )
+            .lineLimit(1...6).textFieldStyle(.plain).font(.system(size: 13.5)).foregroundStyle(Palette.paper)
+            .focused($focused).onSubmit(send)
+            .padding(.vertical, 4)
+            Button(action: send) {
+                Image(systemName: "arrow.up.circle.fill").font(.system(size: 22))
+            }
+            .buttonStyle(.plain).foregroundStyle(canSend ? Palette.asagi : Palette.paper.opacity(0.25))
+            .disabled(!canSend).help("質問する（Return）").accessibilityLabel("質問する")
+        }
+        .padding(.leading, 12).padding(.trailing, 6).padding(.vertical, 5)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Palette.ai))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(focused ? Palette.asagi.opacity(0.7) : PageTab.edge))
+        .contentShape(Rectangle())
+        .onTapGesture { focused = true }
+    }
+    private var canSend: Bool {
+        store.meetingAsking == nil && !question.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    private func send() {
+        guard canSend else { return }
+        store.askMeeting(question.wrappedValue, in: meeting.id)
+        stream.drafts[meeting.id] = nil
     }
 }
 struct ScrollMetrics: Equatable {

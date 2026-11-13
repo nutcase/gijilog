@@ -32,36 +32,12 @@ extension Store {
             recording: recording ? meetings.first { $0.id == activeID }.flatMap { inScope($0) ? $0 : nil } : nil,
             tags: tags)
         let tools = MCPHandler(store: self, everything: true, tags: tags)
-        let key = key
-        let model = model
         askGeneration += 1
         let generation = askGeneration
         let stream = askStream
-        stream.progress = "考えています"
-        stream.draft = ""
         askTask = Task {
-            var outcome: [AskMessage] = []
-            do {
-                let answer = try await MeetingAgent.answer(
-                    conversation, instructions: instructions, model: model,
-                    send: { try await MeetingAgent.stream($0, key: key, text: $1) },
-                    run: { MeetingAgent.text(ofTool: tools.callTool($0, arguments: $1)) },
-                    progress: { [weak self] in if self?.askGeneration == generation { stream.progress = $0 } },
-                    writing: { [weak self] text in
-                        guard self?.askGeneration == generation else { return }
-                        stream.draft = text
-                        if !text.isEmpty { stream.progress = "答えを書いています" }
-                    })
-                outcome = [AskMessage(role: .answer, text: answer)]
-            } catch {
-                let stopped = Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled
-                // What was written before it stopped stays, marked as unfinished.
-                if !stream.draft.isEmpty {
-                    outcome.append(AskMessage(role: .answer, text: stream.draft + "\n\n（ここまでで止まりました）"))
-                }
-                if !stopped || stream.draft.isEmpty {
-                    outcome.append(AskMessage(role: .failure, text: stopped ? "止めました。" : error.localizedDescription))
-                }
+            let outcome = await answering(conversation, instructions: instructions, tools: tools, stream: stream) {
+                self.askGeneration == generation
             }
             // A conversation started again meanwhile has nothing to do with this answer.
             guard askGeneration == generation else { return }
@@ -69,6 +45,40 @@ extension Store {
             stream.draft = ""
             stream.progress = nil
             askTask = nil
+        }
+    }
+    /// Answers the last question of a conversation, writing the answer into `stream` while `current` holds, and
+    /// returns what goes into the conversation: the answer, or what was written before it stopped, and why it did.
+    private func answering(
+        _ conversation: [AskMessage], instructions: String, record: String? = nil, tools: MCPHandler,
+        stream: AskStream, current: @escaping @MainActor () -> Bool
+    ) async -> [AskMessage] {
+        let key = key
+        stream.progress = "考えています"
+        stream.draft = ""
+        do {
+            let answer = try await MeetingAgent.answer(
+                conversation, instructions: instructions, model: model, record: record,
+                send: { try await MeetingAgent.stream($0, key: key, text: $1) },
+                run: { MeetingAgent.text(ofTool: tools.callTool($0, arguments: $1)) },
+                progress: { if current() { stream.progress = $0 } },
+                writing: { text in
+                    guard current() else { return }
+                    stream.draft = text
+                    if !text.isEmpty { stream.progress = "答えを書いています" }
+                })
+            return [AskMessage(role: .answer, text: answer)]
+        } catch {
+            let stopped = Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled
+            var outcome: [AskMessage] = []
+            // What was written before it stopped stays, marked as unfinished.
+            if !stream.draft.isEmpty && current() {
+                outcome.append(AskMessage(role: .answer, text: stream.draft + "\n\n（ここまでで止まりました）"))
+            }
+            if !stopped || outcome.isEmpty {
+                outcome.append(AskMessage(role: .failure, text: stopped ? "止めました。" : error.localizedDescription))
+            }
+            return outcome
         }
     }
     func stopAsking() { askTask?.cancel() }
@@ -124,11 +134,76 @@ extension Store {
             liveTab = "文字起こし"
         } else {
             showsTranscript = true
+            sidePanel = .transcript
             if transcriptFind.open { transcriptFind = FindState() }  // Its match would hold the panel where it is.
         }
     }
     /// The compact window's transcript follows the speech again once its tabs are switched by hand.
     func forgetCompactReveal() {
         if revealed?.compact == true { revealed = nil }
+    }
+}
+
+// Questions about the meeting shown, in the 質問 tab beside its minutes.
+extension Store {
+    /// Asks the AI about one meeting. Its transcript, minutes and agenda go with the question; other meetings are read
+    /// only when the question needs them.
+    func askMeeting(_ question: String, in meetingID: UUID) {
+        let question = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !question.isEmpty, meetingAskTask == nil, let meeting = meetings.first(where: { $0.id == meetingID })
+        else { return }
+        meetingAsked[meetingID, default: []].append(AskMessage(role: .question, text: question))
+        guard hasKey else {
+            meetingAsked[meetingID, default: []].append(
+                AskMessage(role: .failure, text: "設定で OpenAI の APIキーを入れると、質問できます。"))
+            return
+        }
+        let conversation = meetingAsked[meetingID] ?? []
+        let recorded = whereRecorded(meeting)
+        let instructions = MeetingAgent.meetingInstructions(meeting)
+        let record = MeetingAgent.meetingRecord(meeting, now: Date(), recording: recorded)
+        // While it is recorded, the answer says up to which utterance it read: speech reaches the transcript late,
+        // and later still on another Mac.
+        let basis = recorded == .finished ? nil : MeetingAgent.heardUntil(meeting)
+        let tools = MCPHandler(store: self, everything: true)
+        meetingAskGeneration += 1
+        let generation = meetingAskGeneration
+        let stream = meetingAskStream
+        meetingAsking = meetingID
+        meetingAskTask = Task {
+            let outcome = await answering(
+                conversation, instructions: instructions, record: record, tools: tools, stream: stream
+            ) { self.meetingAskGeneration == generation }
+            guard meetingAskGeneration == generation else { return }
+            meetingAsked[meetingID, default: []] += outcome.map { message in
+                var message = message
+                if message.role == .answer { message.basis = basis }
+                return message
+            }
+            stream.draft = ""
+            stream.progress = nil
+            meetingAskTask = nil
+            meetingAsking = nil
+        }
+    }
+    /// Where the meeting is being recorded: on this Mac, or on another, as its synced copy says. Copies from before
+    /// meetings named their Mac (no workingMac) were not recording elsewhere when they were made.
+    func whereRecorded(_ meeting: Meeting) -> MeetingAgent.Recording {
+        if recording && activeID == meeting.id { return .here }
+        if meeting.capture == .recording, let mac = meeting.workingMac, mac != thisMac { return .elsewhere }
+        return .finished
+    }
+    func stopAskingMeeting() { meetingAskTask?.cancel() }
+    /// Starts the meeting's conversation over. An answer still being written for it is stopped and dropped.
+    func clearMeetingAsked(_ meetingID: UUID) {
+        if meetingAsking == meetingID {
+            meetingAskTask?.cancel()
+            meetingAskTask = nil
+            meetingAskGeneration += 1
+            meetingAskStream.progress = nil
+            meetingAskStream.draft = ""
+            meetingAsking = nil
+        }
+        meetingAsked[meetingID] = nil
     }
 }

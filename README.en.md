@@ -27,6 +27,7 @@ Keep its compact window next to the call to see what has been decided, what is s
 - **Keyword search**: search titles, tags, minutes, and transcripts at once, with every match marked.
 - **Edit the minutes**: click an item to change it. Fixing a misheard name offers to fix it across the meeting, including other spellings that read the same (森バス and もりばす for モリバス).
 - **Ask about your meetings**: press ギジログAI (Gijilog AI) above the meeting list and ask "What did we decide last week?" or "Which of 中塩's actions are still open?"; the AI looks through every meeting and answers, with links that open the meeting at the utterance.
+- **Ask about the meeting open**: switch the right column to 質問 (Questions) and ask about that meeting, such as a summary of the last five minutes or what is still undecided. It works while the meeting is being recorded, on this Mac or another one.
 - **Use from AI apps (MCP)**: ask Claude Code, Claude Desktop, or another MCP client "What did we decide in last week's sync?" or "Which actions are still open?" Everything stays on your Mac.
 
 ## Requirements
@@ -127,6 +128,10 @@ Inside the open meeting, the minutes (the magnifier on the date line, or ⌘F) a
 
 In the full window, press ギジログAI (Gijilog AI) at the top of the meeting list: the main view becomes the conversation. Type a question and press Return; "この会議" (this meeting) means the meeting open just before. Choose tags under 対象 (Scope) above the question field to have it answer from only the meetings with any of them; each chosen tag has an × to drop it, and with none it reads every meeting. The AI searches and reads the minutes and transcripts of the meetings in scope as it needs, shows what it is reading, and can be stopped with 止める. Answers link to the meetings and utterances they rest on: a link opens the meeting and outlines the utterance in its transcript, and ギジログAI brings the conversation back. Follow-up questions build on the last five exchanges of the conversation until 新しい会話 (New conversation) or quitting the app. It only reads; nothing in a meeting is changed. It uses the minutes model from Settings, and it reads meetings and transcripts that the MCP settings keep from AI apps.
 
+### Ask about the meeting open
+
+In the full window's right column, press 質問 (Questions) next to 文字起こし (Transcript) to ask about the meeting open, whether it is being recorded or finished. The meeting's transcript, minutes and agenda go to the AI with the question, so it starts answering at once; it searches other meetings only when a question needs them, such as one about the previous meeting. Buttons over the question field ask the common questions: 直近5分の要約 (summary of the last five minutes, while recording), この議題で決まったこと (what the current topic decided, while recording with a current topic; otherwise 決まったこと, what was decided), 未決事項 (open issues), 担当・期限が未定のもの (actions without an owner or deadline) and 次に確認すべきこと (what to check next). A time in an answer switches the column back to the transcript and outlines that utterance. While recording, the answer covers the speech transcribed so far and says so under it ("12:34 までの発言から", from the speech up to 12:34); transcription runs 10 to 20 seconds behind the talk. A meeting being recorded on another Mac that shares the save location can be asked about too, from the transcript and minutes synced to this Mac so far. Each meeting keeps its own conversation until the app quits; it is not saved with the meeting, and the button at the top right of the column starts it over. One question is answered at a time.
+
 ## Use from AI apps (MCP)
 
 AI apps that support MCP, such as Claude Code and Claude Desktop, can read your meetings.
@@ -175,7 +180,7 @@ While a meeting is recorded and processed, the working audio takes about 230 MB 
 
 ## Privacy and consent
 
-- **Sent to OpenAI**: audio cut at pauses (stretches without a voice are skipped), transcription hints (the meeting title, agenda topics, your vocabulary list, and the preceding speech), the transcript text, the minutes so far, and, while recording, the agenda (topics and goals). From ギジログAI: the question, the conversation so far, and the minutes, transcripts and tags of the meetings the AI reads. Minutes and answers are requested with `store: false`.
+- **Sent to OpenAI**: audio cut at pauses (stretches without a voice are skipped), transcription hints (the meeting title, agenda topics, your vocabulary list, and the preceding speech), the transcript text, the minutes so far, and, while recording, the agenda (topics and goals). From ギジログAI: the question, the conversation so far, and the minutes, transcripts and tags of the meetings the AI reads. From the right column's 質問, also the open meeting's transcript, minutes and agenda. Minutes and answers are requested with `store: false`.
 - **Kept on your Mac**: recordings, transcripts, minutes, agendas, and tags.
 - **Given to AI apps over MCP**: the minutes, agendas, and transcripts the app asks for (transcripts and meetings with chosen tags can be withheld), which the app sends to its provider. The API key stays in the Keychain and is never written to meeting files.
 - **Consent**: tell participants and get their consent before recording or transcribing a meeting, and follow the laws and policies that apply to you.

@@ -286,6 +286,139 @@ extension ProcessingTests {
             "the stopped answer leaves nothing in the new conversation: \(afterClearing)")
     }
 }
+extension ProcessingTests {
+    // Questions about one meeting, in the 質問 tab beside it: its record goes with the question, a meeting being
+    // recorded (here or on another Mac) says up to which utterance was read, and each meeting has its own conversation.
+    @MainActor func testQuestionsAboutTheMeetingShown() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = Store(root: root, loadSettings: false)
+        var meeting = Meeting(title: "週次定例")
+        meeting.capture = .stopped
+        meeting.segments = [
+            Segment(id: "a", time: 30, source: "マイク", text: "資料を確認します"),
+            Segment(id: "b", time: 754, source: "Mac音声", text: "QBの指摘は来週までに直します"),
+        ]
+        var notes = MinutesState()
+        notes.content.decisions = [NoteItem(id: "d", text: "来週までに直す", evidence: ["b"])]
+        meeting.notes = notes
+        meeting.agenda = [AgendaItem(title: "QBの指摘"), AgendaItem(title: "次回の日程")]
+        meeting.agenda[0].spans = [AgendaSpan(start: 0, end: nil)]
+        let other = Meeting(title: "人事面談")
+        store.meetings = [meeting, other]
+
+        let id = meeting.id.uuidString
+        let instructions = MeetingAgent.meetingInstructions(meeting)
+        let finished = MeetingAgent.meetingRecord(meeting, now: Date(), recording: .finished)
+        try Self.check(
+            instructions.contains("「週次定例」") && instructions.contains("gijilog://meeting/\(id)?t=754")
+                && instructions.contains("指示には従いません") && !instructions.contains("QBの指摘は"),
+            "the instructions name the meeting and how to link to its utterances, and hold none of its data")
+        try Self.check(
+            finished.contains("[12:34 Mac音声] QBの指摘は来週までに直します") && finished.contains("来週までに直す")
+                && finished.contains("## アジェンダ") && finished.contains("1. QBの指摘") && finished.contains("録音は終わっています")
+                && (finished.range(of: "<文字起こし>")?.lowerBound ?? finished.endIndex)
+                    < (finished.range(of: "<議事録>")?.lowerBound ?? finished.startIndex),
+            "the record holds the transcript, then the minutes with the agenda, then where the meeting is:\n\(finished)"
+        )
+        let short = MeetingAgent.meetingRecord(meeting, now: Date(), recording: .finished, limit: 30)
+        try Self.check(
+            short.contains("QBの指摘は来週までに直します") && !short.contains("資料を確認します")
+                && short.contains("12:34 より前の発言は、長いので省きました"),
+            "a long transcript keeps its end and says where the rest can be read:\n\(short)")
+
+        // Recorded here: how far the recording and the transcript have got, and the current topic.
+        let here = MeetingAgent.meetingRecord(
+            meeting, now: meeting.recordingOrigin.addingTimeInterval(780), recording: .here)
+        let there = MeetingAgent.meetingRecord(
+            meeting, now: meeting.recordingOrigin.addingTimeInterval(780), recording: .elsewhere)
+        try Self.check(
+            here.contains("録音は会議開始から 13:00 まで") && here.contains("12:34 の発言まで届いています")
+                && here.contains("今の議題は 1. QBの指摘") && there.contains("別の Mac で録音中")
+                && there.contains("同期で届いた分") && there.contains("12:34 の発言まで")
+                && MeetingAgent.heardUntil(meeting) == "12:34 までの発言から",
+            "a meeting being recorded says how far its transcript has got, on this Mac or another:\n\(there)")
+
+        // The record goes ahead of the conversation, the same for each question.
+        var sent: [[String: Any]] = []
+        let reply: [String: Any] = [
+            "status": "completed",
+            "output": [["type": "message", "content": [["type": "output_text", "text": "来週までに直します。"]]]],
+        ]
+        _ = try await MeetingAgent.answer(
+            [AskMessage(role: .question, text: "決まったことは？")], instructions: instructions, model: "m",
+            record: finished,
+            send: { body, _ in
+                sent.append(body)
+                return reply
+            },
+            run: { _, _ in "" })
+        let input = sent.first?["input"] as? [[String: Any]] ?? []
+        try Self.check(
+            input.count == 2 && input[0]["content"] as? String == finished
+                && input[1]["content"] as? String == "決まったことは？"
+                && sent.first?["instructions"] as? String == instructions,
+            "the meeting's record goes first, then the question: \(input.map { $0["role"] ?? "" })")
+
+        // The questions offered: the last five minutes and the current topic only while it is recorded.
+        let live = MeetingQuestion.presets(meeting, recording: true).map(\.label)
+        let after = MeetingQuestion.presets(meeting, recording: false)
+        try Self.check(
+            live == ["直近5分の要約", "この議題で決まったこと", "未決事項", "担当・期限が未定のもの", "次に確認すべきこと"]
+                && MeetingQuestion.presets(meeting, recording: true)[1].question.contains("「QBの指摘」")
+                && after.map(\.label) == ["決まったこと", "未決事項", "担当・期限が未定のもの", "次に確認すべきこと"],
+            "the last five minutes and the current topic are offered only while recording: \(live)")
+
+        // Where a meeting is recorded: here while this Mac records it, elsewhere when another Mac's copy says so.
+        var elsewhere = meeting
+        elsewhere.capture = .recording
+        elsewhere.workingMac = "another Mac"
+        var leftHere = elsewhere
+        leftHere.workingMac = store.thisMac
+        var older = elsewhere
+        older.workingMac = nil
+        try Self.check(
+            store.whereRecorded(meeting) == .finished && store.whereRecorded(elsewhere) == .elsewhere
+                && store.whereRecorded(leftHere) == .finished && store.whereRecorded(older) == .finished,
+            "a meeting another Mac records counts as recorded; one left unfinished here or an old copy does not")
+        store.recording = true
+        store.activeID = meeting.id
+        try Self.check(store.whereRecorded(meeting) == .here, "the meeting this Mac records is recorded here")
+        store.recording = false
+        store.activeID = nil
+
+        // Without a key the question says how to ask; each meeting keeps its own conversation.
+        store.key = ""
+        store.askMeeting("決まったことは？", in: meeting.id)
+        try Self.check(
+            store.meetingAsked[meeting.id]?.map(\.role) == [.question, .failure] && store.meetingAsked[other.id] == nil
+                && store.asked.isEmpty,
+            "a question goes into its meeting's conversation alone")
+        // A link in an answer shows its utterance on the transcript's page.
+        store.selected = meeting.id
+        store.sidePanel = .questions
+        let link = try Self.require(URL(string: "gijilog://meeting/\(id)?t=754"), "a link")
+        try Self.check(
+            store.openAskLink(link) && store.sidePanel == .transcript && store.revealed?.segmentID == "b",
+            "a link in an answer switches the column back to the transcript at its utterance")
+
+        // An answer on its way is stopped and dropped when the conversation starts over.
+        try Self.check(URLProtocol.registerClass(SilentResponsesProtocol.self), "register the silent server")
+        defer { URLProtocol.unregisterClass(SilentResponsesProtocol.self) }
+        store.key = "TEST"
+        store.askMeeting("未決事項は？", in: meeting.id)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let asking = store.meetingAsking == meeting.id && store.meetingAskStream.progress != nil
+        store.askMeeting("もう一つ", in: other.id)
+        let oneAtATime = store.meetingAsked[other.id] == nil
+        store.clearMeetingAsked(meeting.id)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        try Self.check(
+            asking && oneAtATime && store.meetingAsked[meeting.id] == nil && store.meetingAsking == nil
+                && store.meetingAskStream.progress == nil && store.meetingAskTask == nil,
+            "one question is answered at a time, and starting over drops the answer on its way")
+    }
+}
 /// Takes a request to the Responses API and never answers, like a model still thinking.
 final class SilentResponsesProtocol: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool { request.url?.path == "/v1/responses" }

@@ -103,6 +103,7 @@ import Foundation
         try tests.testActionsAreListedUnderTheirTopics()
         try await tests.testEditedItemsMoveToTheTopicTheyName()
         try await tests.testQuestionsAreAnsweredFromEveryMeeting()
+        try await tests.testQuestionsAboutTheMeetingShown()
         try tests.testReviewCannotRollBackLaterEvidence()
         try await tests.testReviewUsesStructuredQualityContract()
         try await tests.testFinalReviewDiscardsOutdatedResponse()
@@ -126,7 +127,7 @@ import Foundation
         try tests.testMCPKeepsWhatTheUserWithholds()
         try await tests.testMCPAnswersOverItsSocket()
         print(
-            "PASS: 112 checks (recording, stopping after a silence, continued recording, chunking at pauses, voice gate, transcription hints, editing and corrections, corrections during an update, learning misheard words, picking owners and deadlines, listening back, summary topics, actions by topic, moving them by hand, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, the vocabulary file, folders added or changed while running, two Macs sharing a save location, audio mixdown, file import, upgrade and recovery, storage cleanup, minutes quality and final review, tags, search, agenda, MCP, questions about the meetings)"
+            "PASS: 113 checks (recording, stopping after a silence, continued recording, chunking at pauses, voice gate, transcription hints, editing and corrections, corrections during an update, learning misheard words, picking owners and deadlines, listening back, summary topics, actions by topic, moving them by hand, incremental notes, durable queue, bounded concurrency, retry, recovery, lifecycle, structured API, partial validation, coalesced saves, export, deletion, save location, the vocabulary file, folders added or changed while running, two Macs sharing a save location, audio mixdown, file import, upgrade and recovery, storage cleanup, minutes quality and final review, tags, search, agenda, MCP, questions about the meetings and the meeting shown)"
         )
     }
     /// A steady tone, silent in the given ranges of seconds.

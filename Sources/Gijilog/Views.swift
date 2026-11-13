@@ -302,9 +302,9 @@ struct ContentView: View {
             Button {
                 store.showsTranscript.toggle()
             } label: {
-                Label("文字起こし", systemImage: "sidebar.right")
+                Label("文字起こし・質問", systemImage: "sidebar.right")
             }
-            .help("文字起こしの表示を切り替える")
+            .help("文字起こしと質問の欄の表示を切り替える")
         }
         if !store.recording {
             ToolbarItemGroup(placement: .primaryAction) {
