@@ -33,6 +33,10 @@ struct MinutesDesk: View {
                 FindBar(state: $store.minutesFind, placeholder: "議事録を検索", count: found.count, dark: true)
                     .frame(maxWidth: 520).padding(.top, 12)
             }
+            // Above the sheet, not in it: it stays in view however far down the corrected item is.
+            if let offer = store.correctionOffer, offer.meetingID == meeting.id, !offer.inTranscript {
+                CorrectionOfferView(offer: offer).frame(maxWidth: 760).padding(.horizontal, 32).padding(.top, 12)
+            }
             ScrollViewReader { proxy in
                 document(current: current)
                     .environment(\.searchTerms, find.terms.isEmpty ? terms : find.terms)
@@ -249,9 +253,6 @@ struct MinutesDesk: View {
             }
             if meeting.notes?.extractionOnly == true {
                 Notice(text: "以前のキーワード抽出で作った議事録です。「全文を再処理」でAIの議事録に作り直せます。")
-            }
-            if let offer = store.correctionOffer, offer.meetingID == meeting.id, !offer.inTranscript {
-                CorrectionOfferView(offer: offer)
             }
         }
         .padding(.top, 14)

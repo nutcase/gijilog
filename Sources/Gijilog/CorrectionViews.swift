@@ -142,10 +142,11 @@ struct CorrectionSheet: View {
     }
 }
 // After an edit that fixed a word, offers to fix the same word, or another spelling that reads the same, elsewhere.
+// It stays put while the minutes or the transcript scroll: above the minutes sheet, or at the top of the transcript.
 struct CorrectionOfferView: View {
     @EnvironmentObject var store: Store
     let offer: CorrectionOffer
-    var stacked = false  // Buttons under the message, for the narrow transcript column.
+    var stacked = false  // Buttons under the message, for the narrow transcript column; else a bar above the minutes.
     var body: some View {
         let message = Text("「\(offer.from)」を「\(offer.to)」に直しました。ほかの\(offer.count)か所も直しますか？")
             .font(.callout).fixedSize(horizontal: false, vertical: true)
@@ -167,7 +168,15 @@ struct CorrectionOfferView: View {
         .controlSize(.small)
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Palette.asagi.opacity(stacked ? 0.2 : 0.12)))
+        .background {
+            // Above the minutes it sits on the dark desk, outlined like the find bar.
+            let shape = RoundedRectangle(cornerRadius: stacked ? 6 : 7)
+            if stacked {
+                shape.fill(Palette.asagi.opacity(0.2))
+            } else {
+                shape.fill(Palette.ai).overlay(shape.strokeBorder(Palette.asagi.opacity(0.5)))
+            }
+        }
     }
     @ViewBuilder private var buttons: some View {
         Button("すべて直す") { store.applyOfferedCorrection() }
